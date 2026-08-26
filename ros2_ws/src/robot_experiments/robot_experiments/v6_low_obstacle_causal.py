@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import shlex
 import signal
+import socket
 import statistics
 import struct
 import subprocess
@@ -79,6 +80,8 @@ DEFAULT_SHUTDOWN_TIMEOUT_SEC = 20.0
 DEFAULT_CLEANUP_CONFIRM_TIMEOUT_SEC = 5.0
 DEFAULT_CLEANUP_QUIET_SEC = 0.25
 DEFAULT_CLEANUP_POLL_SEC = 0.05
+DEFAULT_COGNITIVE_READY_TIMEOUT_SEC = 120.0
+PHASE_F_QOS_CONFIG = "v6_low_obstacle_phase_f_rosbag_qos.yaml"
 PHASE_F_RECORDED_CHILDREN = (
     "module3_ros",
     "module2_server",
@@ -86,6 +89,14 @@ PHASE_F_RECORDED_CHILDREN = (
 )
 MODULE3_RESOURCE_PREFIX = "module3://"
 MODULE3_ROOT_ENV = "BIO_NAV_MODULE3_ROOT"
+KUJIALE_MAP_VERSION = "v6_kujiale_isaacgen_v1"
+KUJIALE_T_MAP_CANVAS = (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+KUJIALE_VALID_STATE_IDS = (
+    39, 40, 56, 69, 70, 72, 84, 85, 86, 87, 88, 101, 102, 103, 104,
+    115, 116, 117, 118, 119, 120, 121, 122, 133, 134, 135, 136, 137,
+    147, 148, 149, 150, 151, 153, 165, 166, 167, 169, 180, 181, 182,
+    183, 184, 185, 199, 200, 201, 202, 215, 216, 217,
+)
 
 if any(topic.startswith(GT_PREFIX) for topic in DISPATCHER_TOPICS):
     raise RuntimeError("V6 causal dispatcher Ground Truth firewall violated")
@@ -171,7 +182,7 @@ def exact_adapter_templates(manifest: CausalManifest) -> AdapterTemplates:
         ),
         producer_stop=(
             f"{root}/scripts/run_v6_low_obstacle_phase_f_stack.sh "
-            "stop-producer --run-dir {run_dir}"
+            "stop-producer --run-dir {run_dir} --socket {module2_socket}"
         ),
     )
 
@@ -1332,6 +1343,11 @@ def build_recorded_evidence(
             "critic_post_expiry_applied": critic_post_expiry_applied,
             "critic_stale_active_probe": "NOT_RUN" if run.arm == "M3" else None,
         },
+        "sensor_counts": {
+            "scan_message_count": len(scan_records),
+            "depth_message_count": len(depth_records),
+            "camera_info_message_count": len(camera_info_records),
+        },
         "synchronized_samples": samples,
         "obstacle_validation": obstacle_validation,
         "layer": {
@@ -1830,6 +1846,293 @@ def _wait_for_startup_ready(
     }
 
 
+def _unix_socket_listener_active(path: Path) -> bool:
+    """Return whether the exact filesystem UDS has a listening owner."""
+
+    target = str(path)
+    try:
+        rows = Path("/proc/net/unix").read_text(encoding="utf-8").splitlines()[1:]
+    except OSError:
+        return False
+    for row in rows:
+        fields = row.split()
+        if len(fields) < 8 or fields[7] != target:
+            continue
+        try:
+            listening = bool(int(fields[3], 16) & 0x00010000)
+            stream = int(fields[4], 16) == 1
+        except ValueError:
+            continue
+        if listening and stream:
+            return True
+    return False
+
+
+def _unix_socket_connects(path: Path) -> bool:
+    """Fallback active-owner probe used only after no listener was observed."""
+
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    probe.settimeout(0.05)
+    try:
+        probe.connect(str(path))
+    except (FileNotFoundError, ConnectionRefusedError, TimeoutError, OSError):
+        return False
+    finally:
+        probe.close()
+    return True
+
+
+def _canonical_prior_error(message: Any, arm: str) -> str | None:
+    if str(getattr(message, "schema_version", "")) != "bio_nav_planning_prior_v310":
+        return "PlanningPrior schema is not V3.10"
+    if str(getattr(message, "map_version", "")) != KUJIALE_MAP_VERSION:
+        return "PlanningPrior map_version differs from Kujiale"
+    transform = tuple(float(value) for value in getattr(message, "t_map_canvas", ()))
+    if len(transform) != 9 or any(
+        not math.isclose(value, expected, abs_tol=1.0e-9)
+        for value, expected in zip(transform, KUJIALE_T_MAP_CANVAS)
+    ):
+        return "PlanningPrior T_map_canvas is not the canonical identity"
+    mask = tuple(bool(value) for value in getattr(message, "valid_state_mask", ()))
+    if len(mask) != 256:
+        return "PlanningPrior valid_state_mask does not contain 256 states"
+    if tuple(index for index, enabled in enumerate(mask) if enabled) != KUJIALE_VALID_STATE_IDS:
+        return "PlanningPrior valid_state_mask differs from the canonical 51-state mask"
+    if arm == "M1" and bool(getattr(message, "trusted_write", True)):
+        return "M1 PlanningPrior must remain untrusted shadow output"
+    return None
+
+
+def _expected_cognitive_parameters(arm: str) -> dict[str, str]:
+    if arm == "M1":
+        return {
+            "startup_profile": "estimated_shadow",
+            "module2_mode": "shadow",
+            "active_effect_scope": "none",
+        }
+    if arm in {"M2", "M3"}:
+        return {
+            "startup_profile": "module2_causal_obstacle_active",
+            "module2_mode": "active",
+            "active_effect_scope": "obstacle_only",
+        }
+    return {}
+
+
+def _uint8_value(value: Any) -> int:
+    if isinstance(value, (bytes, bytearray)):
+        if len(value) != 1:
+            raise ValueError("uint8 field must contain one byte")
+        return value[0]
+    return int(value)
+
+
+def _wait_for_cognitive_ready(
+    manifest: CausalManifest,
+    run: RunContract,
+    managed: Sequence[_ManagedProcess],
+    module2_socket: Path,
+    timeout_sec: float = DEFAULT_COGNITIVE_READY_TIMEOUT_SEC,
+) -> dict[str, Any]:
+    """Wait on real UDS/ROS state before starting a cognitive-arm episode."""
+
+    if run.arm == "M0":
+        return {"ready": True, "applicability": "N/A_MODULE2_OFF"}
+    if not math.isfinite(timeout_sec) or timeout_sec <= 0.0:
+        raise CausalContractError("cognitive readiness timeout must be finite and positive")
+    try:
+        import rclpy
+        from bio_nav_interfaces.msg import PlanningPrior
+        from diagnostic_msgs.msg import DiagnosticArray
+        from rcl_interfaces.msg import ParameterType
+        from rcl_interfaces.srv import GetParameters
+        from rclpy.context import Context
+        from rclpy.executors import SingleThreadedExecutor
+        from rclpy.qos import QoSProfile, ReliabilityPolicy
+    except ImportError as exc:
+        return {"ready": False, "reason": f"cognitive readiness probe unavailable: {exc}"}
+
+    context = Context()
+    node = None
+    executor = None
+    result: dict[str, Any] | None = None
+    cleanup_errors: list[str] = []
+    diagnostic: dict[str, Any] = {}
+    prior: Any = None
+    parameters: dict[str, str] = {}
+    parameter_future: Any = None
+    expected_parameters = _expected_cognitive_parameters(run.arm)
+    steady_since: float | None = None
+    try:
+        rclpy.init(args=None, context=context)
+        node = rclpy.create_node(
+            f"v6_phase_f_cognitive_probe_{run.arm.lower()}_{os.getpid()}",
+            context=context,
+        )
+        executor = SingleThreadedExecutor(context=context)
+        executor.add_node(node)
+        qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
+
+        def receive_diagnostics(message: Any) -> None:
+            for status in getattr(message, "status", ()):
+                if str(getattr(status, "name", "")) != "bio_nav_ros_bridge":
+                    continue
+                diagnostic.clear()
+                diagnostic.update({
+                    "level": _uint8_value(getattr(status, "level", -1)),
+                    "message": str(getattr(status, "message", "")),
+                    "values": {
+                        str(item.key): str(item.value)
+                        for item in getattr(status, "values", ())
+                    },
+                })
+
+        def receive_prior(message: Any) -> None:
+            nonlocal prior
+            prior = message
+
+        diagnostic_subscription = node.create_subscription(
+            DiagnosticArray, "/diagnostics", receive_diagnostics, qos
+        )
+        prior_subscription = node.create_subscription(
+            PlanningPrior, "/bio_nav/module2/planning_prior", receive_prior, qos
+        )
+        parameter_client = node.create_client(
+            GetParameters, "/bio_nav_ros_bridge/get_parameters"
+        )
+        deadline = time.monotonic() + timeout_sec
+        last_reason = "waiting for Module2 listener, bridge health, parameters, and PlanningPrior"
+        while True:
+            failure = _startup_process_failure(managed)
+            if failure is not None:
+                result = {"ready": False, "reason": failure}
+                break
+            if parameter_future is None and parameter_client.service_is_ready():
+                request = GetParameters.Request()
+                request.names = list(expected_parameters)
+                parameter_future = parameter_client.call_async(request)
+            if parameter_future is not None and parameter_future.done() and not parameters:
+                response = parameter_future.result()
+                values = tuple(getattr(response, "values", ())) if response is not None else ()
+                if len(values) == len(expected_parameters) and all(
+                    _uint8_value(value.type) == int(ParameterType.PARAMETER_STRING)
+                    for value in values
+                ):
+                    parameters.update({
+                        name: str(value.string_value)
+                        for name, value in zip(expected_parameters, values)
+                    })
+                else:
+                    last_reason = "Bridge runtime parameters are unavailable or non-string"
+
+            node_names = {
+                (str(name), str(namespace))
+                for name, namespace in node.get_node_names_and_namespaces()
+            }
+            bridge_node = any(
+                name == "bio_nav_ros_bridge" for name, _namespace in node_names
+            )
+            listener = _unix_socket_listener_active(module2_socket)
+            values = diagnostic.get("values", {})
+            bridge_healthy = (
+                diagnostic.get("level") == 0
+                and values.get("state") == "RUNNING"
+                and values.get("socket_connected", "").lower() == "true"
+            )
+            parameters_ready = parameters == expected_parameters
+            prior_error = (
+                _canonical_prior_error(prior, run.arm) if prior is not None
+                else "PlanningPrior has not been observed"
+            )
+            ready_now = (
+                listener and bridge_node and bridge_healthy
+                and parameters_ready and prior_error is None
+            )
+            now = time.monotonic()
+            if ready_now:
+                if steady_since is None:
+                    steady_since = now
+                if now - steady_since >= 0.10:
+                    result = {
+                        "ready": True,
+                        "applicability": "REQUIRED_COGNITIVE_ARM",
+                        "socket_listener": True,
+                        "bridge_node": True,
+                        "bridge_connected_healthy": True,
+                        "runtime_parameters": dict(parameters),
+                        "planning_prior": {
+                            "map_version": str(prior.map_version),
+                            "valid_state_count": sum(bool(value) for value in prior.valid_state_mask),
+                            "trusted_write": bool(prior.trusted_write),
+                        },
+                    }
+                    break
+            else:
+                steady_since = None
+                missing: list[str] = []
+                if not listener:
+                    missing.append("exact UDS listener")
+                if not bridge_node:
+                    missing.append("Bridge node")
+                if not bridge_healthy:
+                    missing.append("Bridge connected health")
+                if not parameters_ready:
+                    missing.append("arm runtime parameters")
+                if prior_error is not None:
+                    missing.append(prior_error)
+                last_reason = "waiting for " + ", ".join(missing)
+            remaining = deadline - now
+            if remaining <= 0.0:
+                result = {
+                    "ready": False,
+                    "reason": "Module2 cognitive readiness timed out: " + last_reason,
+                    "socket_listener": listener,
+                    "bridge_node": bridge_node,
+                    "bridge_diagnostic": dict(diagnostic),
+                    "runtime_parameters": dict(parameters),
+                    "planning_prior_error": prior_error,
+                }
+                break
+            executor.spin_once(timeout_sec=min(remaining, 0.10))
+        # Keep explicit references until after the executor is stopped.
+        _ = (diagnostic_subscription, prior_subscription, parameter_client)
+    except Exception as exc:
+        result = {
+            "ready": False,
+            "reason": f"cognitive readiness probe failed: {type(exc).__name__}: {exc}",
+        }
+    finally:
+        if executor is not None and node is not None:
+            try:
+                executor.remove_node(node)
+            except Exception as exc:
+                cleanup_errors.append(f"remove_node: {type(exc).__name__}: {exc}")
+        if executor is not None:
+            try:
+                executor.shutdown(timeout_sec=1.0)
+            except Exception as exc:
+                cleanup_errors.append(f"executor_shutdown: {type(exc).__name__}: {exc}")
+        if node is not None:
+            try:
+                node.destroy_node()
+            except Exception as exc:
+                cleanup_errors.append(f"destroy_node: {type(exc).__name__}: {exc}")
+        if context.ok():
+            try:
+                context.shutdown()
+            except Exception as exc:
+                cleanup_errors.append(f"context_shutdown: {type(exc).__name__}: {exc}")
+    if cleanup_errors:
+        return {
+            "ready": False,
+            "reason": "cognitive readiness probe cleanup failed: " + "; ".join(cleanup_errors),
+        }
+    return result or {
+        "ready": False,
+        "reason": "cognitive readiness probe ended without a result",
+    }
+
+
 def _start_process(
     name: str,
     command: Sequence[str],
@@ -2175,6 +2478,8 @@ def _confirm_arm_cleanup(
     running: set[int] = set()
     processes_dead = False
     socket_absent = False
+    socket_listener_active = False
+    socket_connectable = False
     while True:
         attempts += 1
         tracked_pids, tracked_groups, identity_files = _refresh_cleanup_targets(
@@ -2195,7 +2500,6 @@ def _confirm_arm_cleanup(
             for name in ("ros", "isaac")
         }
         stale_runtime_files = sorted(str(path) for path in identity_files if path.exists())
-        socket_absent = not module2_socket.exists()
         now = time.monotonic()
 
         if running:
@@ -2222,6 +2526,32 @@ def _confirm_arm_cleanup(
                 _recorded_cleanup_identities(run_dir)
             )
             stale_runtime_files = sorted(str(path) for path in remaining_files)
+
+            # Only after every exact recorded process is dead may a stale
+            # task-owned pathname be removed.  A live listener/connectable
+            # socket is never unlinked because it has an active owner.
+            socket_listener_active = _unix_socket_listener_active(module2_socket)
+            socket_connectable = (
+                False if socket_listener_active else _unix_socket_connects(module2_socket)
+            )
+            if (
+                not socket_listener_active
+                and not socket_connectable
+                and module2_socket.exists()
+            ):
+                try:
+                    module2_socket.unlink()
+                except OSError:
+                    pass
+        socket_listener_active = _unix_socket_listener_active(module2_socket)
+        socket_connectable = (
+            False if socket_listener_active else _unix_socket_connects(module2_socket)
+        )
+        socket_absent = (
+            not module2_socket.exists()
+            and not socket_listener_active
+            and not socket_connectable
+        )
 
         clean_now = (
             shutdown_rows_valid
@@ -2256,6 +2586,8 @@ def _confirm_arm_cleanup(
         "locks_free": locks,
         "stale_runtime_files": stale_runtime_files,
         "module2_socket_absent": socket_absent,
+        "module2_socket_listener_active": socket_listener_active,
+        "module2_socket_connectable": socket_connectable,
         "tracked_pids": sorted(tracked_pids),
         "tracked_process_groups": sorted(tracked_groups),
         "remaining_process_groups": sorted(running),
@@ -2265,9 +2597,21 @@ def _confirm_arm_cleanup(
     return result
 
 
-def _rosbag_command(bag_dir: Path) -> tuple[str, ...]:
+def _rosbag_command(manifest: CausalManifest, bag_dir: Path) -> tuple[str, ...]:
+    if manifest.module3_root is None:
+        raise CausalContractError(
+            f"Phase-F recorder requires {MODULE3_ROOT_ENV} when using an installed manifest"
+        )
+    qos_path = (
+        manifest.module3_root
+        / "ros2_ws/src/robot_experiments/config"
+        / PHASE_F_QOS_CONFIG
+    )
+    if not qos_path.is_file():
+        raise CausalContractError(f"Phase-F recorder QoS override is unavailable: {qos_path}")
     return (
         "ros2", "bag", "record", "--storage", "mcap",
+        "--qos-profile-overrides-path", str(qos_path),
         "--include-unpublished-topics", "--output", str(bag_dir),
         *DISPATCHER_TOPICS, *PASSIVE_EVALUATOR_TOPICS, *ISOLATION_AUDIT_TOPICS,
     )
@@ -2331,43 +2675,57 @@ def run_campaign(
                 status["state"] = "STARTUP_NOT_READY"
                 status["reason"] = str(startup.get("reason", "startup readiness failed"))
             else:
-                managed.append(_start_process(
-                    "recorder", _rosbag_command(run_dir / "bag"), run_dir / "recorder.log", env=campaign_env
-                ))
-                with (run_dir / "episode.stdout.log").open("w", encoding="utf-8") as stdout:
-                    completed = subprocess.run(
-                        list(row["commands"]["episode"]),
-                        stdout=stdout,
-                        stderr=subprocess.STDOUT,
-                        text=True,
-                        check=False,
-                        env=campaign_env,
+                cognitive_ready = _wait_for_cognitive_ready(
+                    manifest,
+                    run,
+                    managed,
+                    Path(row["setup"]["module2_socket"]),
+                    float(manifest.identity["timeout_sec"]),
+                )
+                status["cognitive_readiness"] = cognitive_ready
+                if cognitive_ready.get("ready") is not True:
+                    status["state"] = "MODULE2_NOT_READY"
+                    status["reason"] = str(
+                        cognitive_ready.get("reason", "Module2 cognitive readiness failed")
                     )
-                status["episode_returncode"] = completed.returncode
-                status["state"] = "EPISODE_FINISHED" if completed.returncode == 0 else "EPISODE_FAILED"
-                if run.arm in {"M2", "M3"}:
-                    producer_stop = row["commands"].get("producer_stop")
-                    if not producer_stop:
-                        raise CausalContractError("active arm requires producer_stop adapter")
-                    with (run_dir / "producer_stop.log").open("w", encoding="utf-8") as stdout:
-                        stopped = subprocess.run(
-                            list(producer_stop),
+                else:
+                    managed.append(_start_process(
+                        "recorder", _rosbag_command(manifest, run_dir / "bag"), run_dir / "recorder.log", env=campaign_env
+                    ))
+                    with (run_dir / "episode.stdout.log").open("w", encoding="utf-8") as stdout:
+                        completed = subprocess.run(
+                            list(row["commands"]["episode"]),
                             stdout=stdout,
                             stderr=subprocess.STDOUT,
                             text=True,
                             check=False,
                             env=campaign_env,
                         )
-                    status["producer_stop_returncode"] = stopped.returncode
-                    if stopped.returncode != 0:
-                        raise CausalContractError("Module2 producer stop adapter failed")
-                    drain_sec = float(manifest.freshness["typed_obstacle_ttl_sec"]) + float(
-                        manifest.freshness["post_producer_stop_observation_margin_sec"]
-                    )
-                    status["ttl_observation_wait_sec"] = drain_sec
-                    time.sleep(drain_sec)
-                else:
-                    status["ttl_observation_wait_sec"] = None
+                    status["episode_returncode"] = completed.returncode
+                    status["state"] = "EPISODE_FINISHED" if completed.returncode == 0 else "EPISODE_FAILED"
+                    if run.arm in {"M2", "M3"}:
+                        producer_stop = row["commands"].get("producer_stop")
+                        if not producer_stop:
+                            raise CausalContractError("active arm requires producer_stop adapter")
+                        with (run_dir / "producer_stop.log").open("w", encoding="utf-8") as stdout:
+                            stopped = subprocess.run(
+                                list(producer_stop),
+                                stdout=stdout,
+                                stderr=subprocess.STDOUT,
+                                text=True,
+                                check=False,
+                                env=campaign_env,
+                            )
+                        status["producer_stop_returncode"] = stopped.returncode
+                        if stopped.returncode != 0:
+                            raise CausalContractError("Module2 producer stop adapter failed")
+                        drain_sec = float(manifest.freshness["typed_obstacle_ttl_sec"]) + float(
+                            manifest.freshness["post_producer_stop_observation_margin_sec"]
+                        )
+                        status["ttl_observation_wait_sec"] = drain_sec
+                        time.sleep(drain_sec)
+                    else:
+                        status["ttl_observation_wait_sec"] = None
         except (OSError, CausalContractError) as exc:
             if status["state"] != "STARTUP_NOT_READY":
                 status["state"] = "ADAPTER_FAILED"
@@ -2510,7 +2868,7 @@ def _footprint_center(value: Any) -> tuple[float, float]:
 def _scan_and_spatial_metrics(samples: Any, tolerance_m: float) -> tuple[int, int, int, int]:
     if not isinstance(samples, list) or not samples:
         raise CausalContractError("synchronized_samples must be a non-empty list")
-    synchronized = invisible = matched = total = 0
+    synchronized = invisible = matched = total = valid_scan_samples = 0
     for index, raw_sample in enumerate(samples):
         sample = _mapping(raw_sample, f"synchronized_samples[{index}]")
         stamp = sample.get("stamp_ns")
@@ -2562,6 +2920,12 @@ def _scan_and_spatial_metrics(samples: Any, tolerance_m: float) -> tuple[int, in
         scan_valid = sample.get("scan_valid")
         if not isinstance(scan_valid, bool):
             raise CausalContractError(f"synchronized_samples[{index}].scan_valid invalid")
+        if scan_hits != 0:
+            raise CausalContractError(
+                f"synchronized_samples[{index}] low-obstacle scan hit count must be zero"
+            )
+        if scan_valid and scan_points > 0:
+            valid_scan_samples += 1
         if footprints and scan_valid and scan_points > 0 and scan_hits == 0:
             invisible += 1
         centers = tuple(_footprint_center(item) for item in footprints)
@@ -2591,12 +2955,14 @@ def _scan_and_spatial_metrics(samples: Any, tolerance_m: float) -> tuple[int, in
                 )
             if computed_error is not None and computed_error <= tolerance_m:
                 matched += 1
+    if valid_scan_samples == 0:
+        raise CausalContractError("no synchronized non-empty /scan sample was recorded")
     return synchronized, invisible, matched, total
 
 
 REQUIRED_EVIDENCE_KEYS = (
     "run_id", "repeat", "arm", "identity", "reset", "freshness",
-    "synchronized_samples", "obstacle_validation", "layer", "critic",
+    "sensor_counts", "synchronized_samples", "obstacle_validation", "layer", "critic",
     "planning_prior", "costmaps", "plan", "optimal_trajectory", "odom",
     "cmd_vel", "passive", "action", "route", "module2_health", "isolation",
     "navigation_metrics",
@@ -2690,6 +3056,14 @@ def _evaluate_run(manifest: CausalManifest, run: RunContract, path: Path) -> tup
                 raise CausalContractError(f"costmaps.{key} missing")
 
         tolerance = float(manifest.criteria["typed_spatial_match_tolerance_m"])
+        sensor_counts = _mapping(row["sensor_counts"], "sensor_counts")
+        scan_message_count = sensor_counts.get("scan_message_count")
+        if (
+            isinstance(scan_message_count, bool)
+            or not isinstance(scan_message_count, int)
+            or scan_message_count <= 0
+        ):
+            raise CausalContractError("/scan message count must be positive")
         synchronized, invisible, matches, spatial_total = _scan_and_spatial_metrics(
             row["synchronized_samples"], tolerance
         )
@@ -2755,12 +3129,13 @@ def _evaluate_run(manifest: CausalManifest, run: RunContract, path: Path) -> tup
         success = _bool(passive.get("success"), "passive.success")
         action = _mapping(row["action"], "action")
         terminal_zero = _bool(action.get("terminal_zero_confirmed"), "action.terminal_zero_confirmed")
-        if collision:
-            verdict, reasons = "STOP_COLLISION", ("collision",)
-        elif not terminal_zero:
-            verdict, reasons = "STOP_TERMINAL_ZERO", ("terminal_zero_not_confirmed",)
-        elif not success or action.get("state") != "SUCCEEDED":
-            verdict, reasons = "STOP_ROUTE", (str(action.get("stop_reason") or "route_not_succeeded"),)
+        if not terminal_zero:
+            raise CausalContractError("terminal_zero_not_confirmed")
+        if verdict == "VALID":
+            if collision:
+                reasons = ("collision",)
+            elif not success or action.get("state") != "SUCCEEDED":
+                reasons = (str(action.get("stop_reason") or "route_not_succeeded"),)
 
         critic_reason = str(critic.get("reason", critic.get("fallback_reason", "")))
         online_applied = (
@@ -2881,7 +3256,7 @@ def evaluate(
         ordered_results.append(result)
         evaluated[(run.repeat, run.arm)] = (result, data)
 
-    invalid = [result.run_id for result in ordered_results if result.verdict != "VALID"]
+    invalid = [result.run_id for result in ordered_results if result.verdict == "INVALID"]
     reasons: list[str] = []
     m1_m0: list[PairResult] = []
     m2_m1: list[PairResult] = []
@@ -2914,9 +3289,10 @@ def evaluate(
             if statistics.median(pair.clearance_gain_m for pair in pairs) < clearance_threshold:
                 reasons.append(f"{arm}_median_clearance_gain_below_threshold")
             active_results = [evaluated[(repeat, arm)][0] for repeat in repeats]
-            baselines = [evaluated[(repeat, "M1")][0] for repeat in repeats]
-            if any(active.collision and not baseline.collision for active, baseline in zip(active_results, baselines)):
-                reasons.append(f"{arm}_new_collision")
+            if any(active.collision for active in active_results):
+                reasons.append(f"{arm}_collision_safety_stop")
+            if any(not active.success and not active.collision for active in active_results):
+                reasons.append(f"{arm}_navigation_failed")
             directions = {result.reroute_direction for result in active_results}
             if len(directions) != 1 or directions & {"unknown", "straight"}:
                 reasons.append(f"{arm}_reroute_direction_inconsistent")

@@ -1,0 +1,17 @@
+/scan:
+  history: keep_last
+  depth: 10
+  reliability: best_effort
+  durability: volatile
+
+/camera/front/depth/image_raw:
+  history: keep_last
+  depth: 10
+  reliability: best_effort
+  durability: volatile
+
+/camera/front/camera_info:
+  history: keep_last
+  depth: 10
+  reliability: best_effort
+  durability: volatile

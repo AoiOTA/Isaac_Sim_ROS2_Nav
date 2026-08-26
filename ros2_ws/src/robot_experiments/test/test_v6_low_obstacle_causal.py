@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import socket
 import struct
 import subprocess
 import sys
@@ -105,6 +106,11 @@ def _evidence(manifest, run, *, stale=False, omit=None, m3_same_as_m2=False):
             ),
             "critic_post_expiry_applied": False if run.arm == "M3" else None,
             "critic_stale_active_probe": "NOT_RUN" if run.arm == "M3" else None,
+        },
+        "sensor_counts": {
+            "scan_message_count": 1,
+            "depth_message_count": 1,
+            "camera_info_message_count": 1,
         },
         "synchronized_samples": [{
             "stamp_ns": 123000000,
@@ -432,25 +438,96 @@ def test_missing_evidence_is_invalid(tmp_path):
     assert "missing evidence: costmaps" in result.reasons[0]
 
 
-@pytest.mark.parametrize(
-    ("mutation", "expected"),
-    [
-        ({"passive": {"collision": True}}, "STOP_COLLISION"),
-        ({"action": {"terminal_zero_confirmed": False}}, "STOP_TERMINAL_ZERO"),
-    ],
-)
-def test_collision_and_missing_terminal_zero_are_retained_stop_results(tmp_path, mutation, expected):
+@pytest.mark.parametrize("arm_name", ["M0", "M1"])
+@pytest.mark.parametrize("outcome", ["collision", "navigation_failed"])
+def test_baseline_collision_and_navigation_failure_are_valid_causal_rows(
+    tmp_path, arm_name, outcome
+):
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    run = next(item for item in manifest.runs if item.arm == arm_name)
+    row = _evidence(manifest, run)
+    row["passive"]["success"] = False
+    if outcome == "collision":
+        row["passive"]["collision"] = True
+    else:
+        row["action"].update({"state": "FAILED", "stop_reason": "navigation_failed"})
+    (tmp_path / f"{run.run_id}.json").write_text(json.dumps(row), encoding="utf-8")
+    summary = evaluate(manifest, tmp_path)
+    result = next(item for item in summary.runs if item.run_id == run.run_id)
+    assert result.verdict == "VALID"
+    assert result.success is False
+    assert result.reasons == (("collision",) if outcome == "collision" else ("navigation_failed",))
+    assert summary.verdict != "INVALID"
+    assert summary.m1_vs_m0
+
+
+def test_missing_terminal_zero_is_invalid_evidence(tmp_path):
     manifest = load_manifest(CONFIG)
     _write_evidence(tmp_path, manifest)
     run = manifest.runs[0]
     row = _evidence(manifest, run)
-    for section, values in mutation.items():
-        row[section].update(values)
+    row["action"]["terminal_zero_confirmed"] = False
     (tmp_path / f"{run.run_id}.json").write_text(json.dumps(row), encoding="utf-8")
     summary = evaluate(manifest, tmp_path)
     result = next(item for item in summary.runs if item.run_id == run.run_id)
-    assert result.verdict == expected
+    assert result.verdict == "INVALID"
+    assert result.reasons == ("terminal_zero_not_confirmed",)
     assert summary.verdict == "INVALID"
+
+
+def test_active_collision_is_valid_evidence_but_safety_fails_campaign(tmp_path):
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    run = next(item for item in manifest.runs if item.arm == "M2")
+    row = _evidence(manifest, run)
+    row["passive"].update({"collision": True, "success": False})
+    (tmp_path / f"{run.run_id}.json").write_text(json.dumps(row), encoding="utf-8")
+    summary = evaluate(manifest, tmp_path)
+    result = next(item for item in summary.runs if item.run_id == run.run_id)
+    assert result.verdict == "VALID"
+    assert result.collision is True
+    assert summary.verdict == "FAIL"
+    assert "M2_collision_safety_stop" in summary.reasons
+
+
+def test_m1_missing_uds_is_invalid_evidence(tmp_path):
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    run = next(item for item in manifest.runs if item.arm == "M1")
+    row = _evidence(manifest, run)
+    row["module2_uds_connected"] = False
+    (tmp_path / f"{run.run_id}.json").write_text(json.dumps(row), encoding="utf-8")
+    summary = evaluate(manifest, tmp_path)
+    result = next(item for item in summary.runs if item.run_id == run.run_id)
+    assert result.verdict == "INVALID"
+    assert result.reasons == ("M1 requires Module2 UDS evidence",)
+
+
+def test_zero_scan_message_count_is_invalid_not_lidar_invisibility(tmp_path):
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    run = manifest.runs[0]
+    row = _evidence(manifest, run)
+    row["sensor_counts"]["scan_message_count"] = 0
+    (tmp_path / f"{run.run_id}.json").write_text(json.dumps(row), encoding="utf-8")
+    summary = evaluate(manifest, tmp_path)
+    result = next(item for item in summary.runs if item.run_id == run.run_id)
+    assert result.verdict == "INVALID"
+    assert result.reasons == ("/scan message count must be positive",)
+
+
+def test_low_obstacle_scan_hit_is_invalid_for_invisibility_claim(tmp_path):
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    run = manifest.runs[0]
+    row = _evidence(manifest, run)
+    row["synchronized_samples"][0]["scan_hits_in_obstacle_footprints"] = 1
+    (tmp_path / f"{run.run_id}.json").write_text(json.dumps(row), encoding="utf-8")
+    summary = evaluate(manifest, tmp_path)
+    result = next(item for item in summary.runs if item.run_id == run.run_id)
+    assert result.verdict == "INVALID"
+    assert "low-obstacle scan hit count must be zero" in result.reasons[0]
 
 
 def test_recorder_reduces_synthetic_messages_to_required_real_fields():
@@ -578,6 +655,7 @@ def test_recorder_reduces_synthetic_messages_to_required_real_fields():
     assert evidence["freshness"]["critic_ttl_status"] == "N/A_NO_CONTROLLER_SCORING"
     assert evidence["freshness"]["critic_post_expiry_applied"] is False
     assert evidence["freshness"]["critic_stale_active_probe"] == "NOT_RUN"
+    assert evidence["sensor_counts"]["scan_message_count"] == 1
     assert evidence["synchronized_samples"][0]["scan_point_count"] == 80
     assert evidence["synchronized_samples"][0]["depth_observation_valid"] is True
     assert evidence["synchronized_samples"][0]["rgbd_obstacle_footprints"][0]["source"] == "projected_depth_points"
@@ -899,6 +977,9 @@ def test_plan_dispatch_requires_all_three_adapters_and_constructs_commands(tmp_p
     )
     assert exact["runs"][3]["commands"]["episode"][1] == "dispatch-episode"
     assert exact["runs"][2]["commands"]["producer_stop"][1] == "stop-producer"
+    assert exact["runs"][2]["commands"]["producer_stop"][-2:] == (
+        "--socket", exact["runs"][2]["setup"]["module2_socket"],
+    )
 
 
 def test_copy_installed_manifest_resolves_phase_f_assets_without_cwd(
@@ -941,7 +1022,7 @@ def test_copy_installed_manifest_resolves_phase_f_assets_without_cwd(
 
 
 def _run_campaign_with_fake_processes(
-    tmp_path, monkeypatch, *, clear, startup_ready=True
+    tmp_path, monkeypatch, *, clear, startup_ready=True, cognitive_ready=True
 ):
     manifest = load_manifest(CONFIG)
     run = next(row for row in manifest.runs if row.arm == "M2")
@@ -969,6 +1050,13 @@ def _run_campaign_with_fake_processes(
         events.append(("cleanup", None))
         return {"ok": True}
 
+    def fake_cognitive(manifest_value, run_value, managed, socket, timeout_sec):
+        events.append(("cognitive_readiness_before_episode", run_value.arm))
+        return {
+            "ready": cognitive_ready,
+            "reason": "ready" if cognitive_ready else "timeout",
+        }
+
     def fake_run(command, **kwargs):
         events.append(("run", command[0]))
         return SimpleNamespace(returncode=0)
@@ -987,6 +1075,7 @@ def _run_campaign_with_fake_processes(
     monkeypatch.setattr(causal, "_start_process", fake_start)
     monkeypatch.setattr(causal, "_stop_process", fake_stop)
     monkeypatch.setattr(causal, "_wait_for_startup_ready", fake_wait)
+    monkeypatch.setattr(causal, "_wait_for_cognitive_ready", fake_cognitive)
     monkeypatch.setattr(causal, "_confirm_arm_cleanup", fake_cleanup)
     monkeypatch.setattr(causal.subprocess, "run", fake_run)
     monkeypatch.setattr(causal.time, "sleep", fake_sleep)
@@ -1008,7 +1097,8 @@ def test_campaign_stops_producer_then_records_ttl_clear_before_stack_shutdown(
     assert summary["runs"][0]["state"] == "EPISODE_FINISHED"
     assert events == [
         ("start", "scene"), ("start", "stack"),
-        ("startup_reset_event_before_episode", 1), ("start", "recorder"),
+        ("startup_reset_event_before_episode", 1),
+        ("cognitive_readiness_before_episode", "M2"), ("start", "recorder"),
         ("run", "/episode"), ("run", "/producer-stop"),
         ("sleep", pytest.approx(1.5)),
         ("stop", "stack"), ("stop", "recorder"), ("stop", "scene"),
@@ -1030,6 +1120,138 @@ def test_campaign_startup_timeout_never_starts_recorder_or_episode(
         ("start", "scene"), ("start", "stack"),
         ("startup_reset_event_before_episode", 1),
     ]
+
+
+def test_campaign_cognitive_timeout_never_starts_recorder_or_episode(
+    tmp_path, monkeypatch
+):
+    summary, events = _run_campaign_with_fake_processes(
+        tmp_path,
+        monkeypatch,
+        clear=True,
+        startup_ready=True,
+        cognitive_ready=False,
+    )
+    assert summary["runs"][0]["state"] == "MODULE2_NOT_READY"
+    assert ("cognitive_readiness_before_episode", "M2") in events
+    assert ("start", "recorder") not in events
+    assert not any(event[0] == "run" for event in events)
+
+
+def _canonical_prior(*, trusted=False):
+    mask = [False] * 256
+    for state_id in causal.KUJIALE_VALID_STATE_IDS:
+        mask[state_id] = True
+    return SimpleNamespace(
+        schema_version="bio_nav_planning_prior_v310",
+        map_version=causal.KUJIALE_MAP_VERSION,
+        t_map_canvas=list(causal.KUJIALE_T_MAP_CANVAS),
+        valid_state_mask=mask,
+        trusted_write=trusted,
+    )
+
+
+def test_cognitive_prior_rejects_wrong_mask_and_m1_trusted_write():
+    wrong_mask = _canonical_prior()
+    wrong_mask.valid_state_mask[0] = True
+    assert "canonical 51-state mask" in causal._canonical_prior_error(wrong_mask, "M1")
+    assert "untrusted shadow" in causal._canonical_prior_error(
+        _canonical_prior(trusted=True), "M1"
+    )
+    assert causal._canonical_prior_error(_canonical_prior(trusted=True), "M2") is None
+
+
+def test_cognitive_runtime_modes_are_arm_specific():
+    assert causal._expected_cognitive_parameters("M1") == {
+        "startup_profile": "estimated_shadow",
+        "module2_mode": "shadow",
+        "active_effect_scope": "none",
+    }
+    assert causal._expected_cognitive_parameters("M2") == {
+        "startup_profile": "module2_causal_obstacle_active",
+        "module2_mode": "active",
+        "active_effect_scope": "obstacle_only",
+    }
+
+
+def test_cognitive_readiness_waits_for_delayed_socket_and_canonical_prior(tmp_path):
+    rclpy = pytest.importorskip("rclpy")
+    from bio_nav_interfaces.msg import PlanningPrior
+    from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
+    from rclpy.context import Context
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.qos import QoSProfile, ReliabilityPolicy
+
+    context = Context()
+    rclpy.init(args=None, context=context)
+    node = rclpy.create_node("bio_nav_ros_bridge", context=context)
+    for name, value in causal._expected_cognitive_parameters("M1").items():
+        node.declare_parameter(name, value)
+    qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
+    diagnostic_publisher = node.create_publisher(DiagnosticArray, "/diagnostics", qos)
+    prior_publisher = node.create_publisher(
+        PlanningPrior, "/bio_nav/module2/planning_prior", qos
+    )
+    executor = SingleThreadedExecutor(context=context)
+    executor.add_node(node)
+    stop = threading.Event()
+    socket_path = tmp_path / "delayed.sock"
+    server_holder = []
+    started = time.monotonic()
+
+    def publish() -> None:
+        while not stop.wait(0.02):
+            executor.spin_once(timeout_sec=0.0)
+            if time.monotonic() - started < 0.15:
+                continue
+            if not server_holder:
+                server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                server.bind(str(socket_path))
+                server.listen(1)
+                server_holder.append(server)
+            diagnostic = DiagnosticArray()
+            status = DiagnosticStatus()
+            status.name = "bio_nav_ros_bridge"
+            status.level = DiagnosticStatus.OK
+            status.message = "ready"
+            status.values = [
+                KeyValue(key="state", value="RUNNING"),
+                KeyValue(key="socket_connected", value="True"),
+            ]
+            diagnostic.status = [status]
+            diagnostic_publisher.publish(diagnostic)
+            prior = PlanningPrior()
+            prior.schema_version = "bio_nav_planning_prior_v310"
+            prior.map_version = causal.KUJIALE_MAP_VERSION
+            prior.t_map_canvas = list(causal.KUJIALE_T_MAP_CANVAS)
+            mask = [False] * 256
+            for state_id in causal.KUJIALE_VALID_STATE_IDS:
+                mask[state_id] = True
+            prior.valid_state_mask = mask
+            prior.trusted_write = False
+            prior_publisher.publish(prior)
+
+    thread = threading.Thread(target=publish, daemon=True)
+    thread.start()
+    manifest = load_manifest(CONFIG)
+    run = next(item for item in manifest.runs if item.arm == "M1")
+    try:
+        result = causal._wait_for_cognitive_ready(
+            manifest, run, (), socket_path, timeout_sec=5.0
+        )
+        assert result["ready"] is True, result
+        assert result["socket_listener"] is True
+        assert result["planning_prior"]["valid_state_count"] == 51
+        assert time.monotonic() - started >= 0.15
+    finally:
+        stop.set()
+        thread.join(timeout=1.0)
+        executor.shutdown(timeout_sec=1.0)
+        node.destroy_node()
+        context.shutdown()
+        for server in server_holder:
+            server.close()
+        socket_path.unlink(missing_ok=True)
 
 
 def test_startup_probe_private_context_reaches_ready_without_global_executor():
@@ -1358,6 +1580,65 @@ def test_cleanup_timeout_fails_closed_for_unknown_lock_holder(tmp_path):
     assert result["locks_free"]["ros"] is False
 
 
+def test_cleanup_removes_stale_exact_socket_and_next_arm_sees_none(tmp_path):
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    socket_path = tmp_path / "module2.sock"
+    stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    stale.bind(str(socket_path))
+    stale.close()
+    assert socket_path.exists()
+    first = causal._confirm_arm_cleanup(
+        tmp_path,
+        socket_path,
+        ({"name": "stack", "returncode": 0, "cleanup_ok": True},),
+        {"ISAAC_NAV_RUNTIME_DIR": str(runtime_dir)},
+        timeout_sec=0.5,
+        quiet_sec=0.05,
+        poll_sec=0.01,
+    )
+    assert first["ok"] is True
+    assert first["module2_socket_absent"] is True
+    assert not socket_path.exists()
+    second = causal._confirm_arm_cleanup(
+        tmp_path,
+        socket_path,
+        ({"name": "stack", "returncode": 0, "cleanup_ok": True},),
+        {"ISAAC_NAV_RUNTIME_DIR": str(runtime_dir)},
+        timeout_sec=0.5,
+        quiet_sec=0.05,
+        poll_sec=0.01,
+    )
+    assert second["ok"] is True
+    assert not socket_path.exists()
+
+
+def test_cleanup_never_unlinks_active_exact_socket_listener(tmp_path):
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    socket_path = tmp_path / "module2.sock"
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(str(socket_path))
+    server.listen(1)
+    try:
+        assert causal._unix_socket_listener_active(socket_path) is True
+        result = causal._confirm_arm_cleanup(
+            tmp_path,
+            socket_path,
+            ({"name": "stack", "returncode": 0, "cleanup_ok": True},),
+            {"ISAAC_NAV_RUNTIME_DIR": str(runtime_dir)},
+            timeout_sec=0.15,
+            quiet_sec=0.05,
+            poll_sec=0.01,
+        )
+        assert result["ok"] is False
+        assert result["module2_socket_listener_active"] is True
+        assert socket_path.exists()
+    finally:
+        server.close()
+        socket_path.unlink(missing_ok=True)
+
+
 def test_phase_f_stack_trap_cleans_its_nested_new_process_group(tmp_path):
     root = PACKAGE.parents[2]
     project = tmp_path / "project"
@@ -1484,6 +1765,10 @@ def test_campaign_releases_ros_and_isaac_locks_before_arm_two(
         },
     )
     monkeypatch.setattr(
+        causal, "_wait_for_cognitive_ready",
+        lambda *args, **kwargs: {"ready": True},
+    )
+    monkeypatch.setattr(
         causal.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0)
     )
     monkeypatch.setattr(
@@ -1574,6 +1859,9 @@ def test_exact_stack_adapter_maps_profiles_and_keeps_phase_f_isolation():
     assert "cognitive_place_graph" not in stack
     assert "initialpose" not in stack
     assert '[[ "${1:-}" == "stop-producer" ]]' in stack
+    assert "cleanup_exact_socket" in stack
+    assert "socket_has_listener" in stack
+    assert "refusing to unlink active Module2 socket" in stack
     assert 'wait "${module3_pid}"' in stack
     assert "setsid --wait --" in stack
     assert "descendant_groups" in stack
@@ -1587,6 +1875,25 @@ def test_exact_stack_adapter_maps_profiles_and_keeps_phase_f_isolation():
     assert "run_ros_profile gvg fail_closed auto M3 mixed final" in wrapper
     assert "cognitive_graph_mode:=\"${graph_mode}\"" in wrapper
     assert "run_v6_r5_phase_b_kujiale.sh\" isaac" in wrapper
+
+
+def test_phase_f_recorder_uses_explicit_best_effort_sensor_qos(tmp_path):
+    manifest = load_manifest(CONFIG)
+    command = causal._rosbag_command(manifest, tmp_path / "bag")
+    option = command.index("--qos-profile-overrides-path")
+    qos_path = Path(command[option + 1])
+    assert qos_path.name == causal.PHASE_F_QOS_CONFIG
+    assert qos_path.is_file()
+    qos = causal.yaml.safe_load(qos_path.read_text(encoding="utf-8"))
+    for topic in (
+        "/scan",
+        "/camera/front/depth/image_raw",
+        "/camera/front/camera_info",
+    ):
+        assert qos[topic]["reliability"] == "best_effort"
+        assert qos[topic]["durability"] == "volatile"
+    assert command[command.index("--output") + 1] == str(tmp_path / "bag")
+    assert "/scan" in command
 
 
 def _run_low_obstacle_wrapper(tmp_path, *arguments):

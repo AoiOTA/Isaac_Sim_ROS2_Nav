@@ -6,7 +6,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
   echo "usage: $0 M0|M1|M2|M3 --domain ID --run-dir PATH --socket PATH [--module2-root PATH]" >&2
-  echo "       $0 stop-producer --run-dir PATH" >&2
+  echo "       $0 stop-producer --run-dir PATH --socket PATH" >&2
 }
 
 group_is_running() {
@@ -30,6 +30,71 @@ wait_group_exit() {
     sleep 0.05
   done
   ! group_is_running "${pgid}"
+}
+
+socket_has_listener() {
+  local path="$1"
+  awk -v target="${path}" '
+    NR > 1 && $8 == target && $4 == "00010000" && $5 == "0001" { found = 1 }
+    END { exit !found }
+  ' /proc/net/unix
+}
+
+socket_connects() {
+  python3 - "$1" <<'PY'
+import socket
+import sys
+
+probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+probe.settimeout(0.05)
+try:
+    probe.connect(sys.argv[1])
+except OSError:
+    raise SystemExit(1)
+finally:
+    probe.close()
+PY
+}
+
+module2_recorded_process_running() {
+  local directory="$1" name pid pgid
+  for name in module2_server integration_bridge; do
+    if [[ -f "${directory}/${name}.identity" ]]; then
+      read -r pid pgid <"${directory}/${name}.identity" || return 0
+    elif [[ -f "${directory}/${name}.pid" && -f "${directory}/${name}.pgid" ]]; then
+      read -r pid <"${directory}/${name}.pid" || return 0
+      read -r pgid <"${directory}/${name}.pgid" || return 0
+    else
+      continue
+    fi
+    [[ "${pgid}" =~ ^[1-9][0-9]*$ ]] && group_is_running "${pgid}" && return 0
+    if [[ "${pid}" =~ ^[1-9][0-9]*$ && -r "/proc/${pid}/stat" ]]; then
+      [[ "$(awk '{print $3}' "/proc/${pid}/stat" 2>/dev/null)" == Z ]] || return 0
+    fi
+  done
+  return 1
+}
+
+cleanup_exact_socket() {
+  local directory="$1" path="$2" check
+  local quiet_checks="${BIO_NAV_PHASE_F_CLEANUP_QUIET_CHECKS:-5}"
+  if module2_recorded_process_running "${directory}"; then
+    echo "refusing socket cleanup while recorded Module2/Bridge process is active: ${path}" >&2
+    return 1
+  fi
+  if socket_has_listener "${path}" || socket_connects "${path}"; then
+    echo "refusing to unlink active Module2 socket: ${path}" >&2
+    return 1
+  fi
+  rm -f -- "${path}"
+  for ((check=0; check<quiet_checks; check++)); do
+    if [[ -e "${path}" || -S "${path}" ]] \
+      || socket_has_listener "${path}" || socket_connects "${path}"; then
+      echo "Module2 socket reappeared during cleanup quiet window: ${path}" >&2
+      return 1
+    fi
+    sleep 0.05
+  done
 }
 
 stop_registered_group() {
@@ -70,16 +135,19 @@ stop_registered_group() {
 if [[ "${1:-}" == "stop-producer" ]]; then
   shift
   producer_run_dir=""
+  producer_socket=""
   while (($#)); do
     case "$1" in
       --run-dir) producer_run_dir="${2:?--run-dir requires a path}"; shift 2 ;;
+      --socket) producer_socket="${2:?--socket requires a path}"; shift 2 ;;
       *) usage; echo "unknown argument: $1" >&2; exit 2 ;;
     esac
   done
-  [[ "${producer_run_dir}" == /* ]] || { usage; exit 2; }
+  [[ "${producer_run_dir}" == /* && "${producer_socket}" == /* ]] || { usage; exit 2; }
   for name in integration_bridge module2_server; do
     stop_registered_group "${name}" "${producer_run_dir}" || exit 1
   done
+  cleanup_exact_socket "${producer_run_dir}" "${producer_socket}" || exit 1
   exit 0
 fi
 
@@ -122,7 +190,7 @@ if [[ "${arm}" != "M0" ]]; then
   require_file "${integration_root}/scripts/run_v6_module2_causal_obstacle_server.sh"
 fi
 mkdir -p "${run_dir}" "$(dirname "${socket_path}")"
-rm -f "${socket_path}"
+cleanup_exact_socket "${run_dir}" "${socket_path}"
 
 declare -a child_names=()
 declare -a child_pids=()
@@ -236,7 +304,7 @@ shutdown() {
     wait_group_exit "${pgid}" 100 || failed=true
   done
   for pid in "${child_pids[@]}"; do wait "${pid}" 2>/dev/null || true; done
-  rm -f "${socket_path}"
+  cleanup_exact_socket "${run_dir}" "${socket_path}" || failed=true
   for index in "${!child_names[@]}"; do
     rm -f "${run_dir}/${child_names[index]}.identity" \
       "${run_dir}/${child_names[index]}.pid" "${run_dir}/${child_names[index]}.pgid"
