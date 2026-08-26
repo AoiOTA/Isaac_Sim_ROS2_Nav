@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import signal
 import subprocess
+import time
 
 import pytest
 
@@ -24,6 +27,7 @@ PACKAGE = Path(__file__).resolve().parents[1]
 REPO = PACKAGE.parents[2]
 CONFIG = PACKAGE / "config/v6_phase_g_causal.yaml"
 WRAPPER = REPO / "scripts/run_v6_phase_g_causal.sh"
+STACK = REPO / "scripts/run_v6_cognitive_graph_causal_stack.sh"
 
 
 def _result(
@@ -361,6 +365,122 @@ def test_wrapper_cli_matches_stack_contract_and_mcap_reuse() -> None:
     ):
         assert fragment in source
     subprocess.run(["bash", "-n", str(WRAPPER)], check=True)
+
+
+def test_stack_waits_for_delayed_setsid_groups_and_cleans_up(tmp_path: Path) -> None:
+    scripts = tmp_path / "scripts"
+    (scripts / "lib").mkdir(parents=True)
+    stack = scripts / STACK.name
+    stack.write_text(STACK.read_text(encoding="utf-8"), encoding="utf-8")
+    (scripts / "lib/common.sh").write_text(
+        """#!/usr/bin/env bash
+require_directory() { [[ -d "$1" ]]; }
+require_file() { [[ -f "$1" ]]; }
+source_ros() { :; }
+""",
+        encoding="utf-8",
+    )
+    long_running = """#!/usr/bin/env bash
+trap 'exit 0' INT TERM HUP
+while :; do sleep 0.05; done
+"""
+    module3 = scripts / "run_v6_kujiale_low_obstacles.sh"
+    module3.write_text(long_running, encoding="utf-8")
+
+    integration = tmp_path / "integration"
+    integration_script = (
+        integration / "scripts/run_v6_module2_graph_causal_server.sh"
+    )
+    integration_script.parent.mkdir(parents=True)
+    integration_script.write_text(long_running, encoding="utf-8")
+    candidate = integration / (
+        "ros2_ws/src/bio_nav_ros_bridge/config/"
+        "kujiale_0026_run4_read_only_shadow_candidate.json"
+    )
+    candidate.parent.mkdir(parents=True)
+    candidate.touch()
+    module2_config = tmp_path / (
+        "module2/configs/kujiale_0026_module1_visual_shadow_v310.yaml"
+    )
+    module2_config.parent.mkdir(parents=True)
+    module2_config.touch()
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    ros2 = fake_bin / "ros2"
+    ros2.write_text(long_running, encoding="utf-8")
+    delayed_setsid = fake_bin / "setsid"
+    delayed_setsid.write_text(
+        """#!/usr/bin/env bash
+sleep "${FAKE_SETSID_DELAY_SEC}"
+/usr/bin/setsid "$@" &
+wait "$!"
+""",
+        encoding="utf-8",
+    )
+    for executable in (stack, module3, integration_script, ros2, delayed_setsid):
+        executable.chmod(0o755)
+
+    run_dir = tmp_path / "run"
+    socket_path = tmp_path / "socket/module2.sock"
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{fake_bin}:{env['PATH']}",
+            "BIO_NAV_INTEGRATION_ROOT": str(integration),
+            "BIO_NAV_MODULE2_V310_ROOT": str(module2_config.parents[1]),
+            "FAKE_SETSID_DELAY_SEC": "0.08",
+        }
+    )
+    process = subprocess.Popen(
+        [
+            str(stack),
+            "--arm", "G3",
+            "--domain", "150",
+            "--run-dir", str(run_dir),
+            "--socket", str(socket_path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+        env=env,
+    )
+    names = ("module3_ros", "module2_server", "integration_bridge")
+    identities: dict[str, tuple[int, int]] = {}
+    deadline = time.monotonic() + 8.0
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            break
+        if all((run_dir / f"{name}.identity").is_file() for name in names):
+            identities = {
+                name: tuple(
+                    int(value)
+                    for value in (run_dir / f"{name}.identity")
+                    .read_text(encoding="utf-8")
+                    .split()
+                )
+                for name in names
+            }
+            break
+        time.sleep(0.02)
+    try:
+        assert process.poll() is None, process.stdout.read() if process.stdout else ""
+        assert set(identities) == set(names)
+        assert len({pgid for _pid, pgid in identities.values()}) == len(names)
+        for pid, pgid in identities.values():
+            assert pid == pgid
+            assert pgid != process.pid
+            assert os.getpgid(pid) == pgid
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGINT)
+        output, _ = process.communicate(timeout=10.0)
+    assert process.returncode == 130, output
+    assert not list(run_dir.glob("*.identity"))
+    for pid, _pgid in identities.values():
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
 
 
 def test_setup_installs_phase_g_console_entry() -> None:

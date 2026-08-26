@@ -176,6 +176,13 @@ process_group_of_pid() {
   ps -o pgid= -p "$1" 2>/dev/null | tr -d '[:space:]'
 }
 
+process_is_running() {
+  local pid="$1" state
+  [[ "${pid}" =~ ^[1-9][0-9]*$ && -r "/proc/${pid}/stat" ]] || return 1
+  state="$(awk '{print $3}' "/proc/${pid}/stat" 2>/dev/null)"
+  [[ -n "${state}" && "${state}" != Z ]]
+}
+
 group_is_running() {
   local pgid="$1"
   ps -eo pgid=,stat= | awk -v group="${pgid}" '
@@ -184,26 +191,74 @@ group_is_running() {
   '
 }
 
+descendant_pids() {
+  local root_pid="$1" current child
+  local -a queue=("${root_pid}")
+  local -A seen=(["${root_pid}"]=1)
+  while ((${#queue[@]})); do
+    current="${queue[0]}"
+    queue=("${queue[@]:1}")
+    while read -r child; do
+      [[ "${child}" =~ ^[1-9][0-9]*$ && -z "${seen[${child}]:-}" ]] || continue
+      seen["${child}"]=1
+      queue+=("${child}")
+      printf '%s\n' "${child}"
+    done < <(ps -o pid= --ppid "${current}" 2>/dev/null || true)
+  done
+}
+
+independent_group_candidate() {
+  local root_pid="$1" own_pgid="$2" candidate pgid
+  if process_is_running "${root_pid}"; then
+    pgid="$(process_group_of_pid "${root_pid}")"
+    if [[ "${pgid}" =~ ^[1-9][0-9]*$ && "${pgid}" != "${own_pgid}" ]]; then
+      printf '%s %s\n' "${root_pid}" "${pgid}"
+      return 0
+    fi
+  fi
+  while read -r candidate; do
+    process_is_running "${candidate}" || continue
+    pgid="$(process_group_of_pid "${candidate}")"
+    [[ "${pgid}" =~ ^[1-9][0-9]*$ && "${pgid}" != "${own_pgid}" ]] || continue
+    printf '%s %s\n' "${candidate}" "${pgid}"
+    return 0
+  done < <(descendant_pids "${root_pid}")
+  return 1
+}
+
 register_child() {
-  local name="$1" pid="$2" pgid="" own_pgid attempt
-  for ((attempt=0; attempt<100; attempt++)); do
-    pgid="$(process_group_of_pid "${pid}")"
-    [[ "${pgid}" =~ ^[1-9][0-9]*$ ]] && break
+  local name="$1" pid="$2" own_pgid anchor_pid="" pgid="" attempt candidate
+  local previous_anchor="" previous_pgid="" stable_checks=0
+  own_pgid="$(process_group_of_pid "$$")"
+  for ((attempt=0; attempt<200; attempt++)); do
+    candidate="$(independent_group_candidate "${pid}" "${own_pgid}" || true)"
+    if read -r anchor_pid pgid <<<"${candidate}" \
+        && [[ "${anchor_pid}" =~ ^[1-9][0-9]*$ \
+        && "${pgid}" =~ ^[1-9][0-9]*$ ]]; then
+      if [[ "${anchor_pid}" == "${previous_anchor}" \
+          && "${pgid}" == "${previous_pgid}" ]]; then
+        ((stable_checks+=1))
+      else
+        previous_anchor="${anchor_pid}"
+        previous_pgid="${pgid}"
+        stable_checks=1
+      fi
+      ((stable_checks >= 2)) && break
+    else
+      previous_anchor=""
+      previous_pgid=""
+      stable_checks=0
+    fi
     sleep 0.01
   done
-  [[ "${pgid}" =~ ^[1-9][0-9]*$ ]] || {
-    echo "could not identify process group for ${name}" >&2
+  if ((stable_checks < 2)) || [[ "${pgid}" == "${own_pgid}" ]]; then
+    echo "could not identify a stable independent process group for ${name} pid=${pid}" >&2
     return 1
-  }
-  own_pgid="$(process_group_of_pid "$$")"
-  [[ "${pgid}" != "${own_pgid}" ]] || {
-    echo "${name} did not enter an independent process group" >&2
-    return 1
-  }
+  fi
   child_names+=("${name}")
   child_pids+=("${pid}")
   child_pgids+=("${pgid}")
-  printf '%s %s\n' "${pid}" "${pgid}" >"${run_dir}/${name}.identity"
+  printf '%s %s\n' "${anchor_pid}" "${pgid}" >"${run_dir}/${name}.identity"
 }
 
 start_child() {
