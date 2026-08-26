@@ -1,0 +1,48 @@
+schema_version: bio_nav_v6_single_dynamic_low_obstacle_v1
+qualification: ENGINEERING_NOT_RUN
+
+identity:
+  scene_id: v6_kujiale_single_dynamic_low_obstacle
+  seed: 8601
+  ros_domain_id: 150
+  start: {id: G1, reset_pose_name: long_route_start_g1}
+  goal: {id: G2, frame_id: map, x: 0.80, y: 4.80}
+  timeout_sec: 180.0
+  route_backend: primary
+  graph_backend: gvg
+  direct_rgbd_costmap_enabled: false
+  module1_amcl_prior_enabled: false
+  cognitive_place_graph_enabled: false
+  dynamic_actors_enabled: true
+  dynamic_case_id: single_dynamic_low_box
+  dynamic_variant_id: v1
+  actor_id: v6_dynamic_low_box_solo
+  trigger_group: G2
+  scene_asset: /home/lyb/kujiale_usd_rooms_20260717/kujiale_0026/kujiale_0026_A_to_B_door_open.usd
+  occupancy_map: module3://data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml
+  spawn_manifest: module3://isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml
+  route_graph: module3://ros2_ws/src/robot_route_planner/config/v6_kujiale_isaacgen_v1_gvg_v1.geojson
+  obstacle_config: module3://isaac_sim/configs/experiments/v6_single_dynamic_low_obstacle.yaml
+  navigation_overlay: module3://ros2_ws/src/robot_navigation/config/nav2_v6_low_obstacle_isolation.yaml
+
+arms:
+  M1: {module3_mode: M1, obstacle_layer_mode: shadow, critic_mode: shadow}
+  M3: {module3_mode: M3, obstacle_layer_mode: active, critic_mode: active}
+  M2-fallback: {module3_mode: M2, obstacle_layer_mode: active, critic_mode: "off"}
+
+criteria:
+  typed_spatial_match_tolerance_m: 0.20
+  depth_subsample_stride: 4
+  depth_max_range_m: 8.0
+  depth_obstacle_bounds_tolerance_m: 0.02
+  depth_low_z_tolerance_m: 0.05
+  depth_min_height_above_floor_m: 0.02
+  depth_min_obstacle_points: 3
+  minimum_actor_position_span_m: 0.60
+  minimum_candidate_position_span_m: 0.20
+  old_position_clear_timeout_sec: 0.70
+  old_position_cost_max: 10
+  reverse_speed_limit_mps: -0.05
+  spin_linear_speed_max_mps: 0.03
+  spin_angular_speed_min_rps: 0.40
+  spin_duration_max_sec: 2.0
