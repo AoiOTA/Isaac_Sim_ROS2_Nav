@@ -4,9 +4,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from robot_experiments import v6_low_obstacle_causal as causal
 from robot_experiments.v6_low_obstacle_causal import RecordedMessage
 from robot_experiments.v6_single_dynamic_low_obstacle import (
     DYNAMIC_STATE_TOPIC,
+    _actor_resolver,
     actor_timeline,
     build_plan,
     evaluate_evidence,
@@ -127,8 +129,8 @@ def _evidence(arm_label="M3"):
             {"stamp_ns": 100_000_000, "linear_x": 0.2, "angular_z": 0.1},
         ],
         "old_position_clearance": {"consumers": {
-            "global": {"occupied_before_vacated": True, "clear_latency_sec": 0.2},
-            "local": {"occupied_before_vacated": True, "clear_latency_sec": 0.3},
+            "global": {"occupied_before_vacated": True, "clear_sample_index": 1},
+            "local": {"occupied_before_vacated": True, "clear_sample_index": 2},
         }},
     }
 
@@ -163,7 +165,33 @@ def test_actor_timeline_tracks_armed_moving_parked_and_events():
     assert rows[1]["events"][0]["event"] == "motion_start"
 
 
-def test_old_position_clearance_is_measured_while_producer_remains_alive():
+def test_actor_timeline_uses_ordered_sim_clock_instead_of_wall_receive_time():
+    wall_ns = 1_800_000_000_000_000_000
+    sim_ns = 12_000_000_000
+    clock = RecordedMessage(
+        "/clock", wall_ns,
+        SimpleNamespace(clock=SimpleNamespace(sec=12, nanosec=0)),
+    )
+    state = _state(wall_ns + 50_000_000, "moving", -0.95)
+    records = list(causal._latest_clock_stamped_records(
+        [clock, state], {DYNAMIC_STATE_TOPIC}
+    ))
+    rows = actor_timeline(records, "v6_dynamic_low_box_solo")
+    typed = RecordedMessage(
+        "/bio_nav/module2/cognitive_obstacles", wall_ns + 70_000_000,
+        SimpleNamespace(header=SimpleNamespace(
+            stamp=SimpleNamespace(sec=12, nanosec=50_000_000)
+        )),
+    )
+
+    assert rows[0]["stamp_ns"] == sim_ns
+    assert causal._message_stamp_ns(typed) == sim_ns + 50_000_000
+    assert _actor_resolver(rows, {
+        "id": "v6_dynamic_low_box_solo", "robot_radius_m": 0.33,
+    })(causal._message_stamp_ns(typed)) is not None
+
+
+def test_old_position_clearance_uses_observed_costmap_samples_not_subperiod_time():
     timeline = [
         {"stamp_ns": 0, "state": "moving", "position": [-1.25, -0.35, 0.08]},
         {"stamp_ns": 1_000_000_000, "state": "moving", "position": [-0.90, -0.35, 0.08]},
@@ -172,7 +200,8 @@ def test_old_position_clearance_is_measured_while_producer_remains_alive():
     for topic in ("/global_costmap/costmap", "/local_costmap/costmap"):
         records.extend([
             RecordedMessage(topic, 500_000_000, _grid(100)),
-            RecordedMessage(topic, 1_200_000_000, _grid(0)),
+            RecordedMessage(topic, 1_600_000_000, _grid(100)),
+            RecordedMessage(topic, 2_600_000_000, _grid(0)),
         ])
     result = old_position_clearance(
         records, timeline,
@@ -183,10 +212,13 @@ def test_old_position_clearance_is_measured_while_producer_remains_alive():
     assert result["vacated_stamp_ns"] == 1_000_000_000
     assert result["consumers"]["global"] == {
         "occupied_before_vacated": True,
-        "clear_stamp_ns": 1_200_000_000,
-        "clear_latency_sec": pytest.approx(0.2),
+        "observed_update_period_sec": pytest.approx(1.05),
+        "post_vacated_sample_count": 2,
+        "clear_sample_index": 2,
+        "clear_stamp_ns": 2_600_000_000,
+        "clear_latency_sec": pytest.approx(1.6),
     }
-    assert result["consumers"]["local"]["clear_latency_sec"] == pytest.approx(0.2)
+    assert result["consumers"]["local"]["clear_sample_index"] == 2
 
 
 @pytest.mark.parametrize("arm_label", ["M1", "M3", "M2-fallback"])
@@ -196,12 +228,12 @@ def test_focused_fake_evidence_passes_each_supported_arm(arm_label):
     assert result["verdict"] == "PASS", result["reasons"]
 
 
-def test_active_evidence_rejects_yield_and_slow_old_cell_clear():
+def test_active_evidence_rejects_yield_and_old_cell_ghost_beyond_sample_limit():
     experiment = load_experiment(CONFIG)
     evidence = _evidence("M3")
     evidence["dynamic_actor"]["states"].append("safety_yield")
-    evidence["old_position_clearance"]["consumers"]["local"]["clear_latency_sec"] = 0.8
+    evidence["old_position_clearance"]["consumers"]["local"]["clear_sample_index"] = 3
     result = evaluate_evidence(experiment, "M3", evidence)
     assert result["verdict"] == "FAIL"
     assert "actor_yield_or_guard_abort" in result["reasons"]
-    assert "local_old_position_not_cleared_in_time" in result["reasons"]
+    assert "local_old_position_not_cleared_within_costmap_samples" in result["reasons"]
