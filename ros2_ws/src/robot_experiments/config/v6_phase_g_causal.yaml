@@ -1,0 +1,42 @@
+schema_version: bio_nav_v6_phase_g_causal_v1
+phase_b_manifest: v6_r5_phase_b_kujiale_exact_baseline.yaml
+
+arms:
+  G0:
+    graph_mode: gvg
+    expected_selected_kind: gvg
+    route_prior_enabled: false
+  G1:
+    graph_mode: shadow
+    expected_selected_kind: gvg
+    route_prior_enabled: false
+  G2:
+    graph_mode: hybrid
+    expected_selected_kind: hybrid
+    route_prior_enabled: true
+  G3:
+    graph_mode: primary
+    expected_selected_kind: primary
+    route_prior_enabled: true
+
+experiment:
+  route_ids: [G2, G3, G4, G5, G1]
+  loops_total: 3
+  warmup_loops: 2
+  scoring_loop: 3
+  reset_count: 1
+  no_reset_between_loops: true
+  default_obstacle_arm: M3
+  fallback_obstacle_arm: M2
+  # The plan defines direction-only Pareto selection.  No hidden numeric gate.
+  selection_thresholds:
+    path_length_m: null
+    duration_s: null
+    replans: null
+    fallback_count: null
+
+# A later single-dynamic-actor campaign may point each arm at one small JSON
+# metrics file.  Phase G static runs keep explicit null placeholders.
+dynamic_actor_metrics:
+  enabled: false
+  source_json_by_arm: {}
