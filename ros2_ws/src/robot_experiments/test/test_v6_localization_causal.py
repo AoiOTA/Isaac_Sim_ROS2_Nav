@@ -181,16 +181,19 @@ def test_s0_s1_argv_share_run4_server_manifest_and_keep_seed_modes(tmp_path):
     assert "localization_supervisor_mode:=startup" in outputs[("S1", "bridge")].stdout
 
 
-def test_s0_s1_ros_waits_for_later_seed_without_changing_seed_authority(tmp_path):
-    for arm in ("S0", "S1"):
+def test_all_arms_ros_wait_for_their_later_seed(tmp_path):
+    for arm in ARMS:
         result = _run_wrapper(tmp_path, arm, "ros")
         assert result.returncode == 0, result.stderr
         assert "initial_pose_source:=rviz" in result.stdout
         assert "activation_startup_policy:=wait_for_seed" in result.stdout
 
 
-@pytest.mark.parametrize(("arm", "expected_seed_count"), (("S0", 1), ("S1", 0)))
-def test_phase_d_runner_publishes_only_the_s0_broad_seed_once(
+@pytest.mark.parametrize(
+    ("arm", "expected_seed_count"),
+    (("S0", 1), ("S1", 0), ("R0", 1), ("R1", 1)),
+)
+def test_runner_preserves_frozen_startup_seed_ownership(
     monkeypatch, arm, expected_seed_count
 ):
     adapter = LocalizationCausalNode.__new__(LocalizationCausalNode)
@@ -269,7 +272,7 @@ def test_phase_d_runner_publishes_only_the_s0_broad_seed_once(
         reset_timeout_sec=1.0,
     )
     assert len(published) == expected_seed_count
-    if arm == "S0":
+    if arm != "S1":
         assert published == [(adapter.config.broad_seed, "broad_initialpose")]
     else:
         assert published == []
