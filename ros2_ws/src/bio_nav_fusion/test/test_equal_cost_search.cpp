@@ -139,6 +139,11 @@ public:
     critic.uncertainty_weight_ = 0.0F;
   }
 
+  static void setObstacleWeight(CognitiveRiskCritic & critic, float weight)
+  {
+    critic.obstacle_weight_ = weight;
+  }
+
   static std::string appliedStatus(
     const std::string & prior_reason, const std::string & context_reason,
     const std::string & direction_reason, bool obstacle_applied = true,
@@ -1065,6 +1070,79 @@ TEST(CognitiveRiskCritic, base_direction_uses_robot_yaw_and_stay_has_no_bias)
       north, {}, stay, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0), 0.0);
 }
 
+TEST(CognitiveRiskCritic, duplicate_and_overlapping_candidates_are_count_invariant)
+{
+  using Critic = bio_nav_fusion::CognitiveRiskCritic;
+  const std::vector<std::array<double, 3>> trajectory{
+    {0.0, 0.0, 0.0}, {0.5, 0.0, 0.0}};
+  const std::array<double, 5> no_direction{};
+  const Critic::ObstacleSample obstacle{0.25, 0.0, 0.5, 0.8};
+  const std::vector<Critic::ObstacleSample> single{obstacle};
+  const std::vector<Critic::ObstacleSample> duplicates(16U, obstacle);
+  const auto single_score = Critic::trajectoryScore(
+    trajectory, single, no_direction, 0.0, 0.0, 0.0,
+    4.0, 0.0, 0.0, 0.0);
+  EXPECT_DOUBLE_EQ(
+    Critic::trajectoryScore(
+      trajectory, duplicates, no_direction, 0.0, 0.0, 0.0,
+      4.0, 0.0, 0.0, 0.0),
+    single_score);
+
+  const Critic::ObstacleSample weaker_overlap{0.25, 0.0, 0.5, 0.3};
+  EXPECT_DOUBLE_EQ(
+    Critic::trajectoryScore(
+      trajectory, {weaker_overlap, obstacle}, no_direction, 0.0, 0.0, 0.0,
+      4.0, 0.0, 0.0, 0.0),
+    single_score);
+}
+
+TEST(CognitiveRiskCritic, nonoverlapping_candidates_apply_at_their_own_time_steps)
+{
+  using Critic = bio_nav_fusion::CognitiveRiskCritic;
+  const std::vector<std::array<double, 3>> trajectory{
+    {0.0, 0.0, 0.0}, {10.0, 0.0, 0.0}};
+  const std::array<double, 5> no_direction{};
+  const Critic::ObstacleSample first{0.0, 0.0, 0.2, 1.0};
+  const Critic::ObstacleSample second{10.0, 0.0, 0.2, 1.0};
+  const auto first_only = Critic::trajectoryScore(
+    trajectory, {first}, no_direction, 0.0, 0.0, 0.0,
+    1.0, 0.0, 0.0, 0.0);
+  const auto second_only = Critic::trajectoryScore(
+    trajectory, {second}, no_direction, 0.0, 0.0, 0.0,
+    1.0, 0.0, 0.0, 0.0);
+  const auto both = Critic::trajectoryScore(
+    trajectory, {first, second}, no_direction, 0.0, 0.0, 0.0,
+    1.0, 0.0, 0.0, 0.0);
+  EXPECT_GT(both, first_only);
+  EXPECT_GT(both, second_only);
+  EXPECT_DOUBLE_EQ(both, 4.0);
+}
+
+TEST(CognitiveRiskCritic, max_per_step_score_is_finite_and_respects_obstacle_weight)
+{
+  using Critic = bio_nav_fusion::CognitiveRiskCritic;
+  const std::vector<std::array<double, 3>> trajectory{{0.0, 0.0, 0.0}};
+  const std::array<double, 5> no_direction{};
+  const Critic::ObstacleSample finite{0.0, 0.0, 0.2, 0.75};
+  const Critic::ObstacleSample nonfinite{
+    0.0, 0.0, 0.2, std::numeric_limits<double>::quiet_NaN()};
+  const auto unit_weight = Critic::trajectoryScore(
+    trajectory, {nonfinite, finite}, no_direction, 0.0, 0.0, 0.0,
+    1.0, 0.0, 0.0, 0.0);
+  EXPECT_TRUE(std::isfinite(unit_weight));
+  EXPECT_DOUBLE_EQ(unit_weight, 1.5);
+  EXPECT_DOUBLE_EQ(
+    Critic::trajectoryScore(
+      trajectory, {finite}, no_direction, 0.0, 0.0, 0.0,
+      3.0, 0.0, 0.0, 0.0),
+    3.0 * unit_weight);
+  EXPECT_DOUBLE_EQ(
+    Critic::trajectoryScore(
+      trajectory, {finite}, no_direction, 0.0, 0.0, 0.0,
+      0.0, 0.0, 0.0, 0.0),
+    0.0);
+}
+
 TEST(CognitiveRiskCritic, validation_distinguishes_obstacle_and_prior_rejections)
 {
   using Critic = bio_nav_fusion::CognitiveRiskCritic;
@@ -1792,12 +1870,56 @@ TEST(CognitiveRiskCritic, applied_status_tracks_real_positive_component_deltas)
     *obstacle_critic,
     std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(obstacles),
     std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(prior));
-  EXPECT_GT(scoreAt(*obstacle_critic, 1.0F, 0.0F), 0.0F);
+  const auto obstacle_delta = scoreAt(*obstacle_critic, 1.0F, 0.0F);
+  EXPECT_GT(obstacle_delta, 0.0F);
   EXPECT_TRUE(bio_nav_fusion::CognitiveRiskCriticTestPeer::lastStatusApplied(*obstacle_critic));
+  const auto obstacle_status =
+    bio_nav_fusion::CognitiveRiskCriticTestPeer::lastStatus(*obstacle_critic);
+  EXPECT_EQ(obstacle_status.maximum_cost_increase, 1U);
+  EXPECT_NE(obstacle_status.fallback_reason.find("obstacle_applied=true"), std::string::npos);
+  EXPECT_NE(obstacle_status.fallback_reason.find("obstacle_count=1"), std::string::npos);
   EXPECT_NE(
-    bio_nav_fusion::CognitiveRiskCriticTestPeer::lastStatusReason(*obstacle_critic).find(
-      "obstacle_applied=true"),
+    obstacle_status.fallback_reason.find("aggregation=max_per_step"),
     std::string::npos);
+  const std::string maximum_key = "maximum_obstacle_cost_delta=";
+  const auto maximum_start = obstacle_status.fallback_reason.find(maximum_key);
+  ASSERT_NE(maximum_start, std::string::npos);
+  const auto maximum_value_start = maximum_start + maximum_key.size();
+  const auto maximum_end = obstacle_status.fallback_reason.find(';', maximum_value_start);
+  ASSERT_NE(maximum_end, std::string::npos);
+  const auto reported_maximum = std::stod(
+    obstacle_status.fallback_reason.substr(
+      maximum_value_start, maximum_end - maximum_value_start));
+  EXPECT_TRUE(std::isfinite(reported_maximum));
+  EXPECT_FLOAT_EQ(static_cast<float>(reported_maximum), obstacle_delta);
+
+  auto duplicate_obstacles = obstacles;
+  duplicate_obstacles.obstacles.push_back(duplicate_obstacles.obstacles.front());
+  duplicate_obstacles.obstacles.back().id = "object-overlap";
+  auto duplicate_critic = make_critic();
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::setInputs(
+    *duplicate_critic,
+    std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(duplicate_obstacles),
+    std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(prior));
+  EXPECT_FLOAT_EQ(scoreAt(*duplicate_critic, 1.0F, 0.0F), obstacle_delta);
+  const auto duplicate_status_reason =
+    bio_nav_fusion::CognitiveRiskCriticTestPeer::lastStatus(
+      *duplicate_critic).fallback_reason;
+  EXPECT_NE(
+    duplicate_status_reason.find("obstacle_count=2"),
+    std::string::npos) << duplicate_status_reason;
+
+  auto clipped_critic = make_critic();
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::setObstacleWeight(*clipped_critic, 1000.0F);
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::setInputs(
+    *clipped_critic,
+    std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(obstacles),
+    std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(prior));
+  EXPECT_GT(scoreAt(*clipped_critic, 1.0F, 0.0F), 255.0F);
+  EXPECT_EQ(
+    bio_nav_fusion::CognitiveRiskCriticTestPeer::lastStatus(
+      *clipped_critic).maximum_cost_increase,
+    std::numeric_limits<uint8_t>::max());
 
   auto context_critic = make_critic();
   bio_nav_fusion::CognitiveRiskCriticTestPeer::useContextOnly(*context_critic);

@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iomanip>
 #include <limits>
 #include <numeric>
+#include <sstream>
 
 #include "geometry_msgs/msg/point_stamped.hpp"
 #include "pluginlib/class_list_macros.hpp"
@@ -448,12 +450,17 @@ double CognitiveRiskCritic::trajectoryScore(
   if (trajectory.empty()) {return 0.0;}
   double obstacle_cost = 0.0;
   for (const auto & pose : trajectory) {
+    double step_obstacle_cost = 0.0;
     for (const auto & obstacle : obstacles) {
       const double clearance = std::hypot(pose[0] - obstacle.x, pose[1] - obstacle.y) -
         obstacle.radius;
-      obstacle_cost += obstacle.confidence *
+      const double contribution = obstacle.confidence *
         (clearance <= 0.0 ? 2.0 : std::exp(-clearance / 0.35));
+      if (std::isfinite(contribution) && contribution > step_obstacle_cost) {
+        step_obstacle_cost = contribution;
+      }
     }
+    obstacle_cost += step_obstacle_cost;
   }
   double travelled_heading = trajectory.back()[2];
   if (trajectory.size() >= 2) {
@@ -560,6 +567,7 @@ void CognitiveRiskCritic::score(mppi::CriticData & data)
   bool novelty_applied = false;
   bool uncertainty_applied = false;
   bool direction_applied = false;
+  double maximum_obstacle_cost_delta = 0.0;
   const std::array<double, 5> no_direction{};
   const std::vector<ObstacleSample> no_obstacles;
   for (std::size_t index = 0; index < batch; ++index) {
@@ -570,7 +578,8 @@ void CognitiveRiskCritic::score(mppi::CriticData & data)
         data.trajectories.x(index, step), data.trajectories.y(index, step),
         data.trajectories.yaws(index, step)});
     }
-    const auto apply_component = [&](double component, bool & component_applied) {
+    const auto apply_component =
+      [&](double component, bool & component_applied, double * maximum_actual_delta) {
         if (!std::isfinite(component) || component <= cost_delta_epsilon) {
           return;
         }
@@ -588,24 +597,29 @@ void CognitiveRiskCritic::score(mppi::CriticData & data)
         if (std::isfinite(after) && after - before > cost_delta_epsilon) {
           data.costs(index) = after;
           component_applied = true;
+          if (maximum_actual_delta != nullptr) {
+            *maximum_actual_delta = std::max(
+              *maximum_actual_delta, static_cast<double>(after - before));
+          }
         }
       };
     apply_component(
       trajectoryScore(
         trajectory, samples, no_direction, robot_yaw, 0.0, 0.0,
-        obstacle_weight_, 0.0, 0.0, 0.0), obstacle_applied);
+        obstacle_weight_, 0.0, 0.0, 0.0), obstacle_applied,
+      &maximum_obstacle_cost_delta);
     apply_component(
       trajectoryScore(
         trajectory, no_obstacles, no_direction, robot_yaw, novelty, 0.0,
-        0.0, 0.0, novelty_weight_, 0.0), novelty_applied);
+        0.0, 0.0, novelty_weight_, 0.0), novelty_applied, nullptr);
     apply_component(
       trajectoryScore(
         trajectory, no_obstacles, no_direction, robot_yaw, 0.0, uncertainty,
-        0.0, 0.0, 0.0, uncertainty_weight_), uncertainty_applied);
+        0.0, 0.0, 0.0, uncertainty_weight_), uncertainty_applied, nullptr);
     apply_component(
       trajectoryScore(
         trajectory, no_obstacles, direction, robot_yaw, 0.0, 0.0,
-        0.0, direction_weight_, 0.0, 0.0), direction_applied);
+        0.0, direction_weight_, 0.0, 0.0), direction_applied, nullptr);
   }
   const bool applied = obstacle_applied || novelty_applied ||
     uncertainty_applied || direction_applied;
@@ -622,7 +636,7 @@ void CognitiveRiskCritic::score(mppi::CriticData & data)
       ";latest_rejected_offer_reason=" + rejected_offer.reason;
   }
   publishStatus(
-    obstacles, applied, status_reason);
+    obstacles, applied, status_reason, maximum_obstacle_cost_delta);
 }
 
 std::string CognitiveRiskCritic::appliedStatus(
@@ -668,9 +682,13 @@ std::string CognitiveRiskCritic::appliedStatus(
 
 void CognitiveRiskCritic::publishStatus(
   const bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr & accepted_obstacles,
-  bool applied, const std::string & reason)
+  bool applied, const std::string & reason,
+  double maximum_obstacle_cost_delta)
 {
   if (!accepted_obstacles) {return;}
+  const double finite_maximum_obstacle_cost_delta =
+    std::isfinite(maximum_obstacle_cost_delta) && maximum_obstacle_cost_delta > 0.0 ?
+    maximum_obstacle_cost_delta : 0.0;
   bio_nav_interfaces::msg::RiskLayerStatus status;
   status.stamp = parent_.lock()->get_clock()->now();
   status.consumer = name_;
@@ -683,7 +701,17 @@ void CognitiveRiskCritic::publishStatus(
   status.recurrent_session_id = accepted_obstacles->recurrent_session_id;
   status.reset_epoch = accepted_obstacles->reset_epoch;
   status.map_version = accepted_obstacles->map_version;
-  status.fallback_reason = reason;
+  std::ostringstream detail;
+  detail << reason
+         << ";maximum_obstacle_cost_delta="
+         << std::setprecision(std::numeric_limits<double>::max_digits10)
+         << finite_maximum_obstacle_cost_delta
+         << ";obstacle_count=" << accepted_obstacles->obstacles.size()
+         << ";aggregation=max_per_step";
+  status.fallback_reason = detail.str();
+  status.maximum_cost_increase = static_cast<uint8_t>(std::min(
+      finite_maximum_obstacle_cost_delta,
+      static_cast<double>(std::numeric_limits<uint8_t>::max())));
   {
     std::lock_guard<std::mutex> lock(mutex_);
     last_status_sequence_ = status.source_sequence;

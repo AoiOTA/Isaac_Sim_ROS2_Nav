@@ -84,7 +84,8 @@ private:
     const bio_nav_interfaces::msg::PlanningPrior::SharedPtr message);
   void publishStatus(
     const bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr & accepted_obstacles,
-    bool applied, const std::string & reason);
+    bool applied, const std::string & reason,
+    double maximum_obstacle_cost_delta = 0.0);
   static std::string appliedStatus(
     const std::string & prior_reason, const std::string & context_reason,
     const std::string & direction_reason, bool obstacle_applied,
