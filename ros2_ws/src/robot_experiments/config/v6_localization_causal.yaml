@@ -6,6 +6,7 @@ held_constants:
   cognitive_place_graph_enabled: false
   low_obstacles_enabled: false
   dynamic_actors_enabled: false
+  use_sim_time: true
   ground_truth_policy: passive_evaluator_only
   initial_pose_source: runner_or_supervisor_only
 

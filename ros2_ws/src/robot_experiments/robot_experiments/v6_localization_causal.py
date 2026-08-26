@@ -57,6 +57,7 @@ RECOVERY_BY_ARM = {
     "R0": "global_localization",
     "R1": "supervisor_manual_rescue",
 }
+STARTUP_AMCL_POSES_REQUIRED = 3
 RUN4_CANDIDATE_STATUS = "READ_ONLY_CAUSAL_CANDIDATE_STARTUP_ONLY"
 RUN4_RECOVERY_QUALIFICATION = "NOT_ACTIVE_RECOVERY_QUALIFIED"
 RUN4_ALLOWED_SUPERVISOR_MODES = ("shadow", "startup")
@@ -117,6 +118,21 @@ def _finite(value: Any, name: str) -> float:
     if not math.isfinite(result):
         raise LocalizationConfigError(f"{name} must be finite numeric")
     return result
+
+
+def _require_sim_time(
+    node: Any, parameter_type: Any, ros_clock_type: Any
+) -> None:
+    results = node.set_parameters([parameter_type("use_sim_time", value=True)])
+    if (
+        len(results) != 1
+        or not results[0].successful
+        or node.get_parameter("use_sim_time").value is not True
+        or node.get_clock().clock_type != ros_clock_type
+    ):
+        raise V6ContractError(
+            "Phase D/E localization runner requires use_sim_time=true"
+        )
 
 
 @dataclass(frozen=True)
@@ -210,6 +226,7 @@ def load_config(path: str | Path) -> LocalizationConfig:
         "cognitive_place_graph_enabled": False,
         "low_obstacles_enabled": False,
         "dynamic_actors_enabled": False,
+        "use_sim_time": True,
         "ground_truth_policy": "passive_evaluator_only",
         "initial_pose_source": "runner_or_supervisor_only",
     }
@@ -508,9 +525,29 @@ class LocalizationCausalNode(V6FormalNode):
         from bio_nav_interfaces.msg import PlanningPrior
         from diagnostic_msgs.msg import DiagnosticArray
         from geometry_msgs.msg import PoseWithCovarianceStamped
+        from rcl_interfaces.msg import SetParametersResult
+        from rclpy.clock import ClockType
         from rclpy.qos import QoSProfile, ReliabilityPolicy
+        from rclpy.parameter import Parameter
         from std_msgs.msg import Empty
         from std_srvs.srv import Empty as EmptyService
+
+        _require_sim_time(self.node, Parameter, ClockType.ROS_TIME)
+
+        def lock_sim_time(parameters: Sequence[Any]) -> SetParametersResult:
+            for parameter in parameters:
+                if parameter.name == "use_sim_time" and parameter.value is not True:
+                    return SetParametersResult(
+                        successful=False,
+                        reason=(
+                            "Phase D/E localization runner requires "
+                            "use_sim_time=true"
+                        ),
+                    )
+            return SetParametersResult(successful=True)
+
+        self.node.add_on_set_parameters_callback(lock_sim_time)
+        self._ros_clock_type = ClockType.ROS_TIME
 
         reliable = QoSProfile(depth=20, reliability=ReliabilityPolicy.RELIABLE)
         self._types.update(
@@ -547,7 +584,15 @@ class LocalizationCausalNode(V6FormalNode):
         )
 
     def _stamp_s(self) -> float:
-        return float(self.node.get_clock().now().nanoseconds) / 1.0e9
+        clock = self.node.get_clock()
+        if (
+            self.node.get_parameter("use_sim_time").value is not True
+            or clock.clock_type != self._ros_clock_type
+        ):
+            raise V6ContractError(
+                "Phase D/E localization runner lost use_sim_time=true"
+            )
+        return float(clock.now().nanoseconds) / 1.0e9
 
     def _event(self, event: str, **payload: Any) -> None:
         if event not in ALLOWED_EVENTS:
@@ -811,12 +856,47 @@ class LocalizationCausalNode(V6FormalNode):
     def _amcl_recovered(self, baseline_count: int) -> bool:
         covariance = self._last_amcl_covariance
         return bool(
-            self._amcl_count >= baseline_count + 3
+            self._amcl_count >= baseline_count + STARTUP_AMCL_POSES_REQUIRED
             and covariance is not None
             and max(covariance[0], covariance[1])
             <= self.config.recovered_xy_variance_m2
             and covariance[2] <= self.config.recovered_yaw_variance_rad2
         )
+
+    def _request_stationary_amcl_updates(
+        self, baseline_count: int, timeout_s: float
+    ) -> bool:
+        """Request only the missing Phase D startup poses while stationary."""
+
+        target_count = baseline_count + STARTUP_AMCL_POSES_REQUIRED
+        request_timeout_s = min(10.0, timeout_s)
+        requests = 0
+        while (
+            self._amcl_count < target_count
+            and requests < STARTUP_AMCL_POSES_REQUIRED
+        ):
+            previous_count = self._amcl_count
+            if not self._call_empty_service(
+                self.nomotion_update_client,
+                "/request_nomotion_update",
+                request_timeout_s,
+            ):
+                return False
+            requests += 1
+            observed = self._spin_until(
+                lambda: self._amcl_count > previous_count
+                or self.guard.state == "STOP",
+                request_timeout_s,
+            )
+            if self.guard.state == "STOP":
+                return False
+            if not observed:
+                self.guard.stop("startup_nomotion_update_pose_timeout")
+                return False
+        if self._amcl_count < target_count:
+            self.guard.stop("startup_nomotion_update_exhausted")
+            return False
+        return True
 
     def _supervisor_recovered(self) -> bool:
         return self._last_supervisor.get("recovery_result", "").lower() in {
@@ -1015,6 +1095,12 @@ class LocalizationCausalNode(V6FormalNode):
         self._set_episode_parameters(reset_timeout_sec)
 
         Trigger = self._types["Trigger"]
+        # The startup supervisor can publish S1's sole seed while this runner
+        # is spinning the reset future/event. Fence that asynchronous seed
+        # before issuing reset; S0 remains fenced immediately before its own
+        # deterministic runner publication below.
+        s1_baseline_amcl_count = self._amcl_count
+        s1_baseline_initialpose_count = self._initialpose_count
         self.guard.record_reset_call()
         future = self.reset_client.call_async(Trigger.Request())
         if not self._spin_until(future.done, reset_timeout_sec):
@@ -1048,9 +1134,30 @@ class LocalizationCausalNode(V6FormalNode):
 
         # R0/R1 share the same startup prior.  Their only Phase E switched
         # factor is the recovery action after the identical F2 injection.
-        baseline_amcl_count = self._amcl_count
-        if self.arm != "S1":
+        if self.arm == "S1":
+            baseline_amcl_count = s1_baseline_amcl_count
+            baseline_initialpose_count = s1_baseline_initialpose_count
+        else:
+            baseline_amcl_count = self._amcl_count
+            baseline_initialpose_count = self._initialpose_count
             self._publish_seed(self.config.broad_seed, "broad_initialpose")
+        if self.phase == "D":
+            seed_observed = self._spin_until(
+                lambda: self._initialpose_count > baseline_initialpose_count
+                or self.guard.state == "STOP",
+                reset_timeout_sec,
+            )
+            if (
+                not seed_observed
+                or self.guard.state == "STOP"
+                or self._initialpose_count <= baseline_initialpose_count
+            ):
+                self.guard.stop("startup_initialpose_timeout")
+                return False
+            if not self._request_stationary_amcl_updates(
+                baseline_amcl_count, reset_timeout_sec
+            ):
+                return False
         localized = self._spin_until(
             lambda: (
                 self.guard.localization_ready

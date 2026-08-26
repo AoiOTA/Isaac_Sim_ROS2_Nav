@@ -15,9 +15,11 @@ from robot_experiments.v6_localization_causal import (
     EVENT_SCHEMA,
     PHASE_D_STARTUP_INITIALPOSE,
     RUN4_CANDIDATE_STATUS,
+    STARTUP_AMCL_POSES_REQUIRED,
     LocalizationCausalNode,
     LocalizationConfigError,
     _contains_ground_truth,
+    _require_sim_time,
     build_plan,
     cli,
     execute_route_actions,
@@ -34,6 +36,8 @@ WRAPPER = REPO / "scripts" / "run_v6_localization_causal.sh"
 
 def test_config_freezes_only_four_single_round_arms_and_held_constants():
     config = load_config(CONFIG)
+    raw = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    assert raw["held_constants"]["use_sim_time"] is True
     assert tuple(config.seeds) == ARMS
     assert config.route_ids == ("G2", "G3", "G4", "G5", "G1")
     assert config.fault_id == "F2"
@@ -192,6 +196,7 @@ def test_phase_d_runner_publishes_only_the_s0_broad_seed_once(
     adapter = LocalizationCausalNode.__new__(LocalizationCausalNode)
     adapter.config = load_config(CONFIG)
     adapter.arm = arm
+    adapter.phase = "D"
     adapter.episode = SimpleNamespace(
         seed=1,
         dynamic_case_id="none",
@@ -227,10 +232,32 @@ def test_phase_d_runner_publishes_only_the_s0_broad_seed_once(
     adapter._event = lambda *_args, **_kwargs: None
     adapter._check_post_reset_odom = lambda: None
     adapter._wait_nav2_and_tf_ready = lambda _timeout: None
-    adapter._spin_until = lambda predicate, _timeout: bool(predicate())
+    spin_calls = 0
+
+    def spin_until(predicate, _timeout):
+        nonlocal spin_calls
+        spin_calls += 1
+        if arm == "S1" and spin_calls == 2:
+            adapter._initialpose_count = 1
+            adapter._amcl_count = 1
+        return bool(predicate())
+
+    adapter._spin_until = spin_until
     adapter._amcl_recovered = lambda _baseline: True
+    readiness_baselines = []
+
+    def request_stationary_updates(baseline, _timeout):
+        readiness_baselines.append(baseline)
+        return True
+
+    adapter._request_stationary_amcl_updates = request_stationary_updates
     published = []
-    adapter._publish_seed = lambda pose, kind: published.append((pose, kind))
+
+    def publish_seed(pose, kind):
+        published.append((pose, kind))
+        adapter._initialpose_count += 1
+
+    adapter._publish_seed = publish_seed
     monkeypatch.setattr(
         localization_causal,
         "parse_reset_receipt",
@@ -246,7 +273,140 @@ def test_phase_d_runner_publishes_only_the_s0_broad_seed_once(
         assert published == [(adapter.config.broad_seed, "broad_initialpose")]
     else:
         assert published == []
+    assert readiness_baselines == [0]
     assert stops == []
+
+
+def test_phase_d_stationary_readiness_requests_only_missing_amcl_poses():
+    class EmptyService:
+        class Request:
+            pass
+
+    adapter = LocalizationCausalNode.__new__(LocalizationCausalNode)
+    adapter._types = {"EmptyService": EmptyService}
+    adapter.guard = SimpleNamespace(state="READY", stop=lambda _reason: None)
+    adapter._amcl_count = 8  # the observed post-seed pose above baseline 7
+    calls = []
+
+    class Client:
+        def wait_for_service(self, timeout_sec):
+            calls.append(("wait", timeout_sec))
+            return True
+
+        def call_async(self, _request):
+            calls.append(("call", None))
+            adapter._amcl_count += 1
+            return SimpleNamespace(done=lambda: True, result=lambda: object())
+
+    adapter.nomotion_update_client = Client()
+    adapter._spin_until = lambda predicate, _timeout: bool(predicate())
+
+    assert adapter._request_stationary_amcl_updates(7, 30.0)
+    assert adapter._amcl_count == 7 + STARTUP_AMCL_POSES_REQUIRED
+    assert [kind for kind, _ in calls].count("call") == 2
+
+
+def test_phase_d_stationary_readiness_fails_closed_when_nomotion_unavailable():
+    class EmptyService:
+        class Request:
+            pass
+
+    stops = []
+    adapter = LocalizationCausalNode.__new__(LocalizationCausalNode)
+    adapter._types = {"EmptyService": EmptyService}
+    adapter.guard = SimpleNamespace(state="READY", stop=stops.append)
+    adapter._amcl_count = 1
+    adapter.nomotion_update_client = SimpleNamespace(
+        wait_for_service=lambda **_kwargs: False
+    )
+
+    assert not adapter._request_stationary_amcl_updates(0, 30.0)
+    assert stops == ["service_unavailable:/request_nomotion_update"]
+
+
+@pytest.mark.parametrize("arm", ("S0", "S1"))
+def test_phase_d_events_use_the_runner_sim_clock(monkeypatch, tmp_path, arm):
+    captured = []
+    ros_clock_type = object()
+    adapter = LocalizationCausalNode.__new__(LocalizationCausalNode)
+    adapter.node = SimpleNamespace(
+        get_parameter=lambda _name: SimpleNamespace(value=True),
+        get_clock=lambda: SimpleNamespace(
+            clock_type=ros_clock_type,
+            now=lambda: SimpleNamespace(nanoseconds=12_345_000_000)
+        )
+    )
+    adapter._ros_clock_type = ros_clock_type
+    adapter.output_jsonl = tmp_path / f"{arm}.jsonl"
+    adapter.run_id = f"phase-d-{arm.lower()}"
+    adapter.phase = "D"
+    adapter.arm = arm
+    adapter.episode = SimpleNamespace(seed=8810)
+    adapter._event_stream_started = True
+    monkeypatch.setattr(
+        localization_causal,
+        "append_evidence_jsonl",
+        lambda path, event, **payload: captured.append((path, event, payload)),
+    )
+
+    adapter._event("estimated_pose", x=0.45, y=-5.35)
+
+    assert captured[0][2]["stamp_s"] == pytest.approx(12.345)
+    assert captured[0][2]["phase"] == "D"
+    assert captured[0][2]["arm"] == arm
+
+
+def test_localization_runner_forces_use_sim_time_true():
+    ros_clock_type = object()
+
+    class Parameter:
+        def __init__(self, name, *, value):
+            self.name = name
+            self.value = value
+
+    class Node:
+        def __init__(self):
+            self.value = False
+
+        def set_parameters(self, parameters):
+            assert [(item.name, item.value) for item in parameters] == [
+                ("use_sim_time", True)
+            ]
+            self.value = True
+            return [SimpleNamespace(successful=True)]
+
+        def get_parameter(self, name):
+            assert name == "use_sim_time"
+            return SimpleNamespace(value=self.value)
+
+        def get_clock(self):
+            return SimpleNamespace(clock_type=ros_clock_type)
+
+    node = Node()
+    _require_sim_time(node, Parameter, ros_clock_type)
+    assert node.value is True
+
+
+def test_localization_event_fails_closed_if_sim_time_authority_is_lost(tmp_path):
+    ros_clock_type = object()
+    adapter = LocalizationCausalNode.__new__(LocalizationCausalNode)
+    adapter.node = SimpleNamespace(
+        get_parameter=lambda _name: SimpleNamespace(value=False),
+        get_clock=lambda: SimpleNamespace(
+            clock_type=ros_clock_type,
+            now=lambda: SimpleNamespace(nanoseconds=12_345_000_000),
+        ),
+    )
+    adapter._ros_clock_type = ros_clock_type
+    adapter.output_jsonl = tmp_path / "lost-clock.jsonl"
+    adapter.run_id = "phase-d-s0"
+    adapter.phase = "D"
+    adapter.arm = "S0"
+    adapter.episode = SimpleNamespace(seed=8810)
+    adapter._event_stream_started = True
+
+    with pytest.raises(localization_causal.V6ContractError, match="lost use_sim_time"):
+        adapter._event("estimated_pose", x=0.45, y=-5.35)
 
 
 def test_r0_r1_argv_keep_old_path_without_run4_candidate(tmp_path):
