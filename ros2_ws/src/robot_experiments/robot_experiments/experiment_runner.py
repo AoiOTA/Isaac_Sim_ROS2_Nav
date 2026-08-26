@@ -1333,8 +1333,31 @@ class ExperimentRunner(Node):
             "place_peak": max(place) if place else 0.0,
             "place_argmax": int(max(range(len(place)), key=place.__getitem__)) if place else -1,
             "place_entropy_normalized": float(message.place_entropy_normalized),
-            "place_mean_canvas_m": [
+            "full_posterior_mean_canvas_m_diagnostic": [
                 float(value) for value in message.place_mean_canvas_m
+            ],
+            "dominant_mode_root_state_id": int(
+                message.dominant_mode_root_state_id
+            ),
+            "dominant_mode_mass": float(message.dominant_mode_mass),
+            "dominant_mode_expected_xy_m": [
+                float(value) for value in message.dominant_mode_expected_xy_m
+            ],
+            "dominant_mode_covariance_m2": [
+                float(value) for value in message.dominant_mode_covariance_m2
+            ],
+            "dominant_mode_ellipse_1sigma": {
+                "semi_major_axis_m": float(
+                    message.dominant_mode_ellipse_1sigma_semi_major_axis_m
+                ),
+                "semi_minor_axis_m": float(
+                    message.dominant_mode_ellipse_1sigma_semi_minor_axis_m
+                ),
+                "yaw_rad": float(message.dominant_mode_ellipse_1sigma_yaw_rad),
+            },
+            "full_posterior_covariance_m2_diagnostic": [
+                float(value)
+                for value in message.full_posterior_covariance_m2_diagnostic
             ],
             "dynamic_presence_probability": float(
                 message.dynamic_presence_probability
@@ -1345,8 +1368,8 @@ class ExperimentRunner(Node):
             "context_uncertainty": float(message.context_uncertainty),
         }
         # Keep every scalar sample for time integration, but only retain the
-        # six 256-state fields at 5 s cadence. This is sufficient for static,
-        # dynamic and appearance heatmaps without inflating each run manifest.
+        # bulk state and mode-candidate fields at 5 s cadence. This is sufficient
+        # for heatmaps without inflating each run manifest.
         if (
             self._last_planning_field_stamp_s is None
             or stamp_s - self._last_planning_field_stamp_s >= 5.0
@@ -1364,6 +1387,40 @@ class ExperimentRunner(Node):
                     ],
                     "transient_suppression": [
                         float(value) for value in message.transient_suppression
+                    ],
+                    "place_top_k": [
+                        {
+                            "state_id": int(candidate.state_id),
+                            "probability": float(candidate.probability),
+                            "canvas_xy_m": [
+                                float(value) for value in candidate.canvas_xy_m
+                            ],
+                            "mode_root_state_id": int(
+                                candidate.mode_root_state_id
+                            ),
+                            "mode_state_count": int(candidate.mode_state_count),
+                            "mode_mass": float(candidate.mode_mass),
+                            "mode_expected_xy_m": [
+                                float(value)
+                                for value in candidate.mode_expected_xy_m
+                            ],
+                            "mode_covariance_m2": [
+                                float(value)
+                                for value in candidate.mode_covariance_m2
+                            ],
+                            "mode_ellipse_1sigma": {
+                                "semi_major_axis_m": float(
+                                    candidate.mode_ellipse_1sigma_semi_major_axis_m
+                                ),
+                                "semi_minor_axis_m": float(
+                                    candidate.mode_ellipse_1sigma_semi_minor_axis_m
+                                ),
+                                "yaw_rad": float(
+                                    candidate.mode_ellipse_1sigma_yaw_rad
+                                ),
+                            },
+                        }
+                        for candidate in message.place_top_k
                     ],
                 }
             )

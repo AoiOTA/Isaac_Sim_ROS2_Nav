@@ -50,6 +50,28 @@ def _bool_vector(message: Any, name: str, size: int) -> list[bool]:
     return values
 
 
+def _mode_candidate(candidate: Any) -> dict[str, Any]:
+    return {
+        "state_id": int(candidate.state_id),
+        "probability": float(candidate.probability),
+        "canvas_xy_m": _vector(candidate, "canvas_xy_m", 2),
+        "mode_root_state_id": int(candidate.mode_root_state_id),
+        "mode_state_count": int(candidate.mode_state_count),
+        "mode_mass": float(candidate.mode_mass),
+        "mode_expected_xy_m": _vector(candidate, "mode_expected_xy_m", 2),
+        "mode_covariance_m2": _vector(candidate, "mode_covariance_m2", 4),
+        "mode_ellipse_1sigma": {
+            "semi_major_axis_m": float(
+                candidate.mode_ellipse_1sigma_semi_major_axis_m
+            ),
+            "semi_minor_axis_m": float(
+                candidate.mode_ellipse_1sigma_semi_minor_axis_m
+            ),
+            "yaw_rad": float(candidate.mode_ellipse_1sigma_yaw_rad),
+        },
+    }
+
+
 def planning_prior_localization_sample(message: Any) -> dict[str, Any]:
     """Extract all fields needed to plot the fifth localization trajectory."""
 
@@ -62,7 +84,32 @@ def planning_prior_localization_sample(message: Any) -> dict[str, Any]:
         "t_map_canvas": _vector(message, "t_map_canvas", 9),
         "valid_state_mask": _bool_vector(message, "valid_state_mask", 256),
         "place_belief": _vector(message, "place_belief", 256),
-        "place_mean_canvas_m": _vector(message, "place_mean_canvas_m", 2),
+        "full_posterior_mean_canvas_m_diagnostic": _vector(
+            message, "place_mean_canvas_m", 2
+        ),
+        "dominant_mode_root_state_id": int(message.dominant_mode_root_state_id),
+        "dominant_mode_mass": float(message.dominant_mode_mass),
+        "dominant_mode_expected_xy_m": _vector(
+            message, "dominant_mode_expected_xy_m", 2
+        ),
+        "dominant_mode_covariance_m2": _vector(
+            message, "dominant_mode_covariance_m2", 4
+        ),
+        "dominant_mode_ellipse_1sigma": {
+            "semi_major_axis_m": float(
+                message.dominant_mode_ellipse_1sigma_semi_major_axis_m
+            ),
+            "semi_minor_axis_m": float(
+                message.dominant_mode_ellipse_1sigma_semi_minor_axis_m
+            ),
+            "yaw_rad": float(message.dominant_mode_ellipse_1sigma_yaw_rad),
+        },
+        "full_posterior_covariance_m2_diagnostic": _vector(
+            message, "full_posterior_covariance_m2_diagnostic", 4
+        ),
+        "place_top_k": [
+            _mode_candidate(candidate) for candidate in message.place_top_k
+        ],
         "heading_belief": _vector(message, "heading_belief", 12),
         "metric_state_canvas_m": _vector(message, "metric_state_canvas_m", 3),
         "place_entropy_normalized": float(message.place_entropy_normalized),

@@ -37,6 +37,29 @@ def test_planning_prior_exposes_fifth_trajectory_without_new_pose_topic():
         valid_state_mask=[True] * 256,
         place_belief=[1.0 / 256.0] * 256,
         place_mean_canvas_m=[1.25, -2.5],
+        dominant_mode_root_state_id=17,
+        dominant_mode_mass=0.7,
+        dominant_mode_expected_xy_m=[1.0, -2.0],
+        dominant_mode_covariance_m2=[0.3, 0.05, 0.05, 0.2],
+        dominant_mode_ellipse_1sigma_semi_major_axis_m=0.6,
+        dominant_mode_ellipse_1sigma_semi_minor_axis_m=0.4,
+        dominant_mode_ellipse_1sigma_yaw_rad=0.25,
+        full_posterior_covariance_m2_diagnostic=[1.0, 0.1, 0.1, 0.8],
+        place_top_k=[
+            SimpleNamespace(
+                state_id=17,
+                probability=0.4,
+                canvas_xy_m=[1.1, -2.1],
+                mode_root_state_id=17,
+                mode_state_count=4,
+                mode_mass=0.7,
+                mode_expected_xy_m=[1.0, -2.0],
+                mode_covariance_m2=[0.3, 0.05, 0.05, 0.2],
+                mode_ellipse_1sigma_semi_major_axis_m=0.6,
+                mode_ellipse_1sigma_semi_minor_axis_m=0.4,
+                mode_ellipse_1sigma_yaw_rad=0.25,
+            )
+        ],
         heading_belief=[1.0 / 12.0] * 12,
         metric_state_canvas_m=[1.0, -2.0, 0.4],
         place_entropy_normalized=0.25,
@@ -53,7 +76,40 @@ def test_planning_prior_exposes_fifth_trajectory_without_new_pose_topic():
 
     assert sample["stamp_ns"] == 12_000_000_034
     assert len(sample["place_belief"]) == 256
-    assert sample["place_mean_canvas_m"] == [1.25, -2.5]
+    assert sample["full_posterior_mean_canvas_m_diagnostic"] == [1.25, -2.5]
+    assert "place_mean_canvas_m" not in sample
+    assert sample["dominant_mode_root_state_id"] == 17
+    assert sample["dominant_mode_mass"] == 0.7
+    assert sample["dominant_mode_expected_xy_m"] == [1.0, -2.0]
+    assert sample["dominant_mode_covariance_m2"] == [0.3, 0.05, 0.05, 0.2]
+    assert sample["dominant_mode_ellipse_1sigma"] == {
+        "semi_major_axis_m": 0.6,
+        "semi_minor_axis_m": 0.4,
+        "yaw_rad": 0.25,
+    }
+    assert sample["full_posterior_covariance_m2_diagnostic"] == [
+        1.0,
+        0.1,
+        0.1,
+        0.8,
+    ]
+    assert sample["place_top_k"] == [
+        {
+            "state_id": 17,
+            "probability": 0.4,
+            "canvas_xy_m": [1.1, -2.1],
+            "mode_root_state_id": 17,
+            "mode_state_count": 4,
+            "mode_mass": 0.7,
+            "mode_expected_xy_m": [1.0, -2.0],
+            "mode_covariance_m2": [0.3, 0.05, 0.05, 0.2],
+            "mode_ellipse_1sigma": {
+                "semi_major_axis_m": 0.6,
+                "semi_minor_axis_m": 0.4,
+                "yaw_rad": 0.25,
+            },
+        }
+    ]
     assert sample["metric_state_canvas_m"] == [1.0, -2.0, 0.4]
     assert sample["visual_reliability"] == 0.8
     assert sample["visual_ood_probability"] == 0.1
