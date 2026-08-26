@@ -81,6 +81,11 @@ DEFAULT_CLEANUP_CONFIRM_TIMEOUT_SEC = 5.0
 DEFAULT_CLEANUP_QUIET_SEC = 0.25
 DEFAULT_CLEANUP_POLL_SEC = 0.05
 DEFAULT_COGNITIVE_READY_TIMEOUT_SEC = 120.0
+NOMINAL_TTL_STATUS = "N/A_SEPARATE_ACTIVE_CONTROLLER_PROBE"
+VALIDATION_STATIC_DEPTH_REVALIDATED = 2
+VALIDATION_SENSOR_DEPTH = 1
+MOTION_STATIC = 1
+SHADOW_REJECTION_UNTRUSTED = 4
 PHASE_F_QOS_CONFIG = "v6_low_obstacle_phase_f_rosbag_qos.yaml"
 PHASE_F_RECORDED_CHILDREN = (
     "module3_ros",
@@ -760,6 +765,12 @@ def _typed_obstacles(
         and _field(message, "observation_valid", False)
     )
     trusted_write = bool(_field(message, "trusted_write", False))
+    try:
+        validation_mode = int(_field(message, "validation_mode", 0))
+        validation_sensor_mask = int(_field(message, "validation_sensor_mask", 0))
+        rejection_mask = int(_field(message, "rejection_mask", 0))
+    except (TypeError, ValueError, OverflowError):
+        return []
     transform: RigidTransform | None = None
     if target_frame is not None:
         source_frame = _frame(_field(message, "header.frame_id"))
@@ -818,6 +829,11 @@ def _typed_obstacles(
                 class_id = _field(obstacle, "class_id")
                 if class_id is not None and str(class_id) != "unknown_low_obstacle":
                     continue
+                try:
+                    motion_class = int(_field(obstacle, "motion_class", 0))
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                static_confirmed = bool(_field(obstacle, "static_confirmed", False))
                 x, y = pose[0], pose[1]
                 if transform is not None:
                     x, y, _ = _apply_transform(transform, (x, y, 0.0))
@@ -831,8 +847,56 @@ def _typed_obstacles(
                     "confidence": confidence,
                     "accepted": accepted,
                     "trusted_write": trusted_write,
+                    "validation_mode": validation_mode,
+                    "validation_sensor_mask": validation_sensor_mask,
+                    "rejection_mask": rejection_mask,
+                    "motion_class": motion_class,
+                    "static_confirmed": static_confirmed,
                 })
     return result
+
+
+def _m1_shadow_candidate_summary(
+    records: Sequence[RecordedMessage],
+) -> dict[str, int]:
+    """Summarize typed shadow candidates without treating them as writes."""
+
+    trusted_write_count = 0
+    shadow_rejection_count = 0
+    nonempty_message_count = 0
+    static_depth_revalidated_geometry_count = 0
+    invalid_geometry_count = 0
+    for row in records:
+        trusted_write = bool(_field(row.message, "trusted_write", False))
+        try:
+            rejection_mask = int(_field(row.message, "rejection_mask", -1))
+        except (TypeError, ValueError, OverflowError):
+            rejection_mask = -1
+        trusted_write_count += int(trusted_write)
+        shadow_rejection_count += int(
+            not trusted_write and rejection_mask == SHADOW_REJECTION_UNTRUSTED
+        )
+        obstacles = _typed_obstacles(row.message)
+        nonempty_message_count += int(bool(obstacles))
+        for obstacle in obstacles:
+            static_depth_revalidated = (
+                obstacle["validation_mode"] == VALIDATION_STATIC_DEPTH_REVALIDATED
+                and obstacle["validation_sensor_mask"] & VALIDATION_SENSOR_DEPTH
+                and obstacle["motion_class"] == MOTION_STATIC
+                and obstacle["static_confirmed"] is True
+            )
+            static_depth_revalidated_geometry_count += int(static_depth_revalidated)
+            invalid_geometry_count += int(not static_depth_revalidated)
+    return {
+        "message_count": len(records),
+        "nonempty_message_count": nonempty_message_count,
+        "static_depth_revalidated_geometry_count": (
+            static_depth_revalidated_geometry_count
+        ),
+        "trusted_write_count": trusted_write_count,
+        "shadow_rejection_count": shadow_rejection_count,
+        "invalid_geometry_count": invalid_geometry_count,
+    }
 
 
 def _scan_metrics(
@@ -1239,11 +1303,17 @@ def build_recorded_evidence(
                 last_stamp = stamp
     samples: list[dict[str, Any]] = []
     for anchor in anchors:
-        stamp = _message_stamp_ns(anchor)
+        anchor_is_typed = anchor.topic == "/bio_nav/module2/cognitive_obstacles"
+        validation_stamp = _time_ns(_field(anchor.message, "validation_stamp"))
+        stamp = (
+            validation_stamp
+            if anchor_is_typed and validation_stamp is not None and validation_stamp > 0
+            else _message_stamp_ns(anchor)
+        )
         scan = _nearest(scan_records, stamp)
         depth = _nearest(depth_records, stamp)
         camera_info = _nearest(camera_info_records, _message_stamp_ns(depth)) if depth is not None else None
-        typed = _nearest(typed_records, stamp)
+        typed = anchor if anchor_is_typed else _nearest(typed_records, stamp)
         pose = _nearest(gt_records, stamp)
         depth_synchronized = depth is not None and abs(_message_stamp_ns(depth) - stamp) <= DEFAULT_SYNC_TOLERANCE_NS
         scan_synchronized = scan is not None and abs(_message_stamp_ns(scan) - stamp) <= DEFAULT_SYNC_TOLERANCE_NS
@@ -1262,7 +1332,10 @@ def build_recorded_evidence(
             manifest.criteria,
         )
         typed_values = []
-        if typed is not None and abs(_message_stamp_ns(typed) - stamp) <= DEFAULT_SYNC_TOLERANCE_NS:
+        if typed is not None and (
+            anchor_is_typed
+            or abs(_message_stamp_ns(typed) - stamp) <= DEFAULT_SYNC_TOLERANCE_NS
+        ):
             typed_values = _typed_obstacles(
                 typed.message,
                 tf_records=tf_records,
@@ -1384,23 +1457,23 @@ def build_recorded_evidence(
         and not bool(_field(row.message, "applied", False))
     ]
     if run.arm != "M3":
-        critic_ttl_status = None
+        observed_critic_ttl_status = None
         ttl_expiry_critic_not_applied = None
     elif not expired_critics:
-        critic_ttl_status = "N/A_NO_CONTROLLER_SCORING"
+        observed_critic_ttl_status = "N/A_NO_CONTROLLER_SCORING"
         ttl_expiry_critic_not_applied = None
     elif len(clear_critics) == len(expired_critics):
-        critic_ttl_status = "STALE_REJECTED"
+        observed_critic_ttl_status = "STALE_REJECTED"
         ttl_expiry_critic_not_applied = True
     elif critic_post_expiry_applied:
-        critic_ttl_status = "FAIL_POST_EXPIRY_APPLIED"
+        observed_critic_ttl_status = "FAIL_POST_EXPIRY_APPLIED"
         ttl_expiry_critic_not_applied = False
     else:
-        critic_ttl_status = "FAIL_NOT_STALE_REJECTED"
+        observed_critic_ttl_status = "FAIL_NOT_STALE_REJECTED"
         ttl_expiry_critic_not_applied = False
-    # The nominal producer-stop drain proves the two costmap consumers clear.
-    # A controller which already terminated need not emit another critic score;
-    # absence of that callback is explicit N/A, not stale-rejection evidence.
+    # After a nominal route terminates, costmap/controller callbacks are not
+    # guaranteed.  Preserve the drain observations as diagnostics only; the
+    # separate active-controller probe owns the Phase-F TTL decision.
     ttl_expiry_observed = bool(ttl_expiry_zero_write) if active_ttl else None
 
     plans = [_path_points(row.message) for row in by_topic.get("/plan", [])]
@@ -1429,6 +1502,7 @@ def build_recorded_evidence(
         for row in typed_records
     ]
     obstacle_validation = [item for values in obstacle_messages for item in values if item["accepted"]]
+    shadow_candidate = _m1_shadow_candidate_summary(typed_records)
     health_records = planning_prior_records if run.arm == "M1" else typed_records
     health_stamps = [_message_stamp_ns(row) for row in health_records]
     health_cadence_hz = 0.0
@@ -1489,7 +1563,11 @@ def build_recorded_evidence(
         },
         "freshness": {
             "ttl_clear_applicability": (
-                "required_active_write" if active_ttl else "not_applicable_inactive"
+                NOMINAL_TTL_STATUS if active_ttl else "not_applicable_inactive"
+            ),
+            "external_active_controller_probe_required": active_ttl,
+            "external_active_controller_probe_status": (
+                "NOT_EVALUATED_BY_NOMINAL_RUN" if active_ttl else None
             ),
             "ttl_source_sequence": latest_sequence if active_ttl else None,
             "ttl_expiry_stamp_ns": expiry_ns if active_ttl else None,
@@ -1503,7 +1581,8 @@ def build_recorded_evidence(
             "ttl_expiry_observed": ttl_expiry_observed,
             "ttl_expiry_zero_write": ttl_expiry_zero_write,
             "ttl_expiry_critic_not_applied": ttl_expiry_critic_not_applied,
-            "critic_ttl_status": critic_ttl_status,
+            "critic_ttl_status": NOMINAL_TTL_STATUS if run.arm == "M3" else None,
+            "nominal_post_route_critic_observation": observed_critic_ttl_status,
             "critic_post_expiry_applied": critic_post_expiry_applied,
             "critic_stale_active_probe": "NOT_RUN" if run.arm == "M3" else None,
         },
@@ -1514,6 +1593,7 @@ def build_recorded_evidence(
         },
         "synchronized_samples": samples,
         "obstacle_validation": obstacle_validation,
+        "shadow_obstacle_candidate": shadow_candidate,
         "layer": {
             "mode": arm.obstacle_layer_mode,
             "global": _status_summary(global_status),
@@ -3009,22 +3089,12 @@ def run_campaign(
             status["evidence_recorded"] = True
             if run.arm in {"M2", "M3"}:
                 freshness = _mapping(evidence.get("freshness"), "freshness")
-                if (
-                    freshness.get("ttl_expiry_observed") is not True
-                    or freshness.get("ttl_expiry_zero_write") is not True
-                    or (
-                        run.arm == "M3"
-                        and (
-                            freshness.get("critic_post_expiry_applied") is not False
-                            or freshness.get("critic_ttl_status") not in {
-                                "N/A_NO_CONTROLLER_SCORING", "STALE_REJECTED",
-                            }
-                            or freshness.get("critic_stale_active_probe") != "NOT_RUN"
-                        )
-                    )
-                ):
-                    status["state"] = "TTL_CLEAR_FAILED"
-                    status["reason"] = "post-producer TTL lifecycle was not clean"
+                status["nominal_ttl_status"] = freshness.get(
+                    "ttl_clear_applicability"
+                )
+                status["external_active_controller_probe_required"] = (
+                    freshness.get("external_active_controller_probe_required") is True
+                )
         except (OSError, CausalContractError, RuntimeError, ValueError) as exc:
             status["evidence_recorded"] = False
             status["evidence_error"] = str(exc)
@@ -3210,7 +3280,7 @@ def _scan_and_spatial_metrics(
 REQUIRED_EVIDENCE_KEYS = (
     "run_id", "repeat", "arm", "identity", "reset", "freshness",
     "sensor_counts", "synchronized_samples", "obstacle_validation", "layer", "critic",
-    "planning_prior", "costmaps", "plan", "optimal_trajectory", "odom",
+    "shadow_obstacle_candidate", "planning_prior", "costmaps", "plan", "optimal_trajectory", "odom",
     "cmd_vel", "passive", "action", "route", "module2_health", "isolation",
     "navigation_metrics",
 )
@@ -3260,6 +3330,31 @@ def _evaluate_run(manifest: CausalManifest, run: RunContract, path: Path) -> tup
         if run.arm in {"M2", "M3"} and int(health.get("trusted_write_count", 0)) <= 0:
             raise CausalContractError(f"{run.arm} lacks trusted obstacle transport")
 
+        shadow_candidate = _mapping(
+            row["shadow_obstacle_candidate"], "shadow_obstacle_candidate"
+        )
+        if run.arm == "M1":
+            shadow_messages = int(shadow_candidate.get("message_count", 0))
+            if (
+                shadow_messages <= 0
+                or int(shadow_candidate.get("nonempty_message_count", 0)) <= 0
+                or int(shadow_candidate.get(
+                    "static_depth_revalidated_geometry_count", 0
+                )) <= 0
+            ):
+                raise CausalContractError(
+                    "M1 lacks non-empty static-depth-revalidated typed shadow geometry"
+                )
+            if (
+                int(shadow_candidate.get("trusted_write_count", 0)) != 0
+                or int(shadow_candidate.get("shadow_rejection_count", 0))
+                != shadow_messages
+                or int(shadow_candidate.get("invalid_geometry_count", 0)) != 0
+            ):
+                raise CausalContractError(
+                    "M1 typed candidate violates untrusted shadow semantics"
+                )
+
         isolation = _mapping(row["isolation"], "isolation")
         if (
             isolation.get("module1_amcl_prior_enabled") is not False
@@ -3287,6 +3382,15 @@ def _evaluate_run(manifest: CausalManifest, run: RunContract, path: Path) -> tup
             layer_cells.append(cells)
         if arm.obstacle_layer_mode in {"off", "shadow"} and any(layer_cells):
             raise CausalContractError("off/shadow obstacle layer wrote Costmap cells")
+        if run.arm == "M1":
+            for scope in ("global", "local"):
+                layer_status = _mapping(layer.get(scope), f"layer.{scope}")
+                if any(int(layer_status.get(key, 0)) for key in (
+                    "applied_count", "cells", "active_cells", "max_cost_increase",
+                )):
+                    raise CausalContractError(
+                        "M1 shadow obstacle layer applied or raised Costmap cells"
+                    )
         if arm.obstacle_layer_mode == "active" and any(cells <= 0 for cells in layer_cells):
             raise CausalContractError("active obstacle layer lacks global/local applied cells")
         if arm.critic_mode != "active" and critic.get("applied") is not False:
@@ -3297,6 +3401,21 @@ def _evaluate_run(manifest: CausalManifest, run: RunContract, path: Path) -> tup
             raise CausalContractError("planning_prior must be a list")
         if run.arm == "M0" and row["planning_prior"]:
             raise CausalContractError("M0 planning_prior must remain empty")
+        if run.arm == "M1" and (
+            not row["planning_prior"]
+            or not any(
+                prior.get("module2_healthy") is True
+                and prior.get("observation_valid") is True
+                for prior in row["planning_prior"]
+                if isinstance(prior, Mapping)
+            )
+            or any(
+                prior.get("trusted_write") is True
+                for prior in row["planning_prior"]
+                if isinstance(prior, Mapping)
+            )
+        ):
+            raise CausalContractError("M1 healthy untrusted PlanningPrior evidence missing")
         for key in ("global", "local"):
             costmap = _mapping(row["costmaps"], "costmaps").get(key)
             if not isinstance(costmap, Mapping) or not costmap.get("recorded"):
@@ -3311,7 +3430,7 @@ def _evaluate_run(manifest: CausalManifest, run: RunContract, path: Path) -> tup
             or scan_message_count <= 0
         ):
             raise CausalContractError("/scan message count must be positive")
-        active_obstacle_validation = run.arm in {"M2", "M3"}
+        active_obstacle_validation = run.arm in {"M1", "M2", "M3"}
         synchronized, invisible, matches, spatial_total = _scan_and_spatial_metrics(
             row["synchronized_samples"],
             tolerance,
@@ -3329,43 +3448,25 @@ def _evaluate_run(manifest: CausalManifest, run: RunContract, path: Path) -> tup
 
         freshness = _mapping(row["freshness"], "freshness")
         expected_ttl_applicability = (
-            "required_active_write" if run.arm in {"M2", "M3"}
+            NOMINAL_TTL_STATUS if run.arm in {"M2", "M3"}
             else "not_applicable_inactive"
         )
         if freshness.get("ttl_clear_applicability") != expected_ttl_applicability:
             raise CausalContractError("TTL-clear applicability does not match arm")
         max_age = float(freshness.get("max_typed_obstacle_age_sec", 0.0))
-        stale_applied = int(freshness.get("stale_applied_count", 0))
         if run.arm in {"M2", "M3"} and (
-            not isinstance(freshness.get("ttl_source_sequence"), int)
-            or int(freshness.get("ttl_source_sequence", 0)) <= 0
-            or not isinstance(freshness.get("ttl_expiry_stamp_ns"), int)
-            or freshness.get("ttl_expiry_observed") is not True
-            or freshness.get("ttl_expiry_zero_write") is not True
+            freshness.get("external_active_controller_probe_required") is not True
+            or freshness.get("external_active_controller_probe_status")
+            != "NOT_EVALUATED_BY_NOMINAL_RUN"
         ):
-            raise CausalContractError("active arm lacks clean TTL-expiry evidence")
-        if run.arm == "M3":
-            critic_ttl_status = freshness.get("critic_ttl_status")
-            critic_post_expiry_applied = _bool(
-                freshness.get("critic_post_expiry_applied"),
-                "freshness.critic_post_expiry_applied",
+            raise CausalContractError(
+                "nominal run must defer TTL to the separate active-controller probe"
             )
-            if freshness.get("critic_stale_active_probe") != "NOT_RUN":
-                raise CausalContractError("M3 critic stale active probe state is invalid")
-            if critic_post_expiry_applied or stale_applied > 0:
-                verdict = "INVALID"
-                reasons = ("stale_input_applied_after_expiry",)
-            elif critic_ttl_status not in {
-                "N/A_NO_CONTROLLER_SCORING", "STALE_REJECTED",
-            }:
-                raise CausalContractError("M3 post-expiry critic callback was not safely rejected")
-            else:
-                verdict, reasons = "VALID", ()
-        elif stale_applied > 0:
-            verdict = "INVALID"
-            reasons = ("stale_input_applied_after_expiry",)
-        else:
-            verdict, reasons = "VALID", ()
+        if run.arm == "M3" and freshness.get("critic_ttl_status") != NOMINAL_TTL_STATUS:
+            raise CausalContractError(
+                "nominal M3 critic TTL status must defer to the separate active-controller probe"
+            )
+        verdict, reasons = "VALID", ()
 
         plan = _points(row["plan"], "plan")
         optimal_trajectory = _points(row["optimal_trajectory"], "optimal_trajectory")

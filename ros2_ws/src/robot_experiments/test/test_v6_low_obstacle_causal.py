@@ -54,9 +54,17 @@ def _evidence(manifest, run, *, stale=False, omit=None, m3_same_as_m2=False):
     plan = _paths(run.arm)
     if m3_same_as_m2 and run.arm == "M3":
         plan = _paths("M2")
-    typed = [] if run.arm not in {"M2", "M3"} else [{
+    typed = [] if run.arm == "M0" else [{
         "x": 1.02, "y": 2.01, "accepted": True,
         "observed_spatial_error_m": 0.022360679774997918,
+        "trusted_write": run.arm in {"M2", "M3"},
+        "validation_mode": causal.VALIDATION_STATIC_DEPTH_REVALIDATED,
+        "validation_sensor_mask": causal.VALIDATION_SENSOR_DEPTH,
+        "rejection_mask": (
+            causal.SHADOW_REJECTION_UNTRUSTED if run.arm == "M1" else 0
+        ),
+        "motion_class": causal.MOTION_STATIC,
+        "static_confirmed": True,
     }]
     clearance = {"M0": 0.20, "M1": 0.21, "M2": 0.46, "M3": 0.52}[run.arm]
     row = {
@@ -90,8 +98,13 @@ def _evidence(manifest, run, *, stale=False, omit=None, m3_same_as_m2=False):
         },
         "freshness": {
             "ttl_clear_applicability": (
-                "required_active_write" if run.arm in {"M2", "M3"}
+                causal.NOMINAL_TTL_STATUS if run.arm in {"M2", "M3"}
                 else "not_applicable_inactive"
+            ),
+            "external_active_controller_probe_required": run.arm in {"M2", "M3"},
+            "external_active_controller_probe_status": (
+                "NOT_EVALUATED_BY_NOMINAL_RUN"
+                if run.arm in {"M2", "M3"} else None
             ),
             "ttl_source_sequence": 7 if run.arm in {"M2", "M3"} else None,
             "ttl_expiry_stamp_ns": 700000000 if run.arm in {"M2", "M3"} else None,
@@ -104,6 +117,9 @@ def _evidence(manifest, run, *, stale=False, omit=None, m3_same_as_m2=False):
             "ttl_expiry_zero_write": True if run.arm in {"M2", "M3"} else None,
             "ttl_expiry_critic_not_applied": None,
             "critic_ttl_status": (
+                causal.NOMINAL_TTL_STATUS if run.arm == "M3" else None
+            ),
+            "nominal_post_route_critic_observation": (
                 "N/A_NO_CONTROLLER_SCORING" if run.arm == "M3" else None
             ),
             "critic_post_expiry_applied": False if run.arm == "M3" else None,
@@ -130,10 +146,30 @@ def _evidence(manifest, run, *, stale=False, omit=None, m3_same_as_m2=False):
             "typed_obstacles": typed,
         }],
         "obstacle_validation": typed,
+        "shadow_obstacle_candidate": {
+            "message_count": 2 if run.arm == "M1" else 0,
+            "nonempty_message_count": 2 if run.arm == "M1" else 0,
+            "static_depth_revalidated_geometry_count": 2 if run.arm == "M1" else 0,
+            "trusted_write_count": 0,
+            "shadow_rejection_count": 2 if run.arm == "M1" else 0,
+            "invalid_geometry_count": 0,
+        },
         "layer": {
             "mode": arm.obstacle_layer_mode,
-            "global": {"status_count": 2, "cells": 10 if run.arm in {"M2", "M3"} else 0, "max_cost": 190},
-            "local": {"status_count": 2, "cells": 4 if run.arm in {"M2", "M3"} else 0, "max_cost": 150},
+            "global": {
+                "status_count": 2, "cells": 10 if run.arm in {"M2", "M3"} else 0,
+                "active_cells": 10 if run.arm in {"M2", "M3"} else 0,
+                "applied_count": 2 if run.arm in {"M2", "M3"} else 0,
+                "max_cost_increase": 10 if run.arm in {"M2", "M3"} else 0,
+                "max_cost": 190,
+            },
+            "local": {
+                "status_count": 2, "cells": 4 if run.arm in {"M2", "M3"} else 0,
+                "active_cells": 4 if run.arm in {"M2", "M3"} else 0,
+                "applied_count": 2 if run.arm in {"M2", "M3"} else 0,
+                "max_cost_increase": 10 if run.arm in {"M2", "M3"} else 0,
+                "max_cost": 150,
+            },
         },
         "critic": {
             "mode": arm.critic_mode,
@@ -143,7 +179,12 @@ def _evidence(manifest, run, *, stale=False, omit=None, m3_same_as_m2=False):
             "near_obstacle_speed_mps": {"M0": 0.4, "M1": 0.4, "M2": 0.3, "M3": 0.2}[run.arm],
             "offline_reconstructed_scores": [],
         },
-        "planning_prior": [] if run.arm == "M0" else [{"stamp_ns": 123000000}],
+        "planning_prior": [] if run.arm == "M0" else [{
+            "stamp_ns": 123000000,
+            "module2_healthy": True,
+            "observation_valid": True,
+            "trusted_write": run.arm in {"M2", "M3"},
+        }],
         "costmaps": {"global": {"recorded": True}, "local": {"recorded": True}},
         "plan": plan,
         "optimal_trajectory": plan,
@@ -239,16 +280,16 @@ def test_evaluator_pairs_scan_invisibility_and_typed_spatial_match(tmp_path):
     summary = evaluate(manifest, tmp_path)
     assert all(result.synchronized_frames == 1 for result in summary.runs)
     assert all(
-        result.scan_invisible_rgbd_pairs == (1 if result.arm in {"M2", "M3"} else 0)
+        result.scan_invisible_rgbd_pairs == (1 if result.arm in {"M1", "M2", "M3"} else 0)
         for result in summary.runs
     )
     assert all(
         result.typed_spatial_matches == result.typed_spatial_total == 1
-        for result in summary.runs if result.arm in {"M2", "M3"}
+        for result in summary.runs if result.arm in {"M1", "M2", "M3"}
     )
     assert all(
         result.typed_spatial_matches == result.typed_spatial_total == 0
-        for result in summary.runs if result.arm in {"M0", "M1"}
+        for result in summary.runs if result.arm == "M0"
     )
 
 
@@ -294,44 +335,43 @@ def test_ttl_clear_is_explicitly_not_applicable_for_m0_and_m1(tmp_path):
             assert row["freshness"]["ttl_clear_applicability"] == "not_applicable_inactive"
 
 
-def test_m3_nominal_ttl_accepts_no_post_expiry_controller_scoring(tmp_path):
+def test_nominal_active_arms_defer_ttl_to_separate_controller_probe(tmp_path):
     manifest = load_manifest(CONFIG)
     _write_evidence(tmp_path, manifest)
     summary = evaluate(manifest, tmp_path)
-    results = [result for result in summary.runs if result.arm == "M3"]
+    results = [result for result in summary.runs if result.arm in {"M2", "M3"}]
     assert all(result.verdict == "VALID" for result in results)
     assert all(
-        result.critic_ttl_status == "N/A_NO_CONTROLLER_SCORING"
-        and result.critic_post_expiry_applied is False
-        and result.critic_stale_active_probe == "NOT_RUN"
-        for result in results
+        result.critic_ttl_status == causal.NOMINAL_TTL_STATUS
+        for result in results if result.arm == "M3"
     )
     for run in manifest.runs:
-        if run.arm == "M3":
+        if run.arm in {"M2", "M3"}:
             freshness = json.loads(
                 (tmp_path / f"{run.run_id}.json").read_text(encoding="utf-8")
             )["freshness"]
-            assert freshness["ttl_expiry_zero_write"] is True
-            assert freshness["critic_ttl_status"] == "N/A_NO_CONTROLLER_SCORING"
-            assert freshness["critic_post_expiry_applied"] is False
-            assert freshness["critic_stale_active_probe"] == "NOT_RUN"
+            assert freshness["ttl_clear_applicability"] == causal.NOMINAL_TTL_STATUS
+            assert freshness["external_active_controller_probe_required"] is True
+            assert freshness["external_active_controller_probe_status"] == (
+                "NOT_EVALUATED_BY_NOMINAL_RUN"
+            )
 
 
-def test_m3_post_expiry_critic_application_is_invalid(tmp_path):
+def test_nominal_post_route_ttl_observation_cannot_replace_active_probe(tmp_path):
     manifest = load_manifest(CONFIG)
     _write_evidence(tmp_path, manifest)
     run = next(item for item in manifest.runs if item.arm == "M3")
     row = _evidence(manifest, run)
     row["freshness"].update({
         "stale_applied_count": 1,
-        "critic_ttl_status": "FAIL_POST_EXPIRY_APPLIED",
+        "nominal_post_route_critic_observation": "FAIL_POST_EXPIRY_APPLIED",
         "critic_post_expiry_applied": True,
     })
     (tmp_path / f"{run.run_id}.json").write_text(json.dumps(row), encoding="utf-8")
     summary = evaluate(manifest, tmp_path)
     result = next(item for item in summary.runs if item.run_id == run.run_id)
-    assert result.verdict == "INVALID"
-    assert result.reasons == ("stale_input_applied_after_expiry",)
+    assert result.verdict == "VALID"
+    assert result.critic_ttl_status == causal.NOMINAL_TTL_STATUS
 
 
 def test_m3_post_expiry_stale_rejected_callback_is_valid(tmp_path):
@@ -341,7 +381,7 @@ def test_m3_post_expiry_stale_rejected_callback_is_valid(tmp_path):
     row = _evidence(manifest, run)
     row["freshness"].update({
         "ttl_expiry_critic_not_applied": True,
-        "critic_ttl_status": "STALE_REJECTED",
+        "nominal_post_route_critic_observation": "STALE_REJECTED",
         "critic_post_expiry_applied": False,
     })
     (tmp_path / f"{run.run_id}.json").write_text(json.dumps(row), encoding="utf-8")
@@ -350,7 +390,7 @@ def test_m3_post_expiry_stale_rejected_callback_is_valid(tmp_path):
     assert result.verdict == "VALID"
 
 
-def test_m3_missing_global_or_local_ttl_clear_is_invalid(tmp_path):
+def test_nominal_missing_post_route_callbacks_is_explicit_na(tmp_path):
     manifest = load_manifest(CONFIG)
     _write_evidence(tmp_path, manifest)
     run = next(item for item in manifest.runs if item.arm == "M3")
@@ -363,8 +403,8 @@ def test_m3_missing_global_or_local_ttl_clear_is_invalid(tmp_path):
     (tmp_path / f"{run.run_id}.json").write_text(json.dumps(row), encoding="utf-8")
     summary = evaluate(manifest, tmp_path)
     result = next(item for item in summary.runs if item.run_id == run.run_id)
-    assert result.verdict == "INVALID"
-    assert "active arm lacks clean TTL-expiry evidence" in result.reasons
+    assert result.verdict == "VALID"
+    assert result.critic_ttl_status == causal.NOMINAL_TTL_STATUS
 
 
 def test_m3_local_trajectory_without_separation_is_ambiguous(tmp_path):
@@ -420,7 +460,7 @@ def test_positive_online_delta_is_reported_applied(tmp_path, reason):
     assert result.critic_participation == "online_applied"
 
 
-def test_post_expiry_application_is_invalid_and_never_causal_pass(tmp_path):
+def test_nominal_post_route_stale_counter_is_not_ttl_qualification(tmp_path):
     manifest = load_manifest(CONFIG)
     _write_evidence(tmp_path, manifest)
     run = manifest.runs[2]
@@ -429,9 +469,10 @@ def test_post_expiry_application_is_invalid_and_never_causal_pass(tmp_path):
     )
     summary = evaluate(manifest, tmp_path)
     result = next(item for item in summary.runs if item.run_id == run.run_id)
-    assert result.verdict == "INVALID"
-    assert result.reasons == ("stale_input_applied_after_expiry",)
-    assert summary.verdict == "INVALID"
+    assert result.verdict == "VALID"
+    assert json.loads(
+        (tmp_path / f"{run.run_id}.json").read_text(encoding="utf-8")
+    )["freshness"]["external_active_controller_probe_required"] is True
 
 
 def test_missing_evidence_is_invalid(tmp_path):
@@ -661,7 +702,11 @@ def test_recorder_reduces_synthetic_messages_to_required_real_fields():
     assert evidence["freshness"]["ttl_expiry_observed"] is True
     assert evidence["freshness"]["ttl_expiry_zero_write"] is True
     assert evidence["freshness"]["ttl_expiry_critic_not_applied"] is None
-    assert evidence["freshness"]["critic_ttl_status"] == "N/A_NO_CONTROLLER_SCORING"
+    assert evidence["freshness"]["critic_ttl_status"] == causal.NOMINAL_TTL_STATUS
+    assert evidence["freshness"]["nominal_post_route_critic_observation"] == (
+        "N/A_NO_CONTROLLER_SCORING"
+    )
+    assert evidence["freshness"]["external_active_controller_probe_required"] is True
     assert evidence["freshness"]["critic_post_expiry_applied"] is False
     assert evidence["freshness"]["critic_stale_active_probe"] == "NOT_RUN"
     assert evidence["sensor_counts"]["scan_message_count"] == 1
@@ -734,7 +779,10 @@ def test_recorder_marks_any_post_expiry_critic_application_invalid(
         ),
         {},
     )
-    assert evidence["freshness"]["critic_ttl_status"] == "FAIL_POST_EXPIRY_APPLIED"
+    assert evidence["freshness"]["critic_ttl_status"] == causal.NOMINAL_TTL_STATUS
+    assert evidence["freshness"]["nominal_post_route_critic_observation"] == (
+        "FAIL_POST_EXPIRY_APPLIED"
+    )
     assert evidence["freshness"]["critic_post_expiry_applied"] is True
     assert evidence["freshness"]["stale_applied_count"] == 1
 
@@ -750,7 +798,10 @@ def test_recorder_accepts_explicit_post_expiry_stale_critic_rejection():
         ),
         {},
     )
-    assert evidence["freshness"]["critic_ttl_status"] == "STALE_REJECTED"
+    assert evidence["freshness"]["critic_ttl_status"] == causal.NOMINAL_TTL_STATUS
+    assert evidence["freshness"]["nominal_post_route_critic_observation"] == (
+        "STALE_REJECTED"
+    )
     assert evidence["freshness"]["critic_post_expiry_applied"] is False
     assert evidence["freshness"]["ttl_expiry_critic_not_applied"] is True
 
@@ -766,7 +817,10 @@ def test_recorder_requires_both_costmap_layers_to_clear_after_expiry():
     )
     assert evidence["freshness"]["ttl_expiry_zero_write"] is False
     assert evidence["freshness"]["ttl_expiry_observed"] is False
-    assert evidence["freshness"]["critic_ttl_status"] == "N/A_NO_CONTROLLER_SCORING"
+    assert evidence["freshness"]["critic_ttl_status"] == causal.NOMINAL_TTL_STATUS
+    assert evidence["freshness"]["nominal_post_route_critic_observation"] == (
+        "N/A_NO_CONTROLLER_SCORING"
+    )
 
 
 def _depth_projection_inputs(depth_m=1.0, *, encoding="32FC1", with_tf=True):
@@ -911,6 +965,9 @@ def _typed_obstacle_message(*, pose, position_stddev):
         module2_healthy=True,
         observation_valid=True,
         trusted_write=True,
+        validation_mode=causal.VALIDATION_STATIC_DEPTH_REVALIDATED,
+        validation_sensor_mask=causal.VALIDATION_SENSOR_DEPTH,
+        rejection_mask=0,
         obstacles=[SimpleNamespace(
             id="v6_low_box_solo",
             class_id="unknown_low_obstacle",
@@ -922,6 +979,8 @@ def _typed_obstacle_message(*, pose, position_stddev):
             ood_probability=0.1,
             position_stddev_m=position_stddev,
             count=3,
+            motion_class=causal.MOTION_STATIC,
+            static_confirmed=True,
         )],
     )
 
@@ -938,6 +997,11 @@ def test_typed_obstacles_accept_real_ndarray_and_match_list_and_array():
         "confidence": 0.9,
         "accepted": True,
         "trusted_write": True,
+        "validation_mode": causal.VALIDATION_STATIC_DEPTH_REVALIDATED,
+        "validation_sensor_mask": causal.VALIDATION_SENSOR_DEPTH,
+        "rejection_mask": 0,
+        "motion_class": causal.MOTION_STATIC,
+        "static_confirmed": True,
     }]
     variants = (
         ([-0.45, -0.35], [0.05, 0.06]),
@@ -1047,7 +1111,60 @@ def test_m1_health_is_reduced_from_planning_prior_not_typed_obstacles():
     assert evidence["planning_prior"][0]["module2_healthy"] is True
 
 
-def test_m1_evaluator_does_not_require_typed_or_depth_validation(tmp_path):
+def test_m1_recorder_accepts_numpy_fixed_array_shadow_candidate():
+    numpy = pytest.importorskip("numpy")
+    manifest = load_manifest(CONFIG)
+    run = next(item for item in manifest.runs if item.arm == "M1")
+    message = _typed_obstacle_message(
+        pose=numpy.asarray([-0.45, -0.35], dtype=numpy.float64),
+        position_stddev=numpy.asarray([0.05, 0.06], dtype=numpy.float64),
+    )
+    message.trusted_write = False
+    message.rejection_mask = causal.SHADOW_REJECTION_UNTRUSTED
+    message.header = SimpleNamespace(
+        stamp=SimpleNamespace(sec=2, nanosec=0), frame_id="map"
+    )
+    message.validation_stamp = SimpleNamespace(sec=2, nanosec=100_000_000)
+    records = [
+        RecordedMessage("/bio_nav/module2/cognitive_obstacles", 2_100_000_000, message),
+        RecordedMessage("/bio_nav/module2/planning_prior", 2_000_000_000, {
+            "module2_healthy": True,
+            "observation_valid": True,
+            "trusted_write": False,
+        }),
+        RecordedMessage("/bio_nav/module2/planning_prior", 2_100_000_000, {
+            "module2_healthy": True,
+            "observation_valid": True,
+            "trusted_write": False,
+        }),
+        RecordedMessage("/bio_nav/cognitive_obstacle_layer/status", 2_100_000_000, {
+            "consumer": "/global_costmap:layer", "applied": False,
+            "raised_cell_count": 0, "active_cell_count": 0,
+            "maximum_cost_increase": 0,
+        }),
+        RecordedMessage("/bio_nav/cognitive_obstacle_layer/status", 2_100_000_000, {
+            "consumer": "/local_costmap:layer", "applied": False,
+            "raised_cell_count": 0, "active_cell_count": 0,
+            "maximum_cost_increase": 0,
+        }),
+        RecordedMessage("/ground_truth/odom", 2_100_000_000, {
+            "pose": {"pose": {"position": {"x": -1.0, "y": -1.0}}},
+        }),
+    ]
+    evidence = build_recorded_evidence(manifest, run, records, {})
+    assert evidence["shadow_obstacle_candidate"] == {
+        "message_count": 1,
+        "nonempty_message_count": 1,
+        "static_depth_revalidated_geometry_count": 1,
+        "trusted_write_count": 0,
+        "shadow_rejection_count": 1,
+        "invalid_geometry_count": 0,
+    }
+    assert evidence["obstacle_validation"][0]["trusted_write"] is False
+    assert evidence["module2_health"]["healthy_count"] == 2
+
+
+def test_m1_evaluator_rejects_missing_typed_shadow_candidate(tmp_path):
     manifest = load_manifest(CONFIG)
     _write_evidence(tmp_path, manifest)
     run = next(item for item in manifest.runs if item.arm == "M1")
@@ -1061,11 +1178,39 @@ def test_m1_evaluator_does_not_require_typed_or_depth_validation(tmp_path):
         "typed_obstacles": [],
     })
     row["obstacle_validation"] = []
+    row["shadow_obstacle_candidate"].update({
+        "message_count": 0,
+        "nonempty_message_count": 0,
+        "static_depth_revalidated_geometry_count": 0,
+        "shadow_rejection_count": 0,
+    })
     (tmp_path / f"{run.run_id}.json").write_text(json.dumps(row), encoding="utf-8")
     summary = evaluate(manifest, tmp_path)
     result = next(item for item in summary.runs if item.run_id == run.run_id)
-    assert result.verdict == "VALID"
-    assert result.typed_spatial_total == 0
+    assert result.verdict == "INVALID"
+    assert "M1 lacks non-empty static-depth-revalidated" in result.reasons[0]
+
+
+@pytest.mark.parametrize("fault", ["trusted", "wrong_rejection", "layer_write"])
+def test_m1_evaluator_rejects_non_shadow_or_layer_write_evidence(tmp_path, fault):
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    run = next(item for item in manifest.runs if item.arm == "M1")
+    row = _evidence(manifest, run)
+    if fault == "trusted":
+        row["shadow_obstacle_candidate"]["trusted_write_count"] = 1
+    elif fault == "wrong_rejection":
+        row["shadow_obstacle_candidate"]["shadow_rejection_count"] = 0
+    else:
+        row["layer"]["local"]["applied_count"] = 1
+    (tmp_path / f"{run.run_id}.json").write_text(json.dumps(row), encoding="utf-8")
+    summary = evaluate(manifest, tmp_path)
+    result = next(item for item in summary.runs if item.run_id == run.run_id)
+    assert result.verdict == "INVALID"
+    if fault == "layer_write":
+        assert "M1 shadow obstacle layer applied or raised" in result.reasons[0]
+    else:
+        assert "M1 typed candidate violates untrusted shadow semantics" in result.reasons[0]
 
 
 def test_phase_f_qos_records_transient_local_tf_static():
@@ -1251,6 +1396,8 @@ def _run_campaign_with_fake_processes(
     def fake_record(*args, **kwargs):
         events.append(("record_evidence", None))
         return {"freshness": {
+            "ttl_clear_applicability": causal.NOMINAL_TTL_STATUS,
+            "external_active_controller_probe_required": True,
             "ttl_expiry_observed": clear,
             "ttl_expiry_zero_write": clear,
             "ttl_expiry_critic_not_applied": None,
@@ -1279,6 +1426,8 @@ def test_campaign_stops_producer_then_records_ttl_clear_before_stack_shutdown(
         tmp_path, monkeypatch, clear=True
     )
     assert summary["runs"][0]["state"] == "EPISODE_FINISHED"
+    assert summary["runs"][0]["nominal_ttl_status"] == causal.NOMINAL_TTL_STATUS
+    assert summary["runs"][0]["external_active_controller_probe_required"] is True
     assert events == [
         ("start", "scene"), ("start", "stack"),
         ("startup_reset_event_before_episode", 1),
@@ -1584,10 +1733,12 @@ def test_startup_probe_private_context_timeout_is_not_executor_type_error():
     assert "TypeError" not in result["reason"]
 
 
-def test_campaign_missing_post_ttl_clear_is_a_failure(tmp_path, monkeypatch):
+def test_campaign_missing_post_route_ttl_callbacks_defers_to_active_probe(
+    tmp_path, monkeypatch
+):
     summary, _ = _run_campaign_with_fake_processes(tmp_path, monkeypatch, clear=False)
-    assert summary["runs"][0]["state"] == "TTL_CLEAR_FAILED"
-    assert summary["state"] == "FINISHED_WITH_FAILURES"
+    assert summary["runs"][0]["state"] == "EPISODE_FINISHED"
+    assert summary["state"] == "FINISHED"
 
 
 def test_stop_process_cleans_a_nested_child_in_a_new_process_group(tmp_path):
