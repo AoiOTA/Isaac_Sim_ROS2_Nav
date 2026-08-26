@@ -16,6 +16,9 @@ from robot_experiments.v6_phase_f_active_ttl_probe import (
 
 PACKAGE = Path(__file__).resolve().parents[1]
 CONFIG = PACKAGE / "config" / "v6_kujiale_low_obstacle_causal.yaml"
+CRITIC_SOURCE = (
+    PACKAGE.parent / "bio_nav_fusion" / "src" / "cognitive_risk_critic.cpp"
+)
 
 
 def _identity(sequence=7, *, epoch=3, session="session", map_version="map"):
@@ -426,6 +429,88 @@ def test_post_stop_cross_identity_critic_cannot_satisfy_clear():
         reason="cost_delta_applied=false;obstacle_rejected=validation_stale",
     )
     assert timeline.clear_complete is True
+
+
+def _armed_m3_timeline():
+    timeline = ActiveTtlTimeline("M3", margin_ns=200_000_000)
+    timeline.start_goal()
+    _observe_positive(timeline)
+    timeline.observe_critic(
+        **_identity(7),
+        applied=True,
+        reason="cost_delta_applied=true;obstacle_applied=true",
+    )
+    timeline.mark_producer_stopped()
+    return timeline
+
+
+def test_m3_real_offer_rejection_string_cannot_clear_critic_ttl():
+    critic_source = CRITIC_SOURCE.read_text(encoding="utf-8")
+    assert '"offer_rejected=" + reason +' in critic_source
+    timeline = _armed_m3_timeline()
+    timeline.observe_clock(timeline.expiry_target_ns)
+
+    timeline.observe_critic(
+        **_identity(7),
+        applied=False,
+        reason=(
+            "offer_rejected=validation_stale;"
+            "offer_reset_epoch=4;offer_session=queued-session"
+        ),
+    )
+
+    assert timeline.critic_stale_rejected is False
+    assert timeline.clear_complete is False
+
+
+def test_m3_real_obstacle_rejection_string_needs_expiry_and_full_identity():
+    critic_source = CRITIC_SOURCE.read_text(encoding="utf-8")
+    assert '"obstacle_rejected=" + reason' in critic_source
+    timeline = _armed_m3_timeline()
+
+    timeline.observe_clock(timeline.expiry_target_ns - 1)
+    timeline.observe_critic(
+        **_identity(7),
+        applied=False,
+        reason="obstacle_rejected=validation_stale",
+    )
+    assert timeline.critic_stale_rejected is False
+
+    timeline.observe_clock(timeline.expiry_target_ns)
+    timeline.observe_critic(
+        **_identity(7, session="other-session"),
+        applied=False,
+        reason="obstacle_rejected=validation_stale",
+    )
+    assert timeline.critic_stale_rejected is False
+
+    timeline.observe_critic(
+        **_identity(7),
+        applied=False,
+        reason="obstacle_rejected=validation_stale",
+    )
+    assert timeline.critic_stale_rejected is True
+
+
+@pytest.mark.parametrize(
+    ("applied", "reason"),
+    [
+        (True, "obstacle_rejected=validation_stale"),
+        (False, "cost_delta_applied=true;obstacle_rejected=validation_stale"),
+    ],
+)
+def test_m3_obstacle_stale_rejection_cannot_clear_with_applied_cost(applied, reason):
+    timeline = _armed_m3_timeline()
+    timeline.observe_clock(timeline.expiry_target_ns)
+
+    timeline.observe_critic(
+        **_identity(7),
+        applied=applied,
+        reason=reason,
+    )
+
+    assert timeline.critic_stale_rejected is False
+    assert timeline.post_expiry_applied is True
 
 
 def test_post_stop_queued_source_positive_after_expiry_fails_probe():

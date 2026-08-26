@@ -317,10 +317,11 @@ class ActiveTtlTimeline:
         reason: str,
     ) -> None:
         text = str(reason)
+        reason_tokens = {token.strip() for token in text.split(";")}
         identity = self._identity(
             reset_epoch, recurrent_session_id, map_version, source_sequence
         )
-        cost_delta_applied = "cost_delta_applied=true" in text
+        cost_delta_applied = "cost_delta_applied=true" in reason_tokens
         positive = bool(applied) and cost_delta_applied
         if not self.producer_stopped:
             if self.action_active and positive:
@@ -341,8 +342,8 @@ class ActiveTtlTimeline:
             self.post_expiry_applied = True
         if not self._matches_armed_source(identity):
             return
-        stale = "validation_stale" in text
-        no_delta = "cost_delta_applied=false" in text or not cost_delta_applied
+        stale = "obstacle_rejected=validation_stale" in reason_tokens
+        no_delta = not cost_delta_applied
         if stale and not bool(applied) and no_delta:
             self.critic_stale_rejected = True
             self._event(
