@@ -58,6 +58,7 @@ source "${SCRIPT_DIR}/lib/common.sh"
 readonly PHASE_B_WRAPPER="${SCRIPT_DIR}/run_v6_r5_phase_b_kujiale.sh"
 readonly RECORDER="${SCRIPT_DIR}/record_module1_kujiale_scene.sh"
 readonly CONFIG_DIR="${PROJECT_ROOT}/ros2_ws/src/robot_experiments/config"
+readonly RECORDER_SHUTDOWN_GRACE_SECONDS=10
 
 normalize_route() {
   case "${1,,}" in
@@ -113,7 +114,17 @@ run_episode() {
   recorder_pid=$!
   cleanup_recorder() {
     if kill -0 "${recorder_pid}" 2>/dev/null; then
-      kill -INT "${recorder_pid}" 2>/dev/null || true
+      # Background jobs inherit SIGINT as ignored from a non-interactive shell.
+      # rosbag2 handles SIGTERM gracefully and writes its metadata before exit.
+      kill -TERM "${recorder_pid}" 2>/dev/null || true
+      deadline=$((SECONDS + RECORDER_SHUTDOWN_GRACE_SECONDS))
+      while kill -0 "${recorder_pid}" 2>/dev/null \
+          && ((SECONDS < deadline)); do
+        sleep 0.1
+      done
+      if kill -0 "${recorder_pid}" 2>/dev/null; then
+        kill -KILL "${recorder_pid}" 2>/dev/null || true
+      fi
     fi
     wait "${recorder_pid}" 2>/dev/null || true
   }
