@@ -127,6 +127,13 @@ class _HeartbeatPublisher:
             return [stamp for stamp, _message in self.messages]
 
 
+def _twist(*, linear_x=0.0, angular_z=0.0):
+    return SimpleNamespace(
+        linear=SimpleNamespace(x=linear_x, y=0.0, z=0.0),
+        angular=SimpleNamespace(x=0.0, y=0.0, z=angular_z),
+    )
+
+
 def _heartbeat_gate(*, period_s=0.02):
     publisher = _HeartbeatPublisher()
     destroyed = []
@@ -147,8 +154,9 @@ def _heartbeat_gate(*, period_s=0.02):
     gate._heartbeat_stop = threading.Event()
     gate._heartbeat_failure = None
     gate._closed = False
+    gate._last_forwarded_command_was_zero = False
     gate._heartbeat_period_s = period_s
-    gate._Twist = SimpleNamespace
+    gate._Twist = _twist
     gate._publisher = publisher
     gate._status_publisher = _HeartbeatPublisher()
     gate._subscription = object()
@@ -159,6 +167,16 @@ def _heartbeat_gate(*, period_s=0.02):
     )
     gate._heartbeat_thread.start()
     return gate, publisher, destroyed
+
+
+def test_zero_latch_requires_every_twist_component_to_be_exactly_zero():
+    assert ResetStopGate._is_zero_twist(_twist())
+
+    for vector_name in ("linear", "angular"):
+        for axis_name in ("x", "y", "z"):
+            message = _twist()
+            setattr(getattr(message, vector_name), axis_name, 1e-12)
+            assert not ResetStopGate._is_zero_twist(message)
 
 
 def test_wall_heartbeat_runs_without_executor_spin_and_release_stops_zeros():
@@ -177,11 +195,69 @@ def test_wall_heartbeat_runs_without_executor_spin_and_release_stops_zeros():
     time.sleep(0.08)
     assert publisher.count() == released_count
 
-    message = SimpleNamespace(linear=SimpleNamespace(x=1.0))
+    message = _twist(linear_x=1.0)
     gate._command_callback(message)
     assert publisher.count() == released_count + 1
     assert publisher.messages[-1][1] is message
     gate.close()
+
+
+def test_released_terminal_zero_heartbeats_until_nonzero_and_can_relatch():
+    gate, publisher, _destroyed = _heartbeat_gate(period_s=0.05)
+    try:
+        gate.mark_reset_complete(2)
+        gate.release(2, source="test")
+        released_count = publisher.count()
+        time.sleep(0.12)
+        assert publisher.count() == released_count
+
+        terminal_start = publisher.count()
+        terminal_zero = _twist()
+        gate._command_callback(terminal_zero)
+        deadline = time.monotonic() + 0.8
+        terminal_times = publisher.times()[terminal_start:]
+        while (
+            len(terminal_times) < 2
+            or terminal_times[-1] - terminal_times[0] < 0.3
+        ) and time.monotonic() < deadline:
+            time.sleep(0.01)
+            terminal_times = publisher.times()[terminal_start:]
+
+        assert len(terminal_times) >= 2
+        assert terminal_times[-1] - terminal_times[0] >= 0.3
+
+        nonzero = _twist(linear_x=0.25, angular_z=0.4)
+        gate._command_callback(nonzero)
+        stopped_count = publisher.count()
+        assert publisher.messages[-1][1] is nonzero
+        time.sleep(0.12)
+        assert publisher.count() == stopped_count
+
+        gate._command_callback(_twist())
+        relatched_count = publisher.count()
+        deadline = time.monotonic() + 0.3
+        while (
+            publisher.count() < relatched_count + 2
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+        assert publisher.count() >= relatched_count + 2
+
+        generation = gate.hold()
+        assert gate._last_forwarded_command_was_zero is False
+        held_count = publisher.count()
+        deadline = time.monotonic() + 0.2
+        while publisher.count() < held_count + 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert publisher.count() >= held_count + 2
+
+        gate.mark_reset_complete(generation)
+        gate.release(generation, source="reset_regression")
+        reset_release_count = publisher.count()
+        time.sleep(0.12)
+        assert publisher.count() == reset_release_count
+    finally:
+        gate.close()
 
 
 def test_heartbeat_stale_generation_close_and_resource_ordering():
@@ -212,7 +288,7 @@ def test_relay_publish_exception_returns_gate_to_observable_hold():
 
     publisher.publish = fail_publish
     with pytest.raises(RuntimeError, match="relay publish injected"):
-        gate._command_callback(SimpleNamespace())
+        gate._command_callback(_twist())
 
     assert gate.state.held is True
     assert gate.state.eligible_generation is None

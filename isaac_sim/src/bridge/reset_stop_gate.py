@@ -91,6 +91,7 @@ class ResetStopGate:
         self._heartbeat_stop = threading.Event()
         self._heartbeat_failure: str | None = None
         self._closed = False
+        self._last_forwarded_command_was_zero = False
         self._heartbeat_period_s = 1.0 / float(zero_rate_hz)
         self._Twist = Twist
         self._String = String
@@ -150,6 +151,7 @@ class ResetStopGate:
                 if self._closed:
                     raise ResetStopGateError("reset stop gate is closed")
                 generation = self.state.hold()
+                self._last_forwarded_command_was_zero = False
                 self.publish_zero()
                 self._publish_status("hold")
                 return generation
@@ -184,6 +186,7 @@ class ResetStopGate:
                 self._publish_status(f"released:{source}", state=staged)
                 self.state.held = staged.held
                 self.state.eligible_generation = staged.eligible_generation
+                self._last_forwarded_command_was_zero = False
 
     def publish_zero(self) -> None:
         self._publisher.publish(self._Twist())
@@ -195,12 +198,28 @@ class ResetStopGate:
                     if self._closed or self.state.held:
                         self.publish_zero()
                         return
+                    command_is_zero = self._is_zero_twist(message)
                     self._publisher.publish(message)
+                    self._last_forwarded_command_was_zero = command_is_zero
                 except Exception as error:
                     self._record_publish_failure_locked(
                         error, source="command"
                     )
                     raise
+
+    @staticmethod
+    def _is_zero_twist(message: Any) -> bool:
+        return all(
+            component == 0.0
+            for component in (
+                message.linear.x,
+                message.linear.y,
+                message.linear.z,
+                message.angular.x,
+                message.angular.y,
+                message.angular.z,
+            )
+        )
 
     def _record_publish_failure_locked(
         self, error: Exception, *, source: str
@@ -222,7 +241,7 @@ class ResetStopGate:
             pass
 
     def _zero_heartbeat(self) -> None:
-        """Publish HOLD zeros from wall time, independent of ROS executor spin."""
+        """Publish latched zeros from wall time, independent of ROS executor spin."""
 
         deadline = time.monotonic() + self._heartbeat_period_s
         while not self._heartbeat_stop.wait(
@@ -233,7 +252,7 @@ class ResetStopGate:
                 with self._lock:
                     if self._closed:
                         return
-                    if self.state.held:
+                    if self.state.held or self._last_forwarded_command_was_zero:
                         try:
                             self.publish_zero()
                         except Exception as error:
