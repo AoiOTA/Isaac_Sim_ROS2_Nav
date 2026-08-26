@@ -221,6 +221,19 @@ class CognitiveValidationGeneration:
 
 
 @dataclass(frozen=True)
+class CognitiveConstraintsIdentity:
+    """Module3-owned identity of the currently published constraints."""
+
+    reset_generation: int
+    map_version: str
+    cognitive_tile_id: str
+    tile_revision: int
+    graph_id: str
+    graph_revision: int
+    region_id: str | None
+
+
+@dataclass(frozen=True)
 class RouteInputGeneration:
     """One reset/route/graph identity captured at external-input admission."""
 
@@ -599,10 +612,10 @@ class RouteCoordinator:
         self.primary_fallback_used = False
         self.cognitive_graph_identity = CognitiveGraphIdentity(
             int(node.get_parameter("cognitive_graph_reset_epoch").value),
-            str(node.get_parameter("cognitive_graph_session_id").value),
-            self.map.map_version,
-            str(node.get_parameter("cognitive_graph_tile_id").value),
-            int(node.get_parameter("cognitive_graph_tile_revision").value),
+            '',
+            '',
+            '',
+            0,
             self.gvg_graph.graph_id,
             self.gvg_graph.revision,
             str(node.get_parameter("cognitive_graph_model_id").value),
@@ -647,6 +660,7 @@ class RouteCoordinator:
         self.latest_pose_stamp_ns: int | None = None
         self.latest_global_costmap: CostmapSnapshot | None = None
         self.live_map_version: str | None = None
+        self.cognitive_constraints_identity: CognitiveConstraintsIdentity | None = None
         # Latest /map grid received while the reset barrier held; replayed
         # once when the barrier opens.
         self._deferred_occupancy_map = None
@@ -1680,6 +1694,7 @@ class RouteCoordinator:
         cache = getattr(self, "cognitive_constraints_cache", None)
         if cache is not None:
             cache.invalidate()
+        self.cognitive_constraints_identity = None
         region_selector = getattr(self, "region_selector", None)
         if region_selector is not None:
             region_selector.current = None
@@ -1744,7 +1759,7 @@ class RouteCoordinator:
         self.cognitive_graph_identity = CognitiveGraphIdentity(
             identity.reset_epoch + 1,
             '',
-            identity.map_version,
+            '',
             '',
             0,
             self.gvg_graph.graph_id,
@@ -2103,6 +2118,14 @@ class RouteCoordinator:
             last_source_sequence = int(self.cognitive_graph_last_sequence)
             occupancy = self.map
             gvg_graph = getattr(self, "gvg_graph", active_graph)
+            constraints_identity = getattr(
+                self, "cognitive_constraints_identity", None
+            )
+            live_map_version = getattr(self, "live_map_version", None)
+            current_region = (
+                None if getattr(self, "region_selector", None) is None
+                else self.region_selector.current
+            )
         if goal_locked_to_fallback:
             with self._route_output_lock():
                 with self._route_state_lock():
@@ -2130,18 +2153,53 @@ class RouteCoordinator:
                     feedback, accepted=False, reason="set_route_graph_switch_pending"
                 )
             return
-        if bind_identity:
-            identity = CognitiveGraphIdentity(
+        try:
+            region_id = None if current_region is None else current_region.region_id
+            active_graph_identity = self._graph_identity(active_graph)
+            if (
+                live_map_version is None
+                or constraints_identity is None
+                or constraints_identity.reset_generation
+                != int(getattr(self, "reset_generation", 0))
+                or constraints_identity.map_version != live_map_version
+                or (constraints_identity.graph_id, constraints_identity.graph_revision)
+                != active_graph_identity
+                or constraints_identity.region_id != region_id
+            ):
+                raise ValueError("Module3 cognitive constraints identity unavailable")
+            module3_expected = (
                 identity.reset_epoch,
-                str(message.recurrent_session_id),
-                identity.map_version,
+                live_map_version,
+                constraints_identity.cognitive_tile_id,
+                constraints_identity.tile_revision,
+                str(gvg_graph.graph_id),
+                int(gvg_graph.revision),
+            )
+            module3_observed = (
+                int(message.reset_epoch),
+                str(message.map_version),
                 str(message.cognitive_tile_id),
                 int(message.tile_revision),
-                identity.source_physical_graph_id,
-                identity.source_physical_graph_revision,
-                str(message.model_id),
+                str(message.source_physical_graph_id),
+                int(message.source_physical_graph_revision),
             )
-        try:
+            if module3_observed != module3_expected:
+                raise ValueError("candidate Module3 generation identity mismatch")
+            identity = CognitiveGraphIdentity(
+                identity.reset_epoch,
+                identity.recurrent_session_id,
+                live_map_version,
+                constraints_identity.cognitive_tile_id,
+                constraints_identity.tile_revision,
+                str(gvg_graph.graph_id),
+                int(gvg_graph.revision),
+                identity.model_id or str(message.model_id),
+            )
+            if bind_identity:
+                identity = replace(
+                    identity,
+                    recurrent_session_id=str(message.recurrent_session_id),
+                )
             candidate = validate_cognitive_graph_candidate(
                 message,
                 now_ns=int(self._now().nanoseconds),
@@ -2570,6 +2628,7 @@ class RouteCoordinator:
                     self.pending_reroute_outcome = None
                     self.cognitive_graph_feedback_active = None
                 self.cognitive_constraints_cache.invalidate()
+                self.cognitive_constraints_identity = None
                 self.graph_reassert_required = False
                 self.graph_coherent = True
                 self._clear_graph_retry_locked()
@@ -2877,6 +2936,8 @@ class RouteCoordinator:
                 previous = selector.current
                 selected = selector.select(current, now_s)
                 changed = selected != previous
+                if changed:
+                    self.cognitive_constraints_identity = None
             if changed:
                 self.node.get_logger().info(
                     f"active cognitive region: {selected.region_id}"
@@ -2962,9 +3023,11 @@ class RouteCoordinator:
                 if version != self.live_map_version:
                     self.live_map_version = version
                     self.cognitive_constraints_cache.invalidate()
+                    self.cognitive_constraints_identity = None
             else:
                 self.live_map_version = None
                 self.cognitive_constraints_cache.invalidate()
+                self.cognitive_constraints_identity = None
         if accepted:
             self._publish_cognitive_constraints_if_input_current(input_generation)
         else:
@@ -3078,6 +3141,17 @@ class RouteCoordinator:
             message.stable_duration_s = value.stable_duration_s
             message.persistent_confirmed = value.persistent_confirmed
             self.cognitive_constraints_pub.publish(message)
+            with self._route_state_lock():
+                if self._route_input_is_current_locked(input_generation):
+                    self.cognitive_constraints_identity = CognitiveConstraintsIdentity(
+                        reset_generation=int(getattr(self, "reset_generation", 0)),
+                        map_version=value.map_version,
+                        cognitive_tile_id=value.cognitive_tile_id,
+                        tile_revision=int(value.tile_revision),
+                        graph_id=graph_identity[0],
+                        graph_revision=int(value.graph_revision),
+                        region_id=None if region is None else region.region_id,
+                    )
 
     def _publish_cognitive_cache_parameters(self) -> None:
         from rclpy.parameter import Parameter
@@ -4530,14 +4604,15 @@ class RouteCoordinator:
                 self.cognitive_graph_identity = CognitiveGraphIdentity(
                     self.cognitive_graph_identity.reset_epoch,
                     self.cognitive_graph_identity.recurrent_session_id,
-                    occupancy.map_version,
-                    self.cognitive_graph_identity.cognitive_tile_id,
-                    self.cognitive_graph_identity.tile_revision,
+                    '',
+                    '',
+                    0,
                     graph.graph_id,
                     graph.revision,
                     self.cognitive_graph_identity.model_id,
                 )
                 self.cognitive_constraints_cache.invalidate()
+                self.cognitive_constraints_identity = None
                 self.support_node_positions = {
                     int(feature["properties"]["id"]): tuple(
                         float(value) for value in feature["geometry"]["coordinates"]

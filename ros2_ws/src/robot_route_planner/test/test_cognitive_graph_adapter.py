@@ -16,6 +16,7 @@ from robot_route_planner.cognitive_graph_adapter import (
 from robot_route_planner.map_io import OccupancyMap
 from robot_route_planner.models import Edge, Graph, Node, NodeType, Traversability
 from robot_route_planner.ros_node import (
+    CognitiveConstraintsIdentity,
     GraphSwitchGeneration,
     RouteCoordinator,
     StructuralRebuildGeneration,
@@ -54,6 +55,12 @@ def _feedback_coordinator(*, graph_id='cognitive', revision=5):
     coordinator = RouteCoordinator.__new__(RouteCoordinator)
     coordinator.frame_id = 'map'
     coordinator.graph = SimpleNamespace(graph_id=graph_id, revision=revision)
+    coordinator.gvg_graph = coordinator.graph
+    coordinator.reset_generation = 0
+    coordinator.live_map_version = 'map'
+    coordinator.region_selector = None
+    coordinator.cognitive_constraints_identity = CognitiveConstraintsIdentity(
+        0, 'map', 'tile', 2, graph_id, revision, None)
     coordinator._now = lambda: SimpleNamespace(to_msg=lambda: object())
     coordinator.CognitiveGraphValidationAck = _FeedbackMessage
     coordinator.CognitiveEdgeOutcome = _FeedbackMessage
@@ -82,7 +89,12 @@ def _identity():
         3, 'session', 'map', 'tile', 2, 'physical', 4, 'model')
 
 
-def _candidate(*, stamp_ns=10_000_000_000, sequence=7, transform=None):
+def _candidate(
+    *, stamp_ns=10_000_000_000, sequence=7, value_sequence=1,
+    reset_epoch=3, session='session', map_version='map', tile_id='tile',
+    tile_revision=2, physical_graph_id='physical', physical_graph_revision=4,
+    transform=None,
+):
     edge = SimpleNamespace(
         DIRECTION_DIRECTED=0,
         DIRECTION_BIDIRECTIONAL=1,
@@ -111,16 +123,16 @@ def _candidate(*, stamp_ns=10_000_000_000, sequence=7, transform=None):
         ttl=SimpleNamespace(sec=0, nanosec=500_000_000),
         schema_version='bio_nav_cognitive_place_graph_v1',
         source_sequence=sequence,
-        recurrent_session_id='session',
+        recurrent_session_id=session,
         graph_id='cpg-' + 'a' * 24,
         topology_revision=5,
-        value_sequence=1,
-        map_version='map',
-        reset_epoch=3,
-        cognitive_tile_id='tile',
-        tile_revision=2,
-        source_physical_graph_id='physical',
-        source_physical_graph_revision=4,
+        value_sequence=value_sequence,
+        map_version=map_version,
+        reset_epoch=reset_epoch,
+        cognitive_tile_id=tile_id,
+        tile_revision=tile_revision,
+        source_physical_graph_id=physical_graph_id,
+        source_physical_graph_revision=physical_graph_revision,
         t_map_canvas=(np.eye(3) if transform is None else transform).reshape(-1),
         model_id='model',
         module2_healthy=True,
@@ -352,6 +364,12 @@ def test_first_invalid_candidate_does_not_bind_generation_identity():
     coordinator.cognitive_graph_identity = CognitiveGraphIdentity(
         3, '', 'map', '', 0, 'physical', 4, '')
     coordinator.graph = _physical_graph()
+    coordinator.gvg_graph = coordinator.graph
+    coordinator.reset_generation = 0
+    coordinator.live_map_version = 'map'
+    coordinator.region_selector = None
+    coordinator.cognitive_constraints_identity = CognitiveConstraintsIdentity(
+        0, 'map', 'tile', 2, 'physical', 4, None)
     coordinator.map = _map()
     coordinator.defaults = {'footprint': FOOTPRINT}
     coordinator.StructuralGraphStatus = SimpleNamespace(
@@ -376,6 +394,106 @@ def test_first_invalid_candidate_does_not_bind_generation_identity():
     assert ack.validated_graph_id == 'physical'
     assert ack.validated_graph_revision == 4
     assert ack.validated_edge_id == ''
+
+
+def _live_identity_coordinator():
+    coordinator = _feedback_coordinator(graph_id='physical', revision=4)
+    coordinator.pending_goal = None
+    coordinator.primary_fallback_used = False
+    coordinator.cognitive_graph_switch_pending = False
+    coordinator.cognitive_graph_mode = 'shadow'
+    coordinator.cognitive_graph_last_sequence = 0
+    coordinator.cognitive_graph_identity = CognitiveGraphIdentity(
+        2, '', '', '', 0, 'physical', 4, '')
+    occupancy = _map()
+    coordinator.map = OccupancyMap(
+        occupancy.free, occupancy.resolution_m, occupancy.origin_xy_m,
+        'semantic-yaml-stem', occupancy.yaml_path)
+    coordinator.defaults = {'footprint': FOOTPRINT}
+    coordinator.StructuralGraphStatus = SimpleNamespace(
+        LAST_KNOWN_GOOD=2, READY=1)
+    coordinator._now = lambda: SimpleNamespace(
+        nanoseconds=10_100_000_000, to_msg=lambda: object())
+    coordinator._publish_structural_status = lambda *_args: None
+    coordinator.live_map_version = 'occupancy-grid-sha256'
+    coordinator.cognitive_constraints_identity = CognitiveConstraintsIdentity(
+        0, 'occupancy-grid-sha256', 'live-tile', 4,
+        'physical', 4, None)
+    return coordinator
+
+
+def test_live_module3_identity_accepts_epoch2_hash_tile_and_keeps_sequences_independent():
+    coordinator = _live_identity_coordinator()
+    candidate = _candidate(
+        sequence=466,
+        value_sequence=131,
+        reset_epoch=2,
+        session='live-session',
+        map_version='occupancy-grid-sha256',
+        tile_id='live-tile',
+        tile_revision=4,
+    )
+
+    coordinator._on_cognitive_graph(candidate)
+
+    assert coordinator.cognitive_graph_identity == CognitiveGraphIdentity(
+        2, 'live-session', 'occupancy-grid-sha256', 'live-tile', 4,
+        'physical', 4, 'model')
+    assert coordinator.cognitive_graph_last_sequence == 466
+    ack = coordinator.cognitive_graph_validation_pub.messages[0]
+    assert ack.generation == 466
+    assert ack.candidate_value_sequence == 131
+    assert ack.reason == 'physically_validated_shadow_not_selected'
+
+
+@pytest.mark.parametrize(
+    ('field', 'value'),
+    (
+        ('reset_epoch', 3),
+        ('map_version', 'semantic-yaml-stem'),
+        ('cognitive_tile_id', 'stale-tile'),
+        ('recurrent_session_id', 'stale-session'),
+    ),
+)
+def test_stale_live_identity_fields_are_rejected_without_rebinding(field, value):
+    coordinator = _live_identity_coordinator()
+    coordinator.cognitive_graph_identity = CognitiveGraphIdentity(
+        2, 'live-session', 'occupancy-grid-sha256', 'live-tile', 4,
+        'physical', 4, 'model')
+    candidate = _candidate(
+        sequence=466,
+        value_sequence=131,
+        reset_epoch=2,
+        session='live-session',
+        map_version='occupancy-grid-sha256',
+        tile_id='live-tile',
+        tile_revision=4,
+    )
+    setattr(candidate, field, value)
+
+    coordinator._on_cognitive_graph(candidate)
+
+    assert coordinator.cognitive_graph_last_sequence == 0
+    assert coordinator.cognitive_graph_identity.recurrent_session_id == 'live-session'
+    assert coordinator.cognitive_graph_validation_pub.messages[0].accepted is False
+
+
+def test_missing_live_constraints_rejects_and_never_candidate_binds():
+    coordinator = _live_identity_coordinator()
+    coordinator.cognitive_constraints_identity = None
+    candidate = _candidate(
+        reset_epoch=2,
+        session='candidate-session',
+        map_version='occupancy-grid-sha256',
+        tile_id='live-tile',
+        tile_revision=4,
+    )
+
+    coordinator._on_cognitive_graph(candidate)
+
+    assert coordinator.cognitive_graph_identity.recurrent_session_id == ''
+    assert coordinator.cognitive_graph_last_sequence == 0
+    assert 'identity unavailable' in coordinator.cognitive_graph_validation_pub.messages[0].reason
 
 
 def test_reset_clears_candidate_generation_state():
@@ -418,6 +536,7 @@ def test_reset_clears_candidate_generation_state():
     identity = coordinator.cognitive_graph_identity
     assert identity.reset_epoch == 4
     assert identity.recurrent_session_id == ''
+    assert identity.map_version == ''
     assert identity.cognitive_tile_id == ''
     assert identity.tile_revision == 0
     assert identity.model_id == ''
