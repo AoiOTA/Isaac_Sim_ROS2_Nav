@@ -726,20 +726,6 @@ def _completed_hold_constraints_coordinator():
         publications.append(kwargs.get('expected_input'))
     )
 
-    coordinator._on_reset_stop_gate_status(_gate_status(2, True, 'hold'))
-    coordinator._on_occupancy_map(grid)
-    coordinator._on_reset_event(None)
-
-    # Model the successful completion-owned GVG reassert commit. Route
-    # outputs remain fenced until the later activation release.
-    coordinator.graph = coordinator.gvg_graph
-    coordinator.desired_graph = coordinator.gvg_graph
-    coordinator.graph_coherent = True
-    coordinator.graph_reassert_required = False
-    coordinator.graph_transaction_generation = None
-    coordinator.graph_retry_key = None
-    coordinator.graph_retry_due_steady_s = None
-    coordinator.reset_ready_pending = True
     return coordinator, grid, publications
 
 
@@ -757,7 +743,9 @@ def test_active_reset_hold_defers_map_and_keeps_all_route_outputs_zero() -> None
 
     assert coordinator.reset_hold_barrier is True
     assert coordinator.live_map_version is None
-    assert coordinator._deferred_occupancy_map is grid
+    deferred_generation, deferred_map = coordinator._deferred_occupancy_map
+    assert deferred_generation == (2, 1)
+    assert deferred_map is grid
     assert constraints_publications == []
     assert coordinator.goal_complete_pub.messages == []
     assert coordinator.goal_result_pub.messages == []
@@ -768,19 +756,43 @@ def test_active_reset_hold_defers_map_and_keeps_all_route_outputs_zero() -> None
     assert coordinator.route_pub.messages == []
 
 
-def test_phase_d_pair3_completed_hold_publishes_gvg_constraints_before_release_once() -> None:
+def test_phase_d_pair4_completed_reset_publishes_local_gvg_without_route_server() -> None:
     coordinator, _grid, publications = _completed_hold_constraints_coordinator()
+    coordinator.graph = SimpleNamespace(graph_id='stale-cognitive', revision=9)
+    events = []
+
+    def route_server_unavailable(reason, **_kwargs):
+        events.append(('route_server_unavailable', reason))
+        coordinator.graph_coherent = False
+        coordinator.graph_reassert_required = True
+        coordinator.graph_retry_key = ('retry', coordinator.reset_generation)
+        coordinator.graph_retry_due_steady_s = 1.0
+
+    coordinator._ensure_desired_graph = route_server_unavailable
+    coordinator._publish_cognitive_constraints = lambda **kwargs: (
+        publications.append(kwargs.get('expected_input')),
+        events.append(('constraints', kwargs.get('expected_input'))),
+    )
+
+    coordinator._on_reset_stop_gate_status(_gate_status(2, True, 'hold'))
+    coordinator._on_occupancy_map(_grid)
+    assert publications == []
+    coordinator._on_reset_event(None)
 
     # Empty may own completion before the latched status advances from HOLD.
     assert coordinator.reset_status_snapshot.reason == 'hold'
-    coordinator._refresh_constraints_after_completed_reset()
-
     assert coordinator.live_map_version is not None
     assert len(publications) == 1
     generation = publications[0]
     assert generation.gate_generation == 2
     assert generation.reset_generation == coordinator.reset_generation == 1
     assert (generation.graph_id, generation.graph_revision) == ('physical', 4)
+    assert coordinator.reset_ready_pending is False
+    assert coordinator.graph_coherent is False
+    assert coordinator.graph_reassert_required is True
+    assert coordinator.graph_retry_key == ('retry', 1)
+    assert events[0][0] == 'constraints'
+    assert events[1][0] == 'route_server_unavailable'
     assert coordinator.goal_complete_pub.messages == []
     assert coordinator.goal_result_pub.messages == []
     assert coordinator.context_pub.messages == []
@@ -799,15 +811,40 @@ def test_phase_d_pair3_completed_hold_publishes_gvg_constraints_before_release_o
     assert len(publications) == 1
 
 
+def test_completed_reset_constraints_republish_once_per_generation() -> None:
+    coordinator, grid, publications = _completed_hold_constraints_coordinator()
+
+    for generation in (2, 3):
+        coordinator._on_reset_stop_gate_status(
+            _gate_status(generation, True, 'hold'))
+        coordinator._on_occupancy_map(grid)
+        coordinator._on_reset_event(None)
+        coordinator._on_reset_stop_gate_status(
+            _gate_status(generation, True, 'reset_complete', eligible=generation))
+        coordinator._on_reset_stop_gate_status(
+            _gate_status(generation, False, 'released:activation_gate'))
+
+    assert [(value.gate_generation, value.reset_generation) for value in publications] == [
+        (2, 1),
+        (3, 2),
+    ]
+
+
 def test_completed_hold_constraints_fail_closed_without_global_static_tile() -> None:
     coordinator, grid, publications = _completed_hold_constraints_coordinator()
     coordinator.region_selector = SimpleNamespace(current=None)
+
+    coordinator._on_reset_stop_gate_status(_gate_status(2, True, 'hold'))
+    coordinator._on_occupancy_map(grid)
+    coordinator._on_reset_event(None)
 
     coordinator._refresh_constraints_after_completed_reset()
 
     assert publications == []
     assert coordinator.live_map_version is None
-    assert coordinator._deferred_occupancy_map is grid
+    deferred_generation, deferred_map = coordinator._deferred_occupancy_map
+    assert deferred_generation == (2, 1)
+    assert deferred_map is grid
 
 
 def test_successful_completion_owned_gvg_reassert_refreshes_constraints_in_hold() -> None:
@@ -893,6 +930,25 @@ def test_pre_reset_map_worker_cannot_commit_into_new_reset_generation(
     assert publications == []
 
 
+def test_deferred_map_from_older_reset_generation_is_rejected() -> None:
+    coordinator, grid, publications = _completed_hold_constraints_coordinator()
+
+    coordinator._on_reset_stop_gate_status(_gate_status(2, True, 'hold'))
+    coordinator._on_occupancy_map(grid)
+    coordinator._on_reset_stop_gate_status(_gate_status(3, True, 'hold'))
+    coordinator._on_reset_event(None)
+
+    assert coordinator.live_map_version is None
+    assert coordinator._deferred_occupancy_map is None
+    assert publications == []
+
+    coordinator._on_occupancy_map(grid)
+    assert coordinator.live_map_version is not None
+    assert len(publications) == 1
+    assert publications[0].gate_generation == 3
+    assert publications[0].reset_generation == 2
+
+
 def test_fixed_scene_constraints_publish_canonical_map_id_for_shadow_payload() -> None:
     repo = Path(__file__).resolve().parents[4]
     override = (
@@ -928,20 +984,22 @@ def test_fixed_scene_constraints_publish_canonical_map_id_for_shadow_payload() -
     )
     coordinator.reset_intent_generation = 2
     coordinator.reset_event_completed_generation = 2
-    coordinator.reset_ready_pending = True
+    coordinator.reset_ready_pending = False
     coordinator.live_map_version = "occupancy-sha"
     coordinator.region_selector = None
     coordinator.map = occupancy
     coordinator.graph = SimpleNamespace(
+        graph_id="stale-cognitive", revision=9
+    )
+    coordinator.gvg_graph = SimpleNamespace(
         graph_id="v6_kujiale_isaacgen_v1:gvg_v1", revision=1
     )
-    coordinator.gvg_graph = coordinator.graph
-    coordinator.desired_graph = coordinator.graph
-    coordinator.graph_coherent = True
-    coordinator.graph_reassert_required = False
+    coordinator.desired_graph = coordinator.gvg_graph
+    coordinator.graph_coherent = False
+    coordinator.graph_reassert_required = True
     coordinator.graph_transaction_generation = None
-    coordinator.graph_retry_key = None
-    coordinator.graph_retry_due_steady_s = None
+    coordinator.graph_retry_key = (2, "route-server-unavailable")
+    coordinator.graph_retry_due_steady_s = 1.0
     coordinator.defaults = {
         "footprint": {
             "polygon_m": [
@@ -994,6 +1052,9 @@ def test_fixed_scene_constraints_publish_canonical_map_id_for_shadow_payload() -
     assert header["map_id"] == "v6_kujiale_isaacgen_v1"
     assert not header["map_id"].startswith("canvas16:")
     assert header["tile_revision"] == header["graph_revision"] == 1
+    assert message.graph_id == "v6_kujiale_isaacgen_v1:gvg_v1"
+    assert coordinator.graph_coherent is False
+    assert coordinator.graph_reassert_required is True
     assert np.array_equal(buffers["T_map_canvas"], np.asarray(scene["T_map_canvas"]))
     assert np.array_equal(
         buffers["valid_state_mask"], np.asarray(scene["valid_state_mask"])

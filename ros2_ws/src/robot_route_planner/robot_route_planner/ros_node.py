@@ -654,8 +654,8 @@ class RouteCoordinator:
         self.latest_pose_stamp_ns: int | None = None
         self.latest_global_costmap: CostmapSnapshot | None = None
         self.live_map_version: str | None = None
-        # Latest /map grid received before the completion-owned GVG reassert;
-        # consumed once that static identity is safe to publish.
+        # Latest /map grid received before physical reset completion; consumed
+        # once that generation may publish the Module3-local GVG snapshot.
         self._deferred_occupancy_map = None
         self._last_cognitive_constraints_publication = None
         self.cognitive_constraints_cache = CognitiveConstraintsCache()
@@ -942,13 +942,10 @@ class RouteCoordinator:
         status = getattr(self, "reset_status_snapshot", None)
         intent = getattr(self, "reset_intent_generation", None)
         completed = getattr(self, "reset_event_completed_generation", None)
-        graph = getattr(self, "graph", None)
-        desired = getattr(self, "desired_graph", None)
         gvg = getattr(self, "gvg_graph", None)
-        if status is None or graph is None or desired is None or gvg is None:
+        if status is None or gvg is None:
             return None
         generation = int(status.generation)
-        gvg_identity = self._graph_identity(gvg)
         return generation if bool(
             getattr(self, "reset_status_authority_seen", False)
             and bool(status.held)
@@ -956,24 +953,30 @@ class RouteCoordinator:
             and getattr(self, "reset_status_generation", None) == generation
             and intent == generation
             and completed == generation
-            and bool(getattr(self, "reset_ready_pending", False))
-            and bool(getattr(self, "graph_coherent", False))
-            and not bool(getattr(self, "graph_reassert_required", False))
-            and getattr(self, "graph_transaction_generation", None) is None
-            and getattr(self, "graph_retry_key", None) is None
-            and getattr(self, "graph_retry_due_steady_s", None) is None
             # Reset clears region selection and its tick remains fenced. Only
             # the global-static/fixed-scene contract has no pose dependency.
             and getattr(self, "region_selector", None) is None
-            and self._graph_identity(graph) == gvg_identity
-            and self._graph_identity(desired) == gvg_identity
         ) else None
+
+    def _cognitive_constraints_graph_locked(self):
+        """Select GVG only for the narrow completed-reset static snapshot."""
+
+        if self._completed_reset_constraints_generation_locked() is not None:
+            return self.gvg_graph
+        return self.graph
+
+    def _reset_map_generation_locked(self) -> tuple[int | None, int]:
+        status = getattr(self, "reset_status_snapshot", None)
+        return (
+            None if status is None else int(status.generation),
+            int(getattr(self, "reset_generation", 0)),
+        )
 
     def _cognitive_constraints_generation_locked(
         self,
     ) -> CognitiveConstraintsGeneration:
         status = getattr(self, "reset_status_snapshot", None)
-        graph = self.graph
+        graph = self._cognitive_constraints_graph_locked()
         return CognitiveConstraintsGeneration(
             None if status is None else int(status.generation),
             int(getattr(self, "reset_generation", 0)),
@@ -1876,6 +1879,9 @@ class RouteCoordinator:
                         self.StructuralGraphStatus.LAST_KNOWN_GOOD,
                         f"reset runtime-edge empty snapshot failed: {error}",
                     )
+            # Static physical constraints are Module3-local and do not depend
+            # on Route Server lifecycle or SetRouteGraph acknowledgement.
+            self._refresh_constraints_after_completed_reset()
             self._ensure_desired_graph(
                 "simulation reset requires Route Server GVG",
                 allow_reset_reassert=expected_generation,
@@ -1898,10 +1904,9 @@ class RouteCoordinator:
         generation, from the volatile Empty event or the strict
         reset_complete status, whichever arrives first.  Only the release of
         the completed generation opens the route barrier.  Anything outside
-        that forward sequence keeps the barrier held (fail closed).  The
-        release that opens the barrier also refreshes the cognitive
-        constraints: a /map grid that arrived during HOLD is re-bound and
-        published then.
+        that forward sequence keeps the barrier held (fail closed).  Physical
+        completion may publish the local static GVG constraints while route
+        outputs remain held; release only consumes a newer deferred map.
         """
 
         try:
@@ -2981,17 +2986,30 @@ class RouteCoordinator:
                 return
             self.latest_global_costmap = snapshot
 
-    def _on_occupancy_map(self, message) -> None:
+    def _on_occupancy_map(
+        self,
+        message,
+        *,
+        expected_reset_generation: tuple[int | None, int] | None = None,
+    ) -> None:
         """Bind cognitive constraints to the exact live ROS map bytes."""
 
         with self._route_state_lock():
+            reset_generation = self._reset_map_generation_locked()
+            if (
+                expected_reset_generation is not None
+                and expected_reset_generation != reset_generation
+            ):
+                return
             if (
                 self._reset_barrier_is_held()
                 and self._completed_reset_constraints_generation_locked() is None
             ):
                 # Active reset may still expose the old cognitive graph. Keep
-                # only the latest grid until completion owns a coherent GVG.
-                self._deferred_occupancy_map = message
+                # only the latest same-generation grid until physical
+                # completion owns the local GVG snapshot.
+                if expected_reset_generation is None:
+                    self._deferred_occupancy_map = (reset_generation, message)
                 return
             input_generation = self._cognitive_constraints_generation_locked()
             structural_map = self.map
@@ -3051,16 +3069,23 @@ class RouteCoordinator:
             )
 
     def _refresh_constraints_after_completed_reset(self) -> None:
-        """Publish one completion-owned GVG snapshot while HOLD remains closed."""
+        """Publish one local GVG snapshot after physical reset completion."""
 
         with self._route_state_lock():
             if self._completed_reset_constraints_generation_locked() is None:
                 return
             deferred = getattr(self, "_deferred_occupancy_map", None)
             self._deferred_occupancy_map = None
+            reset_generation = self._reset_map_generation_locked()
             generation = self._cognitive_constraints_generation_locked()
         if deferred is not None:
-            self._on_occupancy_map(deferred)
+            deferred_generation, message = deferred
+            if deferred_generation != reset_generation:
+                return
+            self._on_occupancy_map(
+                message,
+                expected_reset_generation=reset_generation,
+            )
         else:
             self._publish_cognitive_constraints(expected_input=generation)
 
@@ -3070,8 +3095,15 @@ class RouteCoordinator:
         with self._route_state_lock():
             deferred = getattr(self, "_deferred_occupancy_map", None)
             self._deferred_occupancy_map = None
+            reset_generation = self._reset_map_generation_locked()
         if deferred is not None:
-            self._on_occupancy_map(deferred)
+            deferred_generation, message = deferred
+            if deferred_generation != reset_generation:
+                return
+            self._on_occupancy_map(
+                message,
+                expected_reset_generation=reset_generation,
+            )
 
     def _publish_cognitive_constraints(
         self, *, expected_input: CognitiveConstraintsGeneration | None = None
@@ -3092,7 +3124,7 @@ class RouteCoordinator:
             if live_map_version is None or (selector is not None and region is None):
                 return
             structural_map = self.map
-            graph = self.graph
+            graph = self._cognitive_constraints_graph_locked()
             graph_identity = self._graph_identity(graph)
             footprint_settings = self.defaults["footprint"]
             cache_key = (
@@ -3146,7 +3178,8 @@ class RouteCoordinator:
                         input_generation
                     )
                     or self.map is not structural_map
-                    or self._graph_identity(self.graph) != graph_identity
+                    or self._cognitive_constraints_graph_locked() is not graph
+                    or self._graph_identity(graph) != graph_identity
                     or self.live_map_version != live_map_version
                     or current_region != region
                     or getattr(
