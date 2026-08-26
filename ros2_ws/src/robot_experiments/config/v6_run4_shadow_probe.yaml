@@ -1,0 +1,39 @@
+schema_version: bio_nav_v6_run4_shadow_probe_v1
+status: T2_FAIL_KEEP_SHADOW_ONLY
+qualification: NOT_QUALIFIED
+
+runtime_policy:
+  startup_profile: estimated_shadow
+  localization_supervisor_mode: shadow
+  active_effect_scope: none
+  navigation_dispatch: false
+  isaac_launch: false
+  module3_ros_nav_launch: false
+  expected_initialpose_writes: 0
+
+run4_identity:
+  candidate_manifest_status: READ_ONLY_CAUSAL_CANDIDATE_STARTUP_ONLY
+  model_id: kujiale_0026_visual_heads_run4_v310
+  checkpoint: /mnt/nas_home/Bio_Nav_Data/experiments/runs/v6r5_kujiale_run4_20260826T112503Z/checkpoints/kujiale_0026_visual_heads_run4_v310.pt
+  checkpoint_sha256: 80f0b104c68899f1865a4369f091a16631ed8f178b895c84b8d072cbe10a7821
+  posterior_pregate_config: /mnt/nas_home/Bio_Nav_Data/experiments/runs/v6r5_module1_v2b_validation_20260826T133516Z/derived_v310_read_only/posterior_pregate_v2/posterior_region_pregate_config_v1.json
+  posterior_pregate_config_sha256: 72d5ba175b97ae12d55881d0f7ad73e025b5971d23bae9857c6da76fc532d1da
+
+integration_interface:
+  candidate_manifest: ros2_ws/src/bio_nav_ros_bridge/config/kujiale_0026_run4_read_only_shadow_candidate.json
+  server_argument: --candidate-manifest
+  bridge_launch_argument: localization_candidate_manifest
+
+recording:
+  default_duration_s: 20
+  topics:
+    - /bio_nav/module2/planning_prior
+    - /bio_nav/localization/candidates
+    - /diagnostics
+    - /initialpose
+    - /bio_nav/module1/odom
+    - /cmd_vel
+    - /cmd_vel_nav
+    - /cmd_vel_sim
+    - /tf
+    - /tf_static
