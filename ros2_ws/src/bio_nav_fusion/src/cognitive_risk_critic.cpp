@@ -100,6 +100,12 @@ bool sameRouteContext(
 
 }  // namespace
 
+bool CognitiveRiskCritic::obstacleOnlyScoring() const
+{
+  return direction_weight_ == 0.0F && novelty_weight_ == 0.0F &&
+         uncertainty_weight_ == 0.0F;
+}
+
 void CognitiveRiskCritic::initialize()
 {
   {
@@ -166,12 +172,14 @@ void CognitiveRiskCritic::obstacleCallback(
       message->reset_epoch > expected_.reset_epoch &&
       message->recurrent_session_id != expected_.recurrent_session_id &&
       sameStableIdentity(*message, expected_);
+    const bool obstacle_only = obstacleOnlyScoring();
     const auto candidate_identity = identityOf(*message);
     if (reset_rebind_candidate &&
+      !obstacle_only &&
       (!pending_rebind_ || !sameIdentity(candidate_identity, pending_rebind_identity_)))
     {
       reason = "reset_route_context_missing";
-    } else if (!identity_bound_ && route_context_bound_ &&
+    } else if (!obstacle_only && !identity_bound_ && route_context_bound_ &&
       !sameIdentity(candidate_identity, route_identity_))
     {
       reason = "route_context_identity";

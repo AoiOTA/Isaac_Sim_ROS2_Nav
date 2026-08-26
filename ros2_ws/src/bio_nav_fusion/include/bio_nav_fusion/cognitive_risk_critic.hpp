@@ -93,6 +93,7 @@ private:
     const bio_nav_interfaces::msg::PlanningPrior & prior);
   static CognitiveObstacleLayer::Identity priorIdentityOf(
     const bio_nav_interfaces::msg::PlanningPrior & prior);
+  bool obstacleOnlyScoring() const;
 
   std::mutex mutex_;
   bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr obstacles_;

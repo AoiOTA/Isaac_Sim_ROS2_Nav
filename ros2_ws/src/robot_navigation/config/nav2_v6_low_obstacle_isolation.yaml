@@ -35,9 +35,11 @@ controller_server:
         maximum_age_s: 0.5
         maximum_ood_probability: 0.2
         obstacle_weight: 4.0
-        direction_weight: 1.0
-        novelty_weight: 0.5
-        uncertainty_weight: 0.5
+        # Phase F M3 isolates the obstacle critic component. M2 keeps this
+        # plugin off through its arm-specific cognitive profile.
+        direction_weight: 0.0
+        novelty_weight: 0.0
+        uncertainty_weight: 0.0
 
 local_costmap:
   local_costmap:

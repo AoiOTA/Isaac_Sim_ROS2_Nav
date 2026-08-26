@@ -17,6 +17,10 @@ def test_c4_profile_routes_cognition_through_plugins_not_raw_depth():
     # root cause of the run#7 G1 exit deadlock is fixed; restore 'active'
     # in Phase 2.  Evidence: v6_g1_exit_rootcause_20260823.
     assert controller['CognitiveRiskCritic']['mode'] == 'shadow'
+    assert controller['CognitiveRiskCritic']['obstacle_weight'] == 4.0
+    assert controller['CognitiveRiskCritic']['direction_weight'] == 0.0
+    assert controller['CognitiveRiskCritic']['novelty_weight'] == 0.0
+    assert controller['CognitiveRiskCritic']['uncertainty_weight'] == 0.0
     for costmap_name in ('local_costmap', 'global_costmap'):
         params = document[costmap_name][costmap_name]['ros__parameters']
         assert 'cognitive_obstacle_layer' in params['plugins']
