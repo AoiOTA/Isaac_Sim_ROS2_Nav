@@ -776,6 +776,107 @@ def _fault_discriminability(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _diagnostic_integer(values: Mapping[str, Any], name: str) -> int:
+    value = values.get(name)
+    if isinstance(value, bool):
+        raise EvaluationError(f"supervisor diagnostic {name} must be integer")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise EvaluationError(
+            f"supervisor diagnostic {name} must be integer"
+        ) from exc
+
+
+def _phase_e_mode2_recovery(
+    request: Mapping[str, Any],
+    diagnostics: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    request_stamp_ns = request.get("request_stamp_ns")
+    fault_stamp_ns = request.get("fault_stamp_ns")
+    if (
+        isinstance(request_stamp_ns, bool)
+        or not isinstance(request_stamp_ns, int)
+        or isinstance(fault_stamp_ns, bool)
+        or not isinstance(fault_stamp_ns, int)
+        or request_stamp_ns < fault_stamp_ns
+    ):
+        raise EvaluationError("R1 manual request ROS-time boundary changed")
+    floors = _mapping(
+        request.get("diagnostic_floors"),
+        "manual_rescue_requested.diagnostic_floors",
+    )
+    expected_floors = {
+        "candidate_array_last_validation_stamp_ns",
+        "candidate_array_received_count",
+        "candidate_array_accepted_count",
+        "candidate_array_last_sequence",
+        "publish_count",
+    }
+    if set(floors) != expected_floors or any(
+        isinstance(value, bool) or not isinstance(value, int)
+        for value in floors.values()
+    ):
+        raise EvaluationError("R1 manual request diagnostic floors changed")
+    if floors["publish_count"] != 0:
+        raise EvaluationError("R1 pre-request publish_count must be zero")
+
+    request_event_stamp = _event_stamp(request, "manual_rescue_requested")
+    for row in diagnostics:
+        if _event_stamp(row, "supervisor_diagnostic") < request_event_stamp:
+            continue
+        values = _mapping(
+            row.get("values"), "supervisor_diagnostic.values"
+        )
+        if (
+            values.get("candidate_validation")
+            != "recovery_stationary_revalidated"
+            or values.get("candidate_array_last_structural_rejection", "")
+            != ""
+            or values.get(
+                "candidate_array_last_state_machine_decision_reason"
+            )
+            != "manual_rescue"
+            or values.get("candidate_array_last_event_reason")
+            != "manual_rescue"
+        ):
+            continue
+        validation_stamp_ns = _diagnostic_integer(
+            values, "candidate_array_last_validation_stamp_ns"
+        )
+        if (
+            validation_stamp_ns <= max(request_stamp_ns, fault_stamp_ns)
+            or _diagnostic_integer(values, "candidate_array_received_count")
+            <= floors["candidate_array_received_count"]
+            or _diagnostic_integer(values, "candidate_array_accepted_count")
+            <= floors["candidate_array_accepted_count"]
+            or _diagnostic_integer(values, "candidate_array_last_sequence")
+            <= floors["candidate_array_last_sequence"]
+            or _diagnostic_integer(
+                values, "candidate_array_last_candidate_count"
+            )
+            <= 0
+            or _diagnostic_integer(values, "publish_count")
+            != floors["publish_count"] + 1
+        ):
+            continue
+        return {
+            "request_stamp_ns": request_stamp_ns,
+            "fault_stamp_ns": fault_stamp_ns,
+            "diagnostic_floors": dict(floors),
+            "validation_stamp_ns": validation_stamp_ns,
+            "candidate_validation": values["candidate_validation"],
+            "candidate_event_reason": values[
+                "candidate_array_last_event_reason"
+            ],
+            "candidate_decision_reason": values[
+                "candidate_array_last_state_machine_decision_reason"
+            ],
+            "publish_count": _diagnostic_integer(values, "publish_count"),
+        }
+    raise EvaluationError("R1 post-request mode2 recovery diagnostic missing")
+
+
 def evaluate_phase_de_episode(
     runtime_events: Sequence[Mapping[str, Any]],
     ground_truth_rows: Sequence[Mapping[str, Any]],
@@ -819,6 +920,7 @@ def evaluate_phase_de_episode(
             "reason": row.get("reason"),
             "result": row.get("result"),
             "reset_attempts": row.get("reset_attempts"),
+            "values": row.get("values"),
         }
         for row in by_event["supervisor_diagnostic"]
     ]
@@ -837,6 +939,7 @@ def evaluate_phase_de_episode(
     fault_rows = by_event["fault_injected"]
     fault_outcome = None
     fault_discriminability = None
+    mode2_recovery = None
     if identity["phase"] == "E":
         if len(fault_rows) != 1:
             raise EvaluationError("Phase E requires exactly one fault event")
@@ -887,6 +990,43 @@ def evaluate_phase_de_episode(
         elif fault_outcome == "FAULT_DISCRIMINATIVE":
             if supervisor_count != 1 or len(manual_requests) != 1:
                 raise EvaluationError("R1 manual rescue ownership changed")
+            pre_fault_diagnostics = [
+                row
+                for row in by_event["supervisor_diagnostic"]
+                if _event_stamp(row, "supervisor_diagnostic") < fault_stamp
+            ]
+            if not pre_fault_diagnostics:
+                raise EvaluationError(
+                    "R1 pre-fault supervisor diagnostic missing"
+                )
+            pre_fault = max(
+                pre_fault_diagnostics,
+                key=lambda row: _event_stamp(row, "supervisor_diagnostic"),
+            )
+            pre_fault_values = _mapping(
+                pre_fault.get("values"),
+                "pre-fault supervisor diagnostic values",
+            )
+            if (
+                pre_fault.get("reset_attempts") != 0
+                or _diagnostic_integer(pre_fault_values, "publish_count") != 0
+            ):
+                raise EvaluationError(
+                    "R1 pre-fault attempts and publish_count must be zero"
+                )
+            request = manual_requests[0]
+            mode2_recovery = _phase_e_mode2_recovery(
+                request, by_event["supervisor_diagnostic"]
+            )
+            supervisor_initialpose = next(
+                row
+                for row in by_event["initialpose"]
+                if row.get("source") == "supervisor"
+            )
+            if _event_stamp(supervisor_initialpose, "initialpose") < _event_stamp(
+                request, "manual_rescue_requested"
+            ):
+                raise EvaluationError("R1 supervisor initialpose precedes request")
         elif supervisor_count != 0 or manual_requests or g3_dispatch:
             raise EvaluationError(
                 "invalid fault must stop before rescue and G3"
@@ -964,6 +1104,7 @@ def evaluate_phase_de_episode(
         ),
         "fault_outcome": fault_outcome,
         "fault_discriminability": fault_discriminability,
+        "mode2_recovery": mode2_recovery,
         "evaluation_kind": "ENGINEERING_RAW_METRICS_ONLY",
         "formal_gate": False,
         "ground_truth_policy": "separate_passive_offline_stream",

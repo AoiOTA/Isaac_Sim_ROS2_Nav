@@ -69,6 +69,15 @@ PHASE_E_MANUAL_RECOVERY_EXPERIMENT = {
     "requires_explicit_request": True,
     "auto_rescue_enabled": False,
 }
+PHASE_E_MODE2_RECOVERY = {
+    "request_order": "immediate_after_discriminative_fault",
+    "request_arms": ["B4", "B5"],
+    "candidate_validation": "recovery_stationary_revalidated",
+    "candidate_event_reason": "manual_rescue",
+    "candidate_decision_reason": "manual_rescue",
+    "expected_supervisor_initialpose_increment": 1,
+    "expected_publish_count_increment": 1,
+}
 PHASE_D_STARTUP_INITIALPOSE = {
     "S0": {
         "source": "runner",
@@ -458,6 +467,11 @@ def build_plan(config: LocalizationConfig) -> dict[str, Any]:
                 "supervisor_mode": SUPERVISOR_MODE_BY_ARM[arm],
                 "recovery": RECOVERY_BY_ARM[arm],
                 "run4_candidate_enabled": True,
+                **(
+                    {"mode2_recovery": dict(PHASE_E_MODE2_RECOVERY)}
+                    if arm == "R1"
+                    else {}
+                ),
                 "expected_startup_initialpose": (
                     PHASE_D_STARTUP_INITIALPOSE[arm]
                     if PHASE_BY_ARM[arm] == "D"
@@ -606,7 +620,8 @@ class LocalizationCausalNode(V6FormalNode):
         self._fault_amcl_baseline = 0
         self._fault_particle_baseline = 0
         self._fault_stamp_ns = 0
-        self._fault_candidate_baseline: dict[str, int] = {}
+        self._manual_request_stamp_ns = 0
+        self._manual_request_diagnostic_floor: dict[str, int] = {}
         self._last_supervisor: dict[str, str] = {}
         self._last_cmd_zero: bool | None = None
         self._cmd_vel_sim_zero_since: float | None = None
@@ -1055,17 +1070,20 @@ class LocalizationCausalNode(V6FormalNode):
                 "candidate_array_received_count",
                 "candidate_array_accepted_count",
                 "candidate_array_last_sequence",
+                "publish_count",
             )
         }
 
-    def _fresh_post_fault_validated_candidate(self) -> bool:
+    def _post_request_mode2_candidate(self) -> bool:
         values = self._last_supervisor
-        baseline = self._fault_candidate_baseline
+        baseline = self._manual_request_diagnostic_floor
+        if not baseline or not self._manual_request_stamp_ns:
+            return False
         return bool(
             self._diagnostic_int(
                 values, "candidate_array_last_validation_stamp_ns"
             )
-            > self._fault_stamp_ns
+            > max(self._fault_stamp_ns, self._manual_request_stamp_ns)
             and self._diagnostic_int(values, "candidate_array_received_count")
             > baseline["candidate_array_received_count"]
             and self._diagnostic_int(values, "candidate_array_accepted_count")
@@ -1080,13 +1098,13 @@ class LocalizationCausalNode(V6FormalNode):
             and values.get(
                 "candidate_array_last_state_machine_decision_reason", ""
             )
-            == "no_authorized_rescue_request"
+            == "manual_rescue"
             and values.get("candidate_array_last_event_reason", "")
-            == "no_authorized_rescue_request"
-            and values.get("candidate_validation", "") == "fresh"
-            and str(values.get("candidate_identity", "")).strip()
-            and values.get("state", "").upper() == "LOST"
-            and "covariance" in values.get("reason", "").lower()
+            == "manual_rescue"
+            and values.get("candidate_validation", "")
+            == "recovery_stationary_revalidated"
+            and self._diagnostic_int(values, "publish_count")
+            == baseline["publish_count"] + 1
         )
 
     def _fault(self) -> None:
@@ -1096,6 +1114,11 @@ class LocalizationCausalNode(V6FormalNode):
         if (
             self._supervisor_initialpose_count != 0
             or self._diagnostic_int(self._last_supervisor, "reset_attempts") != 0
+            or (
+                self.arm == "R1"
+                and self._diagnostic_int(self._last_supervisor, "publish_count")
+                != 0
+            )
             or self._last_supervisor.get("state", "").upper() != "NORMAL"
             or self._last_supervisor.get("reason", "") != "amcl_healthy"
         ):
@@ -1132,7 +1155,6 @@ class LocalizationCausalNode(V6FormalNode):
 
         pre_amcl_map_pose = self._last_amcl_pose
         pre_module1_odom_pose = self._last_module1_odom_pose
-        self._fault_candidate_baseline = self._candidate_snapshot()
         self._fault_service_request_count = 1
         if not self._call_empty_service(
             self.reinitialize_global_localization_client,
@@ -1240,18 +1262,23 @@ class LocalizationCausalNode(V6FormalNode):
             ):
                 return
         elif method == "supervisor_manual_rescue":
-            candidate_ready = self._spin_until(
-                lambda: self._fresh_post_fault_validated_candidate()
-                or self.guard.state == "STOP",
-                self.config.recovery_timeout_s,
-            )
-            if not candidate_ready or not self._fresh_post_fault_validated_candidate():
-                self.guard.stop("post_fault_validated_candidate_timeout")
-                return
             if self._manual_rescue_count:
                 self.guard.stop("manual_rescue_retry_forbidden")
                 return
+            if (
+                self._supervisor_initialpose_count != 0
+                or self._diagnostic_int(self._last_supervisor, "reset_attempts")
+                != 0
+                or self._diagnostic_int(self._last_supervisor, "publish_count")
+                != 0
+            ):
+                self.guard.stop("pre_request_supervisor_write_forbidden")
+                return
             supervisor_initialpose_baseline = self._supervisor_initialpose_count
+            self._manual_request_diagnostic_floor = self._candidate_snapshot()
+            self._manual_request_stamp_ns = int(
+                self.node.get_clock().now().nanoseconds
+            )
             Empty = self._types["Empty"]
             self.manual_rescue_publisher.publish(Empty())
             self._manual_rescue_count += 1
@@ -1259,6 +1286,9 @@ class LocalizationCausalNode(V6FormalNode):
                 "manual_rescue_requested",
                 count=self._manual_rescue_count,
                 purpose="ENGINEERING_EXPLICIT_MANUAL_RECOVERY_ONLY",
+                request_stamp_ns=self._manual_request_stamp_ns,
+                fault_stamp_ns=self._fault_stamp_ns,
+                diagnostic_floors=dict(self._manual_request_diagnostic_floor),
             )
             initialpose_observed = self._spin_until(
                 lambda: self._supervisor_initialpose_count
@@ -1272,6 +1302,22 @@ class LocalizationCausalNode(V6FormalNode):
                 != supervisor_initialpose_baseline + 1
             ):
                 self.guard.stop("supervisor_initialpose_count_not_exactly_one")
+                return
+            candidate_ready = self._spin_until(
+                lambda: self._post_request_mode2_candidate()
+                or self._supervisor_initialpose_count
+                > supervisor_initialpose_baseline + 1
+                or self.guard.state == "STOP",
+                self.config.recovery_timeout_s,
+            )
+            if (
+                self._supervisor_initialpose_count
+                != supervisor_initialpose_baseline + 1
+            ):
+                self.guard.stop("supervisor_initialpose_count_not_exactly_one")
+                return
+            if not candidate_ready or not self._post_request_mode2_candidate():
+                self.guard.stop("post_request_mode2_candidate_timeout")
                 return
         else:
             self.guard.stop(f"unsupported_recovery:{method}")

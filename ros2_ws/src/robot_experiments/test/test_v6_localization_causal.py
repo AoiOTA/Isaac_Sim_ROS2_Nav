@@ -15,6 +15,7 @@ from robot_experiments.v6_localization_causal import (
     EVENT_SCHEMA,
     PHASE_D_STARTUP_INITIALPOSE,
     PHASE_E_MANUAL_RECOVERY_EXPERIMENT,
+    PHASE_E_MODE2_RECOVERY,
     RUN4_CANDIDATE_STATUS,
     SEED_CONFIRMATION_POSITION_THRESHOLD_M,
     SEED_CONFIRMATION_YAW_THRESHOLD_DEG,
@@ -83,6 +84,10 @@ def test_plan_has_no_old_s3_r2_or_60_run_matrix():
     assert by_arm["S1"]["run4_candidate_enabled"] is True
     assert by_arm["R0"]["run4_candidate_enabled"] is True
     assert by_arm["R1"]["run4_candidate_enabled"] is True
+    assert by_arm["R1"]["mode2_recovery"] == PHASE_E_MODE2_RECOVERY
+    assert all(
+        "mode2_recovery" not in by_arm[arm] for arm in ("S0", "S1", "R0")
+    )
     assert by_arm["S0"]["expected_startup_initialpose"] == {
         "source": "runner",
         "seed_kind": "broad_initialpose",
@@ -544,6 +549,7 @@ def test_r0_89m_fault_is_discriminative_with_late_or_missing_best_effort_cloud(
     stops = []
     adapter = LocalizationCausalNode.__new__(LocalizationCausalNode)
     adapter.config = load_config(CONFIG)
+    adapter.arm = "R0"
     adapter._types = {"EmptyService": EmptyService}
     adapter.guard = SimpleNamespace(
         state="LEG_SUCCEEDED",
@@ -640,6 +646,7 @@ def test_fault_without_strict_post_service_amcl_pose_stops():
     events = []
     adapter = LocalizationCausalNode.__new__(LocalizationCausalNode)
     adapter.config = load_config(CONFIG)
+    adapter.arm = "R0"
     adapter._types = {"EmptyService": EmptyService}
     adapter.guard = SimpleNamespace(
         state="LEG_SUCCEEDED",
@@ -685,35 +692,33 @@ def test_fault_without_strict_post_service_amcl_pose_stops():
     assert not [event for event, _ in events if event == "fault_injected"]
 
 
-def test_r1_fresh_candidate_gate_uses_exact_post_fault_supervisor_diagnostics():
+def test_r1_mode2_gate_requires_post_request_revalidation_and_advanced_floors():
     adapter = LocalizationCausalNode.__new__(LocalizationCausalNode)
     adapter._fault_stamp_ns = 5_000
-    adapter._fault_candidate_baseline = {
+    adapter._manual_request_stamp_ns = 6_000
+    adapter._manual_request_diagnostic_floor = {
         "candidate_array_last_validation_stamp_ns": 4_000,
         "candidate_array_received_count": 10,
         "candidate_array_accepted_count": 8,
         "candidate_array_last_sequence": 20,
+        "publish_count": 0,
     }
     adapter._last_supervisor = {
-        "state": "LOST",
-        "reason": "amcl_covariance_lost",
-        "candidate_validation": "fresh",
-        "candidate_identity": "run4:21",
-        "candidate_array_last_validation_stamp_ns": "6000",
+        "candidate_validation": "recovery_stationary_revalidated",
+        "candidate_array_last_validation_stamp_ns": "7000",
         "candidate_array_received_count": "11",
         "candidate_array_accepted_count": "9",
         "candidate_array_last_sequence": "21",
         "candidate_array_last_candidate_count": "2",
         "candidate_array_last_structural_rejection": "",
-        "candidate_array_last_state_machine_decision_reason": (
-            "no_authorized_rescue_request"
-        ),
-        "candidate_array_last_event_reason": "no_authorized_rescue_request",
+        "candidate_array_last_state_machine_decision_reason": "manual_rescue",
+        "candidate_array_last_event_reason": "manual_rescue",
+        "publish_count": "1",
     }
 
-    assert adapter._fresh_post_fault_validated_candidate()
-    adapter._last_supervisor["candidate_validation"] = "cached"
-    assert not adapter._fresh_post_fault_validated_candidate()
+    assert adapter._post_request_mode2_candidate()
+    adapter._last_supervisor["candidate_array_last_sequence"] = "20"
+    assert not adapter._post_request_mode2_candidate()
 
 
 def test_r1_recovery_publishes_one_manual_topic_request_and_gets_one_supervisor_seed():
@@ -729,20 +734,51 @@ def test_r1_recovery_publishes_one_manual_topic_request_and_gets_one_supervisor_
     adapter._amcl_count = 3
     adapter._last_amcl_covariance = (0.1, 0.1, 0.1)
     adapter._last_supervisor = {
-        "state": "RECOVERED",
-        "reason": "manual_seed_confirmed",
-        "recovery_result": "seed_confirmed",
+        "state": "LOST",
+        "reason": "amcl_covariance_lost",
+        "recovery_result": "observed",
+        "reset_attempts": "0",
+        "publish_count": "0",
+        "candidate_validation": "cached",
+        "candidate_array_last_validation_stamp_ns": "4000",
+        "candidate_array_received_count": "10",
+        "candidate_array_accepted_count": "8",
+        "candidate_array_last_sequence": "20",
     }
+    adapter._fault_stamp_ns = 5_000
     adapter._fault_service_request_count = 1
     adapter._nomotion_request_count = 0
     adapter._fault_observation_active = True
-    adapter._fresh_post_fault_validated_candidate = lambda: True
+    adapter.node = SimpleNamespace(
+        get_clock=lambda: SimpleNamespace(
+            now=lambda: SimpleNamespace(nanoseconds=6_000)
+        )
+    )
     events = []
     adapter._event = lambda event, **payload: events.append((event, payload))
 
     def publish(_message):
         adapter._supervisor_initialpose_count += 1
         adapter._amcl_count += STARTUP_AMCL_POSES_REQUIRED
+        adapter._last_supervisor.update(
+            {
+                "state": "RECOVERED",
+                "reason": "manual_seed_confirmed",
+                "recovery_result": "seed_confirmed",
+                "candidate_validation": "recovery_stationary_revalidated",
+                "candidate_array_last_validation_stamp_ns": "7000",
+                "candidate_array_received_count": "11",
+                "candidate_array_accepted_count": "9",
+                "candidate_array_last_sequence": "21",
+                "candidate_array_last_candidate_count": "2",
+                "candidate_array_last_structural_rejection": "",
+                "candidate_array_last_state_machine_decision_reason": (
+                    "manual_rescue"
+                ),
+                "candidate_array_last_event_reason": "manual_rescue",
+                "publish_count": "1",
+            }
+        )
 
     adapter.manual_rescue_publisher = SimpleNamespace(publish=publish)
     adapter._spin_until = lambda predicate, _timeout: bool(predicate())
@@ -755,6 +791,65 @@ def test_r1_recovery_publishes_one_manual_topic_request_and_gets_one_supervisor_
         "manual_rescue_requested",
         "localization_recovered",
     ]
+    request = events[0][1]
+    assert request["request_stamp_ns"] == 6_000
+    assert request["fault_stamp_ns"] == 5_000
+    assert request["diagnostic_floors"]["candidate_array_last_sequence"] == 20
+    assert request["diagnostic_floors"]["publish_count"] == 0
+
+
+def test_r1_cached_pre_request_candidate_cannot_satisfy_mode2_and_times_out():
+    class Empty:
+        pass
+
+    stops = []
+    adapter = LocalizationCausalNode.__new__(LocalizationCausalNode)
+    adapter.config = load_config(CONFIG)
+    adapter._types = {"Empty": Empty}
+    adapter.guard = SimpleNamespace(state="LEG_SUCCEEDED", stop=stops.append)
+    adapter._manual_rescue_count = 0
+    adapter._supervisor_initialpose_count = 0
+    adapter._amcl_count = 3
+    adapter._last_amcl_covariance = (0.1, 0.1, 0.1)
+    adapter._last_supervisor = {
+        "state": "LOST",
+        "reason": "amcl_covariance_lost",
+        "recovery_result": "observed",
+        "reset_attempts": "0",
+        "publish_count": "0",
+        "candidate_validation": "cached",
+        "candidate_array_last_validation_stamp_ns": "4000",
+        "candidate_array_received_count": "10",
+        "candidate_array_accepted_count": "8",
+        "candidate_array_last_sequence": "20",
+        "candidate_array_last_candidate_count": "2",
+        "candidate_array_last_structural_rejection": "",
+        "candidate_array_last_state_machine_decision_reason": (
+            "no_authorized_rescue_request"
+        ),
+        "candidate_array_last_event_reason": "no_authorized_rescue_request",
+    }
+    adapter._fault_stamp_ns = 5_000
+    adapter._fault_service_request_count = 1
+    adapter._nomotion_request_count = 0
+    adapter._fault_observation_active = True
+    adapter.node = SimpleNamespace(
+        get_clock=lambda: SimpleNamespace(
+            now=lambda: SimpleNamespace(nanoseconds=6_000)
+        )
+    )
+    adapter._event = lambda _event, **_payload: None
+
+    def publish(_message):
+        adapter._supervisor_initialpose_count += 1
+
+    adapter.manual_rescue_publisher = SimpleNamespace(publish=publish)
+    adapter._spin_until = lambda predicate, _timeout: bool(predicate())
+
+    adapter._recover("supervisor_manual_rescue")
+
+    assert adapter._manual_rescue_count == 1
+    assert stops == ["post_request_mode2_candidate_timeout"]
 
 
 def test_event_schema_is_small_gt_free_and_has_evaluator_fields():

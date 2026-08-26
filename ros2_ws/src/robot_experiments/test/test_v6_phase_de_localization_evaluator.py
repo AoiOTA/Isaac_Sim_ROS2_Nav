@@ -134,6 +134,7 @@ def _episode(phase, arm, seed=9001, *, ready_s=2.0, recover_s=None):
                     mode="active" if arm == "R1" else "shadow",
                     state="NORMAL", reason="amcl_healthy", result="observed",
                     reset_attempts=0,
+                    values={"publish_count": "0"},
                 ),
                 _event(phase, arm, seed, "goal_dispatched", 1.2, leg_id="G2"),
                 _event(
@@ -176,6 +177,17 @@ def _episode(phase, arm, seed=9001, *, ready_s=2.0, recover_s=None):
                         phase, arm, seed, "manual_rescue_requested", 2.7,
                         count=1,
                         purpose="ENGINEERING_EXPLICIT_MANUAL_RECOVERY_ONLY",
+                        request_stamp_ns=2_700_000_000,
+                        fault_stamp_ns=2_200_000_000,
+                        diagnostic_floors={
+                            "candidate_array_last_validation_stamp_ns": (
+                                2_000_000_000
+                            ),
+                            "candidate_array_received_count": 10,
+                            "candidate_array_accepted_count": 8,
+                            "candidate_array_last_sequence": 20,
+                            "publish_count": 0,
+                        },
                     ),
                     _event(
                         phase,
@@ -210,6 +222,28 @@ def _episode(phase, arm, seed=9001, *, ready_s=2.0, recover_s=None):
                         state="RECOVERED", reason="candidate_accepted",
                         result="applied" if arm == "R1" else "observed",
                         reset_attempts=1 if arm == "R1" else 0,
+                        values=(
+                            {
+                                "candidate_validation": (
+                                    "recovery_stationary_revalidated"
+                                ),
+                                "candidate_array_last_validation_stamp_ns": (
+                                    "3000000000"
+                                ),
+                                "candidate_array_received_count": "11",
+                                "candidate_array_accepted_count": "9",
+                                "candidate_array_last_sequence": "21",
+                                "candidate_array_last_candidate_count": "2",
+                                "candidate_array_last_structural_rejection": "",
+                                "candidate_array_last_state_machine_decision_reason": (
+                                    "manual_rescue"
+                                ),
+                                "candidate_array_last_event_reason": "manual_rescue",
+                                "publish_count": "1",
+                            }
+                            if arm == "R1"
+                            else {"publish_count": "0"}
+                        ),
                     ),
                 ]
             )
@@ -351,6 +385,22 @@ def test_phase_e_pair_reports_fault_pause_recovery_and_supervisor_diagnostics():
     }
     assert result["experimental"]["timestamps_s"]["prior_write"] == 2.8
     assert result["experimental"]["supervisor_diagnostics"][-1]["result"] == "applied"
+    assert result["experimental"]["mode2_recovery"] == {
+        "request_stamp_ns": 2_700_000_000,
+        "fault_stamp_ns": 2_200_000_000,
+        "diagnostic_floors": {
+            "candidate_array_last_validation_stamp_ns": 2_000_000_000,
+            "candidate_array_received_count": 10,
+            "candidate_array_accepted_count": 8,
+            "candidate_array_last_sequence": 20,
+            "publish_count": 0,
+        },
+        "validation_stamp_ns": 3_000_000_000,
+        "candidate_validation": "recovery_stationary_revalidated",
+        "candidate_event_reason": "manual_rescue",
+        "candidate_decision_reason": "manual_rescue",
+        "publish_count": 1,
+    }
     assert result["baseline"]["recovery_requests"] == {
         "fault_service": 1,
         "nomotion": 1,
@@ -364,6 +414,35 @@ def test_phase_e_pair_reports_fault_pause_recovery_and_supervisor_diagnostics():
     assert result["paired_metrics"]["localization.time_to_recover_s"][
         "experimental_minus_baseline"
     ] == pytest.approx(-1.0)
+
+
+def test_phase_e_cached_pre_request_candidate_cannot_replace_mode2_receipt():
+    runtime, truth = _episode("E", "R1", ready_s=1.0, recover_s=4.0)
+    bad = []
+    for row in runtime:
+        if (
+            row["event"] == "supervisor_diagnostic"
+            and row.get("state") == "RECOVERED"
+        ):
+            values = dict(row["values"])
+            values.update(
+                candidate_validation="cached",
+                candidate_array_last_validation_stamp_ns="2000000000",
+                candidate_array_last_state_machine_decision_reason=(
+                    "no_authorized_rescue_request"
+                ),
+                candidate_array_last_event_reason="no_authorized_rescue_request",
+                publish_count="0",
+            )
+            bad.append(dict(row, values=values))
+        else:
+            bad.append(row)
+
+    with pytest.raises(
+        EvaluationError,
+        match="post-request mode2 recovery diagnostic missing",
+    ):
+        evaluate_phase_de_episode(bad, truth)
 
 
 def test_phase_e_invalid_fault_stops_without_rescue_or_g3_and_stays_raw_only():
