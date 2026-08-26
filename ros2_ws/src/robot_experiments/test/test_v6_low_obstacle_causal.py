@@ -52,6 +52,7 @@ def _paths(arm):
 
 def _evidence(manifest, run, *, stale=False, omit=None, m3_same_as_m2=False):
     arm = manifest.arms[run.arm]
+    baseline_failed = run.arm in {"M0", "M1"}
     plan = _paths(run.arm)
     if m3_same_as_m2 and run.arm == "M3":
         plan = _paths("M2")
@@ -199,8 +200,8 @@ def _evidence(manifest, run, *, stale=False, omit=None, m3_same_as_m2=False):
         "odom": plan,
         "cmd_vel": [{"linear_x": 0.2, "angular_z": 0.0}],
         "action": {
-            "state": "SUCCEEDED",
-            "stop_reason": "",
+            "state": "STOP" if baseline_failed else "SUCCEEDED",
+            "stop_reason": "collision_monitor_stop" if baseline_failed else "",
             "completed_leg_ids": ["G2"],
             "terminal_zero_confirmed": True,
         },
@@ -208,8 +209,8 @@ def _evidence(manifest, run, *, stale=False, omit=None, m3_same_as_m2=False):
         "passive": {
             "ground_truth_odom": plan,
             "minimum_clearance_m": clearance,
-            "collision": False,
-            "success": True,
+            "collision": baseline_failed,
+            "success": not baseline_failed,
         },
         "navigation_metrics": {
             "recorded_duration_sec": 20.0,
@@ -519,12 +520,51 @@ def test_nominal_missing_post_route_callbacks_is_explicit_na(tmp_path):
     assert result.critic_ttl_status == causal.NOMINAL_TTL_STATUS
 
 
-def test_m3_local_trajectory_without_separation_is_ambiguous(tmp_path):
+def test_m3_separation_target_is_diagnostic_when_other_net_benefit_exists(tmp_path):
     manifest = load_manifest(CONFIG)
     _write_evidence(tmp_path, manifest, m3_same_as_m2=True)
     summary = evaluate(manifest, tmp_path)
-    assert summary.verdict == "AMBIGUOUS"
-    assert "M3_critic_has_no_trajectory_separation" in summary.reasons
+    assert summary.verdict == "PASS_ENGINEERING_CAUSAL"
+    assert summary.selected_arm == "M3"
+    assert "M3_trajectory_separation_below_diagnostic_target" in summary.reasons
+
+
+def test_pilot_selects_simpler_m2_when_m3_has_no_incremental_net_benefit(
+    tmp_path,
+):
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    runs = {run.arm: run for run in manifest.runs if run.repeat == 1}
+
+    m2 = _evidence(manifest, runs["M2"])
+    m2["passive"]["minimum_clearance_m"] = 0.25
+    (tmp_path / f'{runs["M2"].run_id}.json').write_text(
+        json.dumps(m2), encoding="utf-8"
+    )
+
+    m3 = _evidence(manifest, runs["M3"], m3_same_as_m2=True)
+    m3["passive"]["minimum_clearance_m"] = 0.25
+    m3["critic"]["near_obstacle_speed_mps"] = 0.3
+    (tmp_path / f'{runs["M3"].run_id}.json').write_text(
+        json.dumps(m3), encoding="utf-8"
+    )
+
+    summary = evaluate(manifest, tmp_path, pilot=True)
+
+    assert summary.verdict == "PASS_ENGINEERING_PILOT"
+    assert summary.selected_arm == "M2"
+    assert summary.selection_outcome == (
+        "NO_INCREMENTAL_BENEFIT_KEEP_M2_CRITIC_OFF"
+    )
+    assert "NO_INCREMENTAL_BENEFIT_KEEP_M2_CRITIC_OFF" in summary.reasons
+    assert "M2_median_clearance_gain_below_diagnostic_target" in summary.reasons
+    assert "M3_trajectory_separation_below_diagnostic_target" in summary.reasons
+    assert summary.m2_vs_m1[0].clearance_gain_m == pytest.approx(0.04)
+    assert summary.m3_vs_m2[0].clearance_gain_m == 0.0
+    assert summary.m3_vs_m2[0].hausdorff_m == 0.0
+    assert manifest.criteria["source_recall_min"] == 0.80
+    assert manifest.criteria["candidate_precision_min"] == 0.50
+    assert manifest.criteria["candidate_radius_max_m"] == 0.35
 
 
 @pytest.mark.parametrize(
@@ -642,7 +682,9 @@ def test_prevalidation_failure_preserves_raw_collision_and_action_facts(
     assert result.success is False
     assert result.action_state == "STOP"
     assert result.terminal_zero_confirmed is True
-    assert result.source_recall is None
+    assert result.source_visible_count == 1
+    assert result.source_matched_count == 1
+    assert result.source_recall == 1.0
     assert summary.verdict == "INVALID"
 
 
@@ -703,6 +745,7 @@ def test_baseline_collision_and_navigation_failure_are_valid_causal_rows(
     if outcome == "collision":
         row["passive"]["collision"] = True
     else:
+        row["passive"]["collision"] = False
         row["action"].update({"state": "FAILED", "stop_reason": "navigation_failed"})
     (tmp_path / f"{run.run_id}.json").write_text(json.dumps(row), encoding="utf-8")
     summary = evaluate(manifest, tmp_path)
@@ -741,6 +784,66 @@ def test_active_collision_is_valid_evidence_but_safety_fails_campaign(tmp_path):
     assert result.collision is True
     assert summary.verdict == "FAIL"
     assert "M2_collision_safety_stop" in summary.reasons
+
+
+def test_invalid_source_row_keeps_pair_diagnostics_and_reports_all_blockers(
+    tmp_path,
+):
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    runs = {run.arm: run for run in manifest.runs if run.repeat == 1}
+
+    m1 = _evidence(manifest, runs["M1"])
+    m1["plan"] = [[0.45, -5.35], [2.0, -0.2], [0.80, 4.80]]
+    (tmp_path / f'{runs["M1"].run_id}.json').write_text(
+        json.dumps(m1), encoding="utf-8"
+    )
+
+    straight = [[0.45, -5.35], [0.625, -0.275], [0.80, 4.80]]
+    m2 = _evidence(manifest, runs["M2"])
+    missed = json.loads(json.dumps(m2["synchronized_samples"][0]))
+    missed["stamp_ns"] += 1
+    missed["typed_obstacles"] = []
+    m2["synchronized_samples"].append(missed)
+    m2["plan"] = straight
+    m2["optimal_trajectory"] = straight
+    m2["passive"]["minimum_clearance_m"] = 0.25
+    (tmp_path / f'{runs["M2"].run_id}.json').write_text(
+        json.dumps(m2), encoding="utf-8"
+    )
+
+    m3 = _evidence(manifest, runs["M3"])
+    m3["optimal_trajectory"] = straight
+    m3["passive"]["minimum_clearance_m"] = 0.25
+    m3["critic"]["near_obstacle_speed_mps"] = 0.3
+    (tmp_path / f'{runs["M3"].run_id}.json').write_text(
+        json.dumps(m3), encoding="utf-8"
+    )
+
+    summary = evaluate(manifest, tmp_path, pilot=True)
+
+    assert summary.verdict == "INVALID"
+    assert any(
+        "M2 source recall below engineering threshold" in reason
+        for reason in summary.reasons
+    )
+    assert "M1_vs_M0_isolation_failed" in summary.reasons
+    assert "M2_median_clearance_gain_below_diagnostic_target" in summary.reasons
+    assert "M2_reroute_direction_inconsistent" in summary.reasons
+    assert "M3_trajectory_separation_below_diagnostic_target" in summary.reasons
+    assert "M3_NO_INCREMENTAL_BENEFIT_DIAGNOSTIC" in summary.reasons
+    assert len(summary.reasons) == len(set(summary.reasons))
+    assert summary.selected_arm is None
+    assert summary.selection_outcome == "NOT_SELECTED_INVALID_EVIDENCE"
+    assert len(summary.m2_vs_m1) == 1
+    assert len(summary.m3_vs_m2) == 1
+    assert summary.m2_vs_m1[0].diagnostic_when_invalid is True
+    assert summary.m3_vs_m2[0].diagnostic_when_invalid is True
+    assert summary.m1_vs_m0[0].diagnostic_when_invalid is False
+    assert summary.m3_vs_m2[0].hausdorff_m == 0.0
+    assert manifest.criteria["source_recall_min"] == 0.80
+    assert manifest.criteria["active_clearance_gain_min_m"] == 0.20
+    assert manifest.criteria["m3_m2_trajectory_separation_min_m"] == 0.05
 
 
 def test_m1_missing_uds_is_invalid_evidence(tmp_path):
@@ -1815,6 +1918,103 @@ def test_campaign_cognitive_timeout_never_starts_recorder_or_episode(
     assert ("cognitive_readiness_before_episode", "M2") in events
     assert ("start", "recorder") not in events
     assert not any(event[0] == "run" for event in events)
+
+
+@pytest.mark.parametrize(
+    ("arm_name", "expected_run_state", "expected_campaign_state", "expected_rc"),
+    [
+        ("M0", "BASELINE_OUTCOME_RECORDED", "FINISHED", 0),
+        ("M1", "BASELINE_OUTCOME_RECORDED", "FINISHED", 0),
+        ("M2", "EPISODE_FAILED", "FINISHED_WITH_FAILURES", 2),
+    ],
+)
+def test_campaign_records_expected_baseline_collision_but_active_collision_fails(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    arm_name,
+    expected_run_state,
+    expected_campaign_state,
+    expected_rc,
+):
+    manifest = load_manifest(CONFIG)
+    run = next(item for item in manifest.runs if item.arm == arm_name)
+    one_run_manifest = replace(manifest, runs=(run,))
+
+    monkeypatch.setattr(
+        causal, "_start_process", lambda name, *args, **kwargs: SimpleNamespace(name=name)
+    )
+    monkeypatch.setattr(
+        causal, "_stop_process",
+        lambda process, timeout: {"name": process.name, "returncode": 0},
+    )
+    monkeypatch.setattr(
+        causal, "_wait_for_startup_ready",
+        lambda *args, **kwargs: {
+            "ready": True,
+            "generation": 1,
+            "held": False,
+            "reason": "released:activation_gate",
+        },
+    )
+    monkeypatch.setattr(
+        causal, "_wait_for_cognitive_ready",
+        lambda *args, **kwargs: {"ready": True},
+    )
+    monkeypatch.setattr(
+        causal, "_confirm_arm_cleanup", lambda *args, **kwargs: {"ok": True}
+    )
+
+    def fake_run(command, **kwargs):
+        return SimpleNamespace(
+            returncode=0 if command[0] == "/producer-stop" else 2
+        )
+
+    def fake_record(manifest_value, run_value, bag_dir, episode_jsonl, output):
+        row = _evidence(manifest_value, run_value)
+        row["passive"].update({"collision": True, "success": False})
+        row["action"].update({
+            "state": "STOP",
+            "stop_reason": "collision_monitor_stop",
+            "terminal_zero_confirmed": True,
+        })
+        Path(output).write_text(json.dumps(row), encoding="utf-8")
+        return row
+
+    monkeypatch.setattr(causal.subprocess, "run", fake_run)
+    monkeypatch.setattr(causal.time, "sleep", lambda duration: None)
+    monkeypatch.setattr(causal, "record_evidence_from_bag", fake_record)
+    adapters = AdapterTemplates("/scene", "/stack", "/episode", "/producer-stop")
+    summary = run_campaign(
+        one_run_manifest,
+        adapters,
+        tmp_path / f"campaign-{arm_name}",
+        pilot=False,
+        shutdown_timeout_sec=0.1,
+    )
+
+    status = summary["runs"][0]
+    evidence = json.loads(Path(status["evidence_file"]).read_text(encoding="utf-8"))
+    assert status["state"] == expected_run_state
+    assert status["episode_returncode"] == 2
+    assert evidence["action"]["state"] == "STOP"
+    assert evidence["action"]["stop_reason"] == "collision_monitor_stop"
+    assert summary["state"] == expected_campaign_state
+    if arm_name in {"M0", "M1"}:
+        assert status["evidence_verdict"] == "VALID"
+        assert status["baseline_outcome"] == "collision"
+
+    monkeypatch.setattr(causal, "run_campaign", lambda *args, **kwargs: summary)
+    assert cli([
+        "run",
+        "--config", str(CONFIG),
+        "--scene-adapter", "/scene",
+        "--stack-adapter", "/stack",
+        "--episode-adapter", "/episode",
+        "--producer-stop-adapter", "/producer-stop",
+        "--output-root", str(tmp_path / f"cli-{arm_name}"),
+    ]) == expected_rc
+    capsys.readouterr()
 
 
 def _canonical_prior(

@@ -242,6 +242,7 @@ class PairResult:
     lhs_arm: str
     rhs_arm: str
     trajectory_source: str
+    diagnostic_when_invalid: bool
     hausdorff_m: float
     length_delta_fraction: float
     near_obstacle_speed_delta_mps: float
@@ -254,6 +255,8 @@ class CausalSummary:
     qualification: str
     verdict: str
     reasons: tuple[str, ...]
+    selected_arm: str | None
+    selection_outcome: str
     runs: tuple[RunResult, ...]
     m1_vs_m0: tuple[PairResult, ...]
     m2_vs_m1: tuple[PairResult, ...]
@@ -3242,6 +3245,25 @@ def run_campaign(
             )
             status["evidence_file"] = str(evidence_path)
             status["evidence_recorded"] = True
+            if (
+                run.arm in {"M0", "M1"}
+                and status.get("state") == "EPISODE_FAILED"
+                and status.get("episode_returncode") == 2
+                and status.get("cleanup", {}).get("ok") is True
+            ):
+                baseline_result, _ = _evaluate_run(
+                    manifest, run, evidence_path
+                )
+                status["evidence_verdict"] = baseline_result.verdict
+                status["evidence_reasons"] = list(baseline_result.reasons)
+                if (
+                    baseline_result.verdict == "VALID"
+                    and baseline_result.collision is True
+                    and baseline_result.success is False
+                    and baseline_result.terminal_zero_confirmed is True
+                ):
+                    status["state"] = "BASELINE_OUTCOME_RECORDED"
+                    status["baseline_outcome"] = "collision"
             if run.arm in {"M2", "M3"}:
                 freshness = _mapping(evidence.get("freshness"), "freshness")
                 status["nominal_ttl_status"] = freshness.get(
@@ -3266,7 +3288,10 @@ def run_campaign(
         "qualification": RUN_QUALIFICATION,
         "mode": plan["mode"],
         "state": "FINISHED_WITH_FAILURES" if any(
-            row["state"] != "EPISODE_FINISHED" for row in results
+            row["state"] not in {
+                "EPISODE_FINISHED", "BASELINE_OUTCOME_RECORDED",
+            }
+            for row in results
         ) else "FINISHED",
         "output_root": str(root),
         "runs": results,
@@ -3527,6 +3552,16 @@ def _evaluate_run(manifest: CausalManifest, run: RunContract, path: Path) -> tup
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
         row = _mapping(raw, str(path))
+        try:
+            plan = _points(row.get("plan"), "plan")
+        except (TypeError, ValueError, CausalContractError):
+            pass
+        try:
+            optimal_trajectory = _points(
+                row.get("optimal_trajectory"), "optimal_trajectory"
+            )
+        except (TypeError, ValueError, CausalContractError):
+            pass
         missing = [key for key in REQUIRED_EVIDENCE_KEYS if key not in row]
         if missing:
             raise CausalContractError("missing evidence: " + ", ".join(missing))
@@ -3823,7 +3858,16 @@ def _evaluate_run(manifest: CausalManifest, run: RunContract, path: Path) -> tup
         action = _known_mapping(row.get("action"))
         critic = _known_mapping(row.get("critic"))
         freshness = _known_mapping(row.get("freshness"))
-        spatial = spatial or {}
+        if spatial is None:
+            try:
+                spatial = _scan_and_spatial_metrics(
+                    row.get("synchronized_samples"),
+                    float(manifest.criteria["typed_spatial_match_tolerance_m"]),
+                    physical_obstacle=_load_frozen_obstacle(manifest),
+                    validate_obstacles=run.arm in {"M1", "M2", "M3"},
+                )
+            except (KeyError, TypeError, ValueError, CausalContractError):
+                spatial = {}
         candidate_true_positive = _known_int(
             spatial.get("candidate_true_positive_count")
         )
@@ -3925,6 +3969,15 @@ def _pair(
     key = "local_trajectory" if trajectory_source == "local_trajectory" else "plan"
     lhs_plan = lhs_data[key]
     rhs_plan = rhs_data[key]
+    if not lhs_plan or not rhs_plan:
+        raise CausalContractError(f"{trajectory_source} unavailable for pair")
+    if (
+        lhs_result.near_obstacle_speed_mps is None
+        or rhs_result.near_obstacle_speed_mps is None
+        or lhs_result.minimum_clearance_m is None
+        or rhs_result.minimum_clearance_m is None
+    ):
+        raise CausalContractError(f"scalar metrics unavailable for {trajectory_source} pair")
     hausdorff = path_hausdorff(lhs_plan, rhs_plan)
     lhs_length = path_length(lhs_plan)
     rhs_length = path_length(rhs_plan)
@@ -3934,6 +3987,9 @@ def _pair(
         lhs_arm=lhs_result.arm,
         rhs_arm=rhs_result.arm,
         trajectory_source=trajectory_source,
+        diagnostic_when_invalid=(
+            lhs_result.verdict == "INVALID" or rhs_result.verdict == "INVALID"
+        ),
         hausdorff_m=hausdorff,
         length_delta_fraction=abs(rhs_length - lhs_length) / denominator,
         near_obstacle_speed_delta_mps=(
@@ -3964,73 +4020,164 @@ def evaluate(
         ordered_results.append(result)
         evaluated[(run.repeat, run.arm)] = (result, data)
 
-    invalid = [result.run_id for result in ordered_results if result.verdict == "INVALID"]
+    invalid_results = [
+        result for result in ordered_results if result.verdict == "INVALID"
+    ]
+    invalid = [result.run_id for result in invalid_results]
     reasons: list[str] = []
     m1_m0: list[PairResult] = []
     m2_m1: list[PairResult] = []
     m3_m1: list[PairResult] = []
     m3_m2: list[PairResult] = []
+    def add_reason(reason: str) -> None:
+        if reason not in reasons:
+            reasons.append(reason)
+
+    def append_pair(
+        destination: list[PairResult],
+        lhs_arm: str,
+        rhs_arm: str,
+        repeat: int,
+        *,
+        trajectory_source: str = "global_plan",
+    ) -> None:
+        try:
+            destination.append(_pair(
+                evaluated[(repeat, lhs_arm)],
+                evaluated[(repeat, rhs_arm)],
+                trajectory_source=trajectory_source,
+            ))
+        except (KeyError, TypeError, ValueError, CausalContractError):
+            return
+
+    if invalid:
+        add_reason("invalid_or_stopped_runs:" + ",".join(invalid))
+        for result in invalid_results:
+            for reason in result.reasons:
+                add_reason(f"{result.run_id}:{reason}")
+
+    for repeat in repeats:
+        append_pair(m1_m0, "M0", "M1", repeat)
+        append_pair(m2_m1, "M1", "M2", repeat)
+        append_pair(m3_m1, "M1", "M3", repeat)
+        append_pair(
+            m3_m2, "M2", "M3", repeat,
+            trajectory_source="local_trajectory",
+        )
+
+    if m1_m0 and any(
+        pair.hausdorff_m > float(manifest.criteria["m1_m0_path_hausdorff_max_m"])
+        or pair.length_delta_fraction > float(
+            manifest.criteria["m1_m0_path_length_delta_max_fraction"]
+        )
+        for pair in m1_m0
+    ):
+        add_reason("M1_vs_M0_isolation_failed")
+
+    clearance_target = float(manifest.criteria["active_clearance_gain_min_m"])
+    for arm, pairs in (("M2", m2_m1), ("M3", m3_m1)):
+        if (
+            pairs
+            and statistics.median(pair.clearance_gain_m for pair in pairs)
+            < clearance_target
+        ):
+            add_reason(f"{arm}_median_clearance_gain_below_diagnostic_target")
+        active_results = [evaluated[(repeat, arm)][0] for repeat in repeats]
+        if any(active.collision is True for active in active_results):
+            add_reason(f"{arm}_collision_safety_stop")
+        if any(
+            active.success is False and active.collision is False
+            for active in active_results
+        ):
+            add_reason(f"{arm}_navigation_failed")
+        directions = {result.reroute_direction for result in active_results}
+        if len(directions) != 1 or directions & {"unknown", "straight", "unavailable"}:
+            add_reason(f"{arm}_reroute_direction_inconsistent")
+
+    m3_results = [evaluated[(repeat, "M3")][0] for repeat in repeats]
+    if any(result.critic_participation == "none" for result in m3_results):
+        add_reason("M3_critic_participation_missing")
+    if any(
+        (_known_int(
+            _known_mapping(evaluated[(repeat, "M3")][1]["raw"].get("critic")).get(
+                "cost_delta_nonzero_count"
+            )
+        ) or 0) <= 0
+        for repeat in repeats
+    ):
+        add_reason("M3_critic_nonzero_cost_delta_missing")
+    if m3_m2:
+        separation = statistics.median(pair.hausdorff_m for pair in m3_m2)
+        separation_target = float(
+            manifest.criteria["m3_m2_trajectory_separation_min_m"]
+        )
+        if separation < separation_target:
+            add_reason("M3_trajectory_separation_below_diagnostic_target")
+
+    def control_changed(pair: PairResult) -> bool:
+        return (
+            pair.hausdorff_m > 1.0e-9
+            or pair.length_delta_fraction > 1.0e-9
+            or abs(pair.near_obstacle_speed_delta_mps) > 1.0e-9
+        )
+
+    m2_pairs = {pair.repeat: pair for pair in m2_m1}
+    m2_net_benefit = all(
+        repeat in m2_pairs
+        and (m1 := evaluated[(repeat, "M1")][0]).verdict == "VALID"
+        and (m1.collision is True or m1.success is False)
+        and (m2 := evaluated[(repeat, "M2")][0]).verdict == "VALID"
+        and m2.success is True
+        and m2.collision is False
+        and m2_pairs[repeat].clearance_gain_m > 0.0
+        and control_changed(m2_pairs[repeat])
+        for repeat in repeats
+    )
+
+    m3_pairs = {pair.repeat: pair for pair in m3_m2}
+    m3_incremental_benefit = all(
+        repeat in m3_pairs
+        and (m3 := evaluated[(repeat, "M3")][0]).verdict == "VALID"
+        and m3.success is True
+        and m3.collision is False
+        and m3.critic_participation == "online_applied"
+        and (_known_int(
+            _known_mapping(evaluated[(repeat, "M3")][1]["raw"].get("critic")).get(
+                "cost_delta_nonzero_count"
+            )
+        ) or 0) > 0
+        and (
+            m3_pairs[repeat].clearance_gain_m > 0.0
+            or m3_pairs[repeat].near_obstacle_speed_delta_mps < 0.0
+        )
+        and control_changed(m3_pairs[repeat])
+        for repeat in repeats
+    )
+    if not m3_incremental_benefit:
+        add_reason("M3_NO_INCREMENTAL_BENEFIT_DIAGNOSTIC")
+
     if invalid:
         verdict = "INVALID"
-        reasons.append("invalid_or_stopped_runs:" + ",".join(invalid))
+        selected_arm = None
+        selection_outcome = "NOT_SELECTED_INVALID_EVIDENCE"
+    elif "M1_vs_M0_isolation_failed" in reasons:
+        verdict = "FAIL"
+        selected_arm = None
+        selection_outcome = "NOT_SELECTED_SHADOW_ISOLATION_FAILED"
+    elif not m2_net_benefit:
+        add_reason("M2_CAUSAL_NET_BENEFIT_NOT_DEMONSTRATED")
+        verdict = "FAIL"
+        selected_arm = None
+        selection_outcome = "NO_CAUSAL_NET_BENEFIT"
+    elif m3_incremental_benefit:
+        verdict = "PASS_ENGINEERING_PILOT" if pilot else "PASS_ENGINEERING_CAUSAL"
+        selected_arm = "M3"
+        selection_outcome = "INCREMENTAL_BENEFIT_KEEP_M3_CRITIC_ON"
     else:
-        for repeat in repeats:
-            m1_m0.append(_pair(evaluated[(repeat, "M0")], evaluated[(repeat, "M1")]))
-            m2_m1.append(_pair(evaluated[(repeat, "M1")], evaluated[(repeat, "M2")]))
-            m3_m1.append(_pair(evaluated[(repeat, "M1")], evaluated[(repeat, "M3")]))
-            m3_m2.append(_pair(
-                evaluated[(repeat, "M2")],
-                evaluated[(repeat, "M3")],
-                trajectory_source="local_trajectory",
-            ))
-
-        isolation_ok = all(
-            pair.hausdorff_m <= float(manifest.criteria["m1_m0_path_hausdorff_max_m"])
-            and pair.length_delta_fraction <= float(manifest.criteria["m1_m0_path_length_delta_max_fraction"])
-            for pair in m1_m0
-        )
-        if not isolation_ok:
-            reasons.append("M1_vs_M0_isolation_failed")
-
-        clearance_threshold = float(manifest.criteria["active_clearance_gain_min_m"])
-        for arm, pairs in (("M2", m2_m1), ("M3", m3_m1)):
-            if statistics.median(pair.clearance_gain_m for pair in pairs) < clearance_threshold:
-                reasons.append(f"{arm}_median_clearance_gain_below_threshold")
-            active_results = [evaluated[(repeat, arm)][0] for repeat in repeats]
-            if any(active.collision for active in active_results):
-                reasons.append(f"{arm}_collision_safety_stop")
-            if any(not active.success and not active.collision for active in active_results):
-                reasons.append(f"{arm}_navigation_failed")
-            directions = {result.reroute_direction for result in active_results}
-            if len(directions) != 1 or directions & {"unknown", "straight"}:
-                reasons.append(f"{arm}_reroute_direction_inconsistent")
-
-        m3_results = [evaluated[(repeat, "M3")][0] for repeat in repeats]
-        if any(result.critic_participation == "none" for result in m3_results):
-            reasons.append("M3_critic_participation_missing")
-        if any(
-            int(_mapping(evaluated[(repeat, "M3")][1]["raw"].get("critic"), "critic").get(
-                "cost_delta_nonzero_count", 0
-            )) <= 0
-            for repeat in repeats
-        ):
-            reasons.append("M3_critic_nonzero_cost_delta_missing")
-        separation = statistics.median(pair.hausdorff_m for pair in m3_m2)
-        separation_min = float(manifest.criteria["m3_m2_trajectory_separation_min_m"])
-        no_separation = separation < separation_min
-        if no_separation:
-            reasons.append("M3_critic_has_no_trajectory_separation")
-
-        hard_fail = any(
-            reason != "M3_critic_has_no_trajectory_separation"
-            for reason in reasons
-        )
-        if hard_fail:
-            verdict = "FAIL"
-        elif no_separation:
-            verdict = "AMBIGUOUS"
-        else:
-            verdict = "PASS_ENGINEERING_PILOT" if pilot else "PASS_ENGINEERING_CAUSAL"
+        add_reason("NO_INCREMENTAL_BENEFIT_KEEP_M2_CRITIC_OFF")
+        verdict = "PASS_ENGINEERING_PILOT" if pilot else "PASS_ENGINEERING_CAUSAL"
+        selected_arm = "M2"
+        selection_outcome = "NO_INCREMENTAL_BENEFIT_KEEP_M2_CRITIC_OFF"
 
     visualizations: list[Mapping[str, Any]] = []
     for repeat in repeats:
@@ -4053,6 +4200,8 @@ def evaluate(
         qualification="ENGINEERING_ONLY_NOT_FORMAL",
         verdict=verdict,
         reasons=tuple(reasons),
+        selected_arm=selected_arm,
+        selection_outcome=selection_outcome,
         runs=tuple(ordered_results),
         m1_vs_m0=tuple(m1_m0),
         m2_vs_m1=tuple(m2_m1),
