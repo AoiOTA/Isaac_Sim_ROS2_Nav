@@ -8,12 +8,14 @@ performed.
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import asdict, dataclass
 import json
 import math
 from pathlib import Path
 import statistics
-from typing import Any, Iterable, Mapping, Sequence
+import sys
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 
 PHASE_DE_EVENT_SCHEMA = "bio_nav_v6_phase_de_localization_event_v1"
@@ -40,6 +42,26 @@ PHASE_DE_EVENTS = frozenset(
     }
 )
 PHASE_DE_PAIRS = {"D": ("S0", "S1"), "E": ("R0", "R1")}
+GROUND_TRUTH_ODOM_TOPIC = "/ground_truth/odom"
+
+# Frozen evaluator-only partition from the Kujiale Module1 enrollment contract.
+# It is deliberately duplicated here so the passive exporter has no runtime
+# dependency on Module2 and cannot feed Ground Truth back into navigation.
+_CANONICAL_REGION_STATES = {
+    "north_room": (199, 200, 201, 202, 215, 216, 217),
+    "south_room": (69, 70, 84, 85, 86, 87, 101, 102),
+    "south_corridor": (39, 40, 56, 72, 88, 103, 104),
+    "east_corridor": (120, 121, 122, 136, 137, 153, 169, 184, 185),
+    "central_intersection": (118, 119, 134, 135),
+    "central_north_corridor": (151, 167, 183),
+    "west_lower_corridor": (115, 116, 117),
+    "west_upper_north_corridor": (133, 147, 148, 149, 150, 165, 166, 180, 181, 182),
+}
+_CANONICAL_STATE_TO_REGION = {
+    state: region
+    for region, states in _CANONICAL_REGION_STATES.items()
+    for state in states
+}
 
 
 class EvaluationError(RuntimeError):
@@ -944,3 +966,311 @@ def evaluate_phase_de_pair_files(
         load_phase_de_jsonl(experimental_ground_truth_path, ground_truth=True),
         synchronization_tolerance_s=synchronization_tolerance_s,
     )
+
+
+def _ros_stamp_s(message: Any) -> float:
+    try:
+        stamp = message.header.stamp
+        sec = stamp.sec
+        nanosec = stamp.nanosec
+        if (
+            isinstance(sec, bool)
+            or not isinstance(sec, int)
+            or isinstance(nanosec, bool)
+            or not isinstance(nanosec, int)
+            or sec < 0
+            or not 0 <= nanosec < 1_000_000_000
+        ):
+            raise ValueError
+        seconds = sec + nanosec / 1.0e9
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise EvaluationError("Ground Truth odometry requires header.stamp") from exc
+    return _finite(seconds, "ground_truth_odom.header.stamp")
+
+
+def _odom_pose(message: Any) -> tuple[float, float, float]:
+    try:
+        pose = message.pose.pose
+        x = _finite(pose.position.x, "ground_truth_odom.pose.position.x")
+        y = _finite(pose.position.y, "ground_truth_odom.pose.position.y")
+        qx = _finite(pose.orientation.x, "ground_truth_odom.pose.orientation.x")
+        qy = _finite(pose.orientation.y, "ground_truth_odom.pose.orientation.y")
+        qz = _finite(pose.orientation.z, "ground_truth_odom.pose.orientation.z")
+        qw = _finite(pose.orientation.w, "ground_truth_odom.pose.orientation.w")
+    except AttributeError as exc:
+        raise EvaluationError("Ground Truth message must be nav_msgs/msg/Odometry") from exc
+    yaw = math.degrees(
+        math.atan2(
+            2.0 * (qw * qz + qx * qy),
+            1.0 - 2.0 * (qy * qy + qz * qz),
+        )
+    )
+    return x, y, yaw
+
+
+def _canonical_region_id(x: float, y: float) -> str:
+    column = math.floor(x + 8.0)
+    row = math.floor(y + 8.0)
+    if not (0 <= column < 16 and 0 <= row < 16):
+        raise EvaluationError(f"Ground Truth pose ({x}, {y}) is outside the 16 m canvas")
+    state = row * 16 + column
+    try:
+        return _CANONICAL_STATE_TO_REGION[state]
+    except KeyError as exc:
+        raise EvaluationError(
+            f"Ground Truth pose ({x}, {y}) maps to non-enrolled state {state}"
+        ) from exc
+
+
+def _split_stamp_epochs(messages: Iterable[Any]) -> list[list[tuple[float, Any]]]:
+    """Split ordered bag samples when simulation time moves backwards on reset."""
+
+    epochs: list[list[tuple[float, Any]]] = []
+    current: list[tuple[float, Any]] = []
+    previous: float | None = None
+    for message in messages:
+        stamp_s = _ros_stamp_s(message)
+        if previous is not None and stamp_s < previous:
+            if current:
+                epochs.append(current)
+            current = []
+        current.append((stamp_s, message))
+        previous = stamp_s
+    if current:
+        epochs.append(current)
+    if not epochs:
+        raise EvaluationError(f"bag contains no {GROUND_TRUTH_ODOM_TOPIC} messages")
+    return epochs
+
+
+def extract_phase_de_ground_truth(
+    runtime_events: Sequence[Mapping[str, Any]],
+    odometry_messages: Iterable[Any],
+    *,
+    synchronization_tolerance_s: float = 0.15,
+) -> list[dict[str, Any]]:
+    """Align passive GT odometry to runtime estimate stamps after reset.
+
+    This function is intentionally ROS-independent so focused tests can pass a
+    fake message iterable.  The CLI is the only layer that opens an MCAP bag.
+    """
+
+    if synchronization_tolerance_s < 0.0:
+        raise EvaluationError("synchronization_tolerance_s must be non-negative")
+    identity = _phase_de_identity(runtime_events)
+    starts = sorted(
+        _event_stamp(row, "episode_start")
+        for row in runtime_events
+        if row["event"] == "episode_start"
+    )
+    ends = sorted(
+        _event_stamp(row, "episode_end")
+        for row in runtime_events
+        if row["event"] == "episode_end"
+    )
+    start_s, end_s = starts[0], ends[0]
+    if end_s < start_s:
+        raise EvaluationError("episode_end precedes episode_start")
+    target_stamps = sorted(
+        _event_stamp(row, "estimated_pose")
+        for row in runtime_events
+        if row["event"] == "estimated_pose" and start_s <= float(row["stamp_s"]) <= end_s
+    )
+    if not target_stamps:
+        raise EvaluationError("runtime contains no estimated_pose events in the episode")
+
+    best: tuple[int, int, list[tuple[float, Any]]] | None = None
+    for epoch_index, epoch in enumerate(_split_stamp_epochs(odometry_messages)):
+        bounded = [item for item in epoch if start_s <= item[0] <= end_s]
+        matched = sum(
+            bool(bounded)
+            and min(abs(item[0] - stamp_s) for item in bounded)
+            <= synchronization_tolerance_s
+            for stamp_s in target_stamps
+        )
+        candidate = (matched, epoch_index, bounded)
+        if best is None or candidate[:2] > best[:2]:
+            best = candidate
+    assert best is not None
+    matched_count, _, samples = best
+    if matched_count != len(target_stamps):
+        raise EvaluationError(
+            "passive Ground Truth does not cover every estimated_pose stamp "
+            f"within {synchronization_tolerance_s:.3f}s "
+            f"({matched_count}/{len(target_stamps)} matched)"
+        )
+
+    selected: dict[int, tuple[float, Any]] = {}
+    for target in target_stamps:
+        sample_index, sample = min(
+            enumerate(samples),
+            key=lambda item: (abs(item[1][0] - target), item[1][0], item[0]),
+        )
+        selected[sample_index] = sample
+
+    output: list[dict[str, Any]] = []
+    for _, message in (selected[index] for index in sorted(selected)):
+        stamp_s = _ros_stamp_s(message)
+        x, y, yaw_deg = _odom_pose(message)
+        output.append(
+            {
+                "schema": PHASE_DE_GT_SCHEMA,
+                **identity,
+                "event": "ground_truth_pose",
+                "stamp_s": stamp_s,
+                "x": x,
+                "y": y,
+                "yaw_deg": yaw_deg,
+                "region_id": _canonical_region_id(x, y),
+            }
+        )
+    return output
+
+
+def _iter_ground_truth_odometry(bag_path: str | Path) -> Iterator[Any]:
+    """Deserialize only `/ground_truth/odom` from one rosbag2 MCAP."""
+
+    source = Path(bag_path).expanduser().resolve()
+    if not source.exists():
+        raise EvaluationError(f"bag does not exist: {source}")
+    try:
+        import rosbag2_py
+        from rclpy.serialization import deserialize_message
+        from rosidl_runtime_py.utilities import get_message
+    except ImportError as exc:
+        raise EvaluationError(
+            "rosbag2_py, rclpy, and rosidl_runtime_py are required to read MCAP"
+        ) from exc
+
+    reader = rosbag2_py.SequentialReader()
+    try:
+        reader.open(
+            rosbag2_py.StorageOptions(uri=str(source), storage_id="mcap"),
+            rosbag2_py.ConverterOptions(
+                input_serialization_format="", output_serialization_format=""
+            ),
+        )
+    except RuntimeError as exc:
+        raise EvaluationError(f"cannot open MCAP bag {source}: {exc}") from exc
+    topic_types = {item.name: item.type for item in reader.get_all_topics_and_types()}
+    if GROUND_TRUTH_ODOM_TOPIC not in topic_types:
+        raise EvaluationError(f"bag has no {GROUND_TRUTH_ODOM_TOPIC} topic")
+    if topic_types[GROUND_TRUTH_ODOM_TOPIC] != "nav_msgs/msg/Odometry":
+        raise EvaluationError(
+            f"{GROUND_TRUTH_ODOM_TOPIC} must use nav_msgs/msg/Odometry"
+        )
+    message_type = get_message(topic_types[GROUND_TRUTH_ODOM_TOPIC])
+    reader.set_filter(rosbag2_py.StorageFilter(topics=[GROUND_TRUTH_ODOM_TOPIC]))
+    while reader.has_next():
+        topic, serialized, _ = reader.read_next()
+        if topic == GROUND_TRUTH_ODOM_TOPIC:
+            yield deserialize_message(serialized, message_type)
+
+
+def _write_jsonl(path: str | Path, rows: Sequence[Mapping[str, Any]]) -> None:
+    destination = Path(path).expanduser().resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        "".join(
+            json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n"
+            for row in rows
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_json(path: str | Path, value: Mapping[str, Any]) -> None:
+    destination = Path(path).expanduser().resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
+def _evaluate_cli_inputs(
+    runtime_paths: Sequence[str | Path],
+    ground_truth_paths: Sequence[str | Path],
+    *,
+    synchronization_tolerance_s: float,
+) -> dict[str, Any]:
+    if len(runtime_paths) != len(ground_truth_paths) or len(runtime_paths) not in {1, 2}:
+        raise EvaluationError(
+            "evaluate requires one runtime/GT pair or two runtime/GT pairs"
+        )
+    runtimes = [load_phase_de_jsonl(path) for path in runtime_paths]
+    truths = [load_phase_de_jsonl(path, ground_truth=True) for path in ground_truth_paths]
+    if len(runtimes) == 1:
+        return evaluate_phase_de_episode(
+            runtimes[0],
+            truths[0],
+            synchronization_tolerance_s=synchronization_tolerance_s,
+        )
+
+    identities = [_phase_de_identity(events) for events in runtimes]
+    if identities[0]["phase"] != identities[1]["phase"]:
+        raise EvaluationError("paired episodes must belong to the same phase")
+    expected = PHASE_DE_PAIRS[identities[0]["phase"]]
+    by_arm = {
+        identity["arm"]: (runtime, truth)
+        for identity, runtime, truth in zip(identities, runtimes, truths)
+    }
+    if set(by_arm) != set(expected):
+        raise EvaluationError(
+            f"Phase {identities[0]['phase']} evaluate pair must contain {expected[0]}/{expected[1]}"
+        )
+    return evaluate_phase_de_pair(
+        by_arm[expected[0]][0],
+        by_arm[expected[1]][0],
+        by_arm[expected[0]][1],
+        by_arm[expected[1]][1],
+        synchronization_tolerance_s=synchronization_tolerance_s,
+    )
+
+
+def _argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="v6_localization_causal_evaluator",
+        description="Offline passive-GT extraction and Phase D/E evaluation",
+    )
+    commands = parser.add_subparsers(dest="command", required=True)
+    extract = commands.add_parser("extract-gt")
+    extract.add_argument("--bag", required=True)
+    extract.add_argument("--episode-jsonl", required=True)
+    extract.add_argument("--output", required=True)
+    extract.add_argument("--synchronization-tolerance-s", type=float, default=0.15)
+
+    evaluate = commands.add_parser("evaluate")
+    evaluate.add_argument("--runtime-jsonl", action="append", required=True)
+    evaluate.add_argument("--gt-jsonl", action="append", required=True)
+    evaluate.add_argument("--output", required=True)
+    evaluate.add_argument("--synchronization-tolerance-s", type=float, default=0.15)
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = _argument_parser()
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "extract-gt":
+            runtime = load_phase_de_jsonl(args.episode_jsonl)
+            rows = extract_phase_de_ground_truth(
+                runtime,
+                _iter_ground_truth_odometry(args.bag),
+                synchronization_tolerance_s=args.synchronization_tolerance_s,
+            )
+            _write_jsonl(args.output, rows)
+        else:
+            result = _evaluate_cli_inputs(
+                args.runtime_jsonl,
+                args.gt_jsonl,
+                synchronization_tolerance_s=args.synchronization_tolerance_s,
+            )
+            _write_json(args.output, result)
+    except (EvaluationError, ImportError, OSError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

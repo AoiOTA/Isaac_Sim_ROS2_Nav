@@ -111,6 +111,7 @@ setup(
             "v6_low_obstacle_causal = robot_experiments.v6_low_obstacle_causal:main",
             "v6_phase_f_active_ttl_probe = robot_experiments.v6_phase_f_active_ttl_probe:main",
             "v6_localization_causal = robot_experiments.v6_localization_causal:main",
+            "v6_localization_causal_evaluator = robot_experiments.v6_localization_causal_evaluator:main",
             "imu_regime_analysis = robot_experiments.imu_regime_analysis:main",
             "v6_imu_lidar_preflight = robot_experiments.v6_imu_lidar_preflight:main",
         ],

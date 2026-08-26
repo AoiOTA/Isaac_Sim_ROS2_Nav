@@ -1,7 +1,10 @@
 import json
+import math
+from types import SimpleNamespace
 
 import pytest
 
+import robot_experiments.v6_localization_causal_evaluator as evaluator
 from robot_experiments.v6_localization_causal_evaluator import (
     EvaluationError,
     PHASE_DE_EVENT_SCHEMA,
@@ -9,6 +12,7 @@ from robot_experiments.v6_localization_causal_evaluator import (
     evaluate_phase_de_episode,
     evaluate_phase_de_pair,
     evaluate_phase_de_pair_files,
+    extract_phase_de_ground_truth,
 )
 
 
@@ -284,3 +288,174 @@ def test_pair_file_loader_keeps_runtime_and_passive_gt_schemas_separate(tmp_path
     bad_gt.write_text(json.dumps(s0[0]) + "\n", encoding="utf-8")
     with pytest.raises(EvaluationError, match="schema must be"):
         evaluate_phase_de_pair_files(paths[0], paths[1], bad_gt, paths[3])
+
+
+def _odom(stamp_s, *, x=0.25, y=0.25, yaw_deg=0.0):
+    seconds = math.floor(stamp_s)
+    nanoseconds = round((stamp_s - seconds) * 1.0e9)
+    half_yaw = math.radians(yaw_deg) / 2.0
+    return SimpleNamespace(
+        header=SimpleNamespace(
+            stamp=SimpleNamespace(sec=seconds, nanosec=nanoseconds)
+        ),
+        pose=SimpleNamespace(
+            pose=SimpleNamespace(
+                position=SimpleNamespace(x=x, y=y),
+                orientation=SimpleNamespace(
+                    x=0.0,
+                    y=0.0,
+                    z=math.sin(half_yaw),
+                    w=math.cos(half_yaw),
+                ),
+            )
+        ),
+    )
+
+
+def test_extract_gt_aligns_header_time_and_selects_latest_post_reset_epoch():
+    runtime, _ = _episode("D", "S1")
+    # Both epochs cover the estimate stamps.  The later epoch is the accepted
+    # post-reset stream and must win deterministically.
+    messages = [
+        *[_odom(stamp, x=-0.25) for stamp in (1.0, 2.0, 3.0, 4.0)],
+        *[
+            _odom(stamp, x=0.25, yaw_deg=90.0)
+            for stamp in (0.98, 2.02, 3.0, 4.08)
+        ],
+    ]
+    rows = extract_phase_de_ground_truth(
+        runtime, messages, synchronization_tolerance_s=0.10
+    )
+
+    assert [row["stamp_s"] for row in rows] == pytest.approx([0.98, 2.02, 3.0, 4.08])
+    assert {row["schema"] for row in rows} == {PHASE_DE_GT_SCHEMA}
+    assert {row["event"] for row in rows} == {"ground_truth_pose"}
+    assert {row["run_id"] for row in rows} == {"phase-d-s1-9001"}
+    assert {row["phase"] for row in rows} == {"D"}
+    assert {row["arm"] for row in rows} == {"S1"}
+    assert {row["seed"] for row in rows} == {9001}
+    assert {row["x"] for row in rows} == {0.25}
+    assert {row["region_id"] for row in rows} == {"east_corridor"}
+    assert [row["yaw_deg"] for row in rows] == pytest.approx([90.0] * 4)
+
+
+def test_extract_gt_rejects_incomplete_stamp_alignment_and_non_enrolled_pose():
+    runtime, _ = _episode("E", "R0")
+    with pytest.raises(EvaluationError, match="does not cover every estimated_pose"):
+        extract_phase_de_ground_truth(
+            runtime,
+            [_odom(1.0), _odom(2.0)],
+            synchronization_tolerance_s=0.01,
+        )
+
+    with pytest.raises(EvaluationError, match="non-enrolled state"):
+        extract_phase_de_ground_truth(
+            runtime,
+            [_odom(stamp, x=7.25, y=7.25) for stamp in (1.0, 2.0, 3.0, 4.0)],
+        )
+
+
+def test_extract_gt_cli_uses_offline_reader_and_writes_minimal_jsonl(
+    tmp_path, monkeypatch
+):
+    runtime, _ = _episode("D", "S0")
+    runtime_path = tmp_path / "runtime.jsonl"
+    runtime_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in runtime), encoding="utf-8"
+    )
+    seen = []
+
+    def fake_reader(path):
+        seen.append(path)
+        return iter(_odom(stamp) for stamp in (1.0, 2.0, 3.0, 4.0))
+
+    monkeypatch.setattr(evaluator, "_iter_ground_truth_odometry", fake_reader)
+    output = tmp_path / "gt.jsonl"
+    assert evaluator.main(
+        [
+            "extract-gt",
+            "--bag",
+            str(tmp_path / "episode.mcap"),
+            "--episode-jsonl",
+            str(runtime_path),
+            "--output",
+            str(output),
+        ]
+    ) == 0
+    assert seen == [str(tmp_path / "episode.mcap")]
+    rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 4
+    assert set(rows[0]) == {
+        "schema",
+        "run_id",
+        "phase",
+        "arm",
+        "seed",
+        "event",
+        "stamp_s",
+        "x",
+        "y",
+        "yaw_deg",
+        "region_id",
+    }
+
+
+def test_evaluate_cli_accepts_reversed_phase_pair_and_calls_pair_evaluator(tmp_path):
+    s0, s0_gt = _episode("D", "S0", ready_s=3.0)
+    s1, s1_gt = _episode("D", "S1", ready_s=2.0)
+    paths = {}
+    for name, rows in (("s0", s0), ("s1", s1), ("s0_gt", s0_gt), ("s1_gt", s1_gt)):
+        path = tmp_path / f"{name}.jsonl"
+        path.write_text(
+            "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+        )
+        paths[name] = path
+    output = tmp_path / "paired.json"
+    assert evaluator.main(
+        [
+            "evaluate",
+            "--runtime-jsonl",
+            str(paths["s1"]),
+            "--gt-jsonl",
+            str(paths["s1_gt"]),
+            "--runtime-jsonl",
+            str(paths["s0"]),
+            "--gt-jsonl",
+            str(paths["s0_gt"]),
+            "--output",
+            str(output),
+        ]
+    ) == 0
+    result = json.loads(output.read_text(encoding="utf-8"))
+    assert result["phase"] == "D"
+    assert result["arms"] == ["S0", "S1"]
+    assert result["paired_metrics"]["localization.time_to_ready_s"] == {
+        "baseline": 3.0,
+        "experimental": 2.0,
+        "experimental_minus_baseline": -1.0,
+    }
+
+
+def test_evaluate_cli_rejects_ground_truth_contamination_in_runtime(tmp_path, capsys):
+    runtime, truth = _episode("E", "R0", recover_s=5.0)
+    runtime[0] = dict(runtime[0], topic="/ground_truth/odom")
+    runtime_path = tmp_path / "runtime.jsonl"
+    gt_path = tmp_path / "gt.jsonl"
+    runtime_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in runtime), encoding="utf-8"
+    )
+    gt_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in truth), encoding="utf-8"
+    )
+    assert evaluator.main(
+        [
+            "evaluate",
+            "--runtime-jsonl",
+            str(runtime_path),
+            "--gt-jsonl",
+            str(gt_path),
+            "--output",
+            str(tmp_path / "out.json"),
+        ]
+    ) == 2
+    assert "Ground Truth firewall" in capsys.readouterr().err
