@@ -57,21 +57,70 @@ finally:
 PY
 }
 
+process_group_of_pid() {
+  local pid="$1"
+  ps -o pgid= -p "${pid}" 2>/dev/null | tr -d '[:space:]'
+}
+
+process_is_running() {
+  local pid="$1" state
+  [[ "${pid}" =~ ^[1-9][0-9]*$ && -r "/proc/${pid}/stat" ]] || return 1
+  state="$(awk '{print $3}' "/proc/${pid}/stat" 2>/dev/null)"
+  [[ -n "${state}" && "${state}" != Z ]]
+}
+
+read_recorded_identity() {
+  local name="$1" directory="$2" pid_variable="$3" pgid_variable="$4"
+  local identity_file pid_file pgid_file recorded_pid recorded_pgid extra=""
+  identity_file="${directory}/${name}.identity"
+  pid_file="${directory}/${name}.pid"
+  pgid_file="${directory}/${name}.pgid"
+  if [[ -f "${identity_file}" ]]; then
+    read -r recorded_pid recorded_pgid extra <"${identity_file}" || return 1
+    [[ -z "${extra}" ]] || return 1
+  elif [[ -f "${pid_file}" && -f "${pgid_file}" ]]; then
+    read -r recorded_pid <"${pid_file}" || return 1
+    read -r recorded_pgid <"${pgid_file}" || return 1
+  else
+    return 1
+  fi
+  [[ "${recorded_pid}" =~ ^[1-9][0-9]*$ \
+      && "${recorded_pgid}" =~ ^[1-9][0-9]*$ ]] || return 1
+  printf -v "${pid_variable}" '%s' "${recorded_pid}"
+  printf -v "${pgid_variable}" '%s' "${recorded_pgid}"
+}
+
+recorded_identity_is_running() {
+  local pid="$1" pgid="$2" actual_pgid
+  process_is_running "${pid}" || return 1
+  actual_pgid="$(process_group_of_pid "${pid}")"
+  [[ "${actual_pgid}" == "${pgid}" ]] || return 1
+  group_is_running "${pgid}"
+}
+
+write_process_identity() {
+  local name="$1" directory="$2" pid="$3" pgid="$4" prefix
+  prefix="${directory}/.${name}.$$"
+  printf '%s %s\n' "${pid}" "${pgid}" >"${prefix}.identity.tmp"
+  mv -f "${prefix}.identity.tmp" "${directory}/${name}.identity"
+  printf '%s\n' "${pid}" >"${prefix}.pid.tmp"
+  mv -f "${prefix}.pid.tmp" "${directory}/${name}.pid"
+  printf '%s\n' "${pgid}" >"${prefix}.pgid.tmp"
+  mv -f "${prefix}.pgid.tmp" "${directory}/${name}.pgid"
+}
+
 module2_recorded_process_running() {
   local directory="$1" name pid pgid
   for name in module2_server integration_bridge; do
-    if [[ -f "${directory}/${name}.identity" ]]; then
-      read -r pid pgid <"${directory}/${name}.identity" || return 0
-    elif [[ -f "${directory}/${name}.pid" && -f "${directory}/${name}.pgid" ]]; then
-      read -r pid <"${directory}/${name}.pid" || return 0
-      read -r pgid <"${directory}/${name}.pgid" || return 0
-    else
+    if [[ ! -f "${directory}/${name}.identity" \
+        && ! -f "${directory}/${name}.pid" \
+        && ! -f "${directory}/${name}.pgid" ]]; then
       continue
     fi
-    [[ "${pgid}" =~ ^[1-9][0-9]*$ ]] && group_is_running "${pgid}" && return 0
-    if [[ "${pid}" =~ ^[1-9][0-9]*$ && -r "/proc/${pid}/stat" ]]; then
-      [[ "$(awk '{print $3}' "/proc/${pid}/stat" 2>/dev/null)" == Z ]] || return 0
-    fi
+    # A malformed partial identity is not proof that cleanup may unlink a
+    # possibly-live producer socket.
+    read_recorded_identity "${name}" "${directory}" pid pgid || return 0
+    recorded_identity_is_running "${pid}" "${pgid}" && return 0
   done
   return 1
 }
@@ -105,19 +154,14 @@ stop_registered_group() {
   identity_file="${directory}/${name}.identity"
   pid_file="${directory}/${name}.pid"
   pgid_file="${directory}/${name}.pgid"
-  if [[ -f "${identity_file}" ]]; then
-    read -r pid pgid <"${identity_file}"
-  elif [[ -f "${pid_file}" && -f "${pgid_file}" ]]; then
-    read -r pid <"${pid_file}"
-    read -r pgid <"${pgid_file}"
-  else
+  if ! read_recorded_identity "${name}" "${directory}" pid pgid; then
     echo "missing producer process identity: ${name}" >&2
     return 1
   fi
-  [[ "${pid}" =~ ^[1-9][0-9]*$ && "${pgid}" =~ ^[1-9][0-9]*$ ]] || {
-    echo "invalid producer process identity: ${name}" >&2
+  if ! recorded_identity_is_running "${pid}" "${pgid}"; then
+    echo "producer process identity is not running: ${name} pid=${pid} pgid=${pgid}" >&2
     return 1
-  }
+  fi
   signal_group INT "${pgid}"
   if ! wait_group_exit "${pgid}" "${int_checks}"; then
     signal_group TERM "${pgid}"
@@ -133,6 +177,74 @@ stop_registered_group() {
   rm -f "${identity_file}" "${pid_file}" "${pgid_file}"
 }
 
+validate_producer_stop_isolation() {
+  local directory="$1" stack_pid stack_pgid module3_pid module3_pgid
+  local module2_pid module2_pgid bridge_pid bridge_pgid
+  read_recorded_identity stack "${directory}" stack_pid stack_pgid || {
+    echo "missing stack process identity" >&2
+    return 1
+  }
+  read_recorded_identity module3_ros "${directory}" module3_pid module3_pgid || {
+    echo "missing Module3 ROS consumer identity" >&2
+    return 1
+  }
+  read_recorded_identity module2_server "${directory}" module2_pid module2_pgid || {
+    echo "missing producer process identity: module2_server" >&2
+    return 1
+  }
+  read_recorded_identity integration_bridge "${directory}" bridge_pid bridge_pgid || {
+    echo "missing producer process identity: integration_bridge" >&2
+    return 1
+  }
+  recorded_identity_is_running "${stack_pid}" "${stack_pgid}" || {
+    echo "Phase-F stack identity is not running" >&2
+    return 1
+  }
+  recorded_identity_is_running "${module3_pid}" "${module3_pgid}" || {
+    echo "Module3 ROS consumer identity is not running" >&2
+    return 1
+  }
+  recorded_identity_is_running "${module2_pid}" "${module2_pgid}" || {
+    echo "Module2 producer identity is not running" >&2
+    return 1
+  }
+  recorded_identity_is_running "${bridge_pid}" "${bridge_pgid}" || {
+    echo "Integration bridge identity is not running" >&2
+    return 1
+  }
+  if [[ "${stack_pgid}" == "${module3_pgid}" \
+      || "${module2_pgid}" == "${stack_pgid}" \
+      || "${module2_pgid}" == "${module3_pgid}" \
+      || "${bridge_pgid}" == "${stack_pgid}" \
+      || "${bridge_pgid}" == "${module3_pgid}" \
+      || "${bridge_pgid}" == "${module2_pgid}" ]]; then
+    echo "producer-stop process groups are not isolated from the Phase-F stack/consumer" >&2
+    return 1
+  fi
+}
+
+ros_lock_is_owned() {
+  local runtime_dir lock_file lock_fd
+  runtime_dir="${ISAAC_NAV_RUNTIME_DIR:-/tmp/isaac_sim_ros2_nav_${UID}}"
+  lock_file="${runtime_dir}/ros.lock"
+  [[ -f "${lock_file}" ]] || return 1
+  exec {lock_fd}<>"${lock_file}" || return 1
+  if flock -n "${lock_fd}"; then
+    flock -u "${lock_fd}" || true
+    exec {lock_fd}>&-
+    return 1
+  fi
+  exec {lock_fd}>&-
+}
+
+verify_consumer_after_producer_stop() {
+  local directory="$1" stack_pid stack_pgid module3_pid module3_pgid
+  read_recorded_identity stack "${directory}" stack_pid stack_pgid \
+    && read_recorded_identity module3_ros "${directory}" module3_pid module3_pgid \
+    && recorded_identity_is_running "${stack_pid}" "${stack_pgid}" \
+    && recorded_identity_is_running "${module3_pid}" "${module3_pgid}"
+}
+
 if [[ "${1:-}" == "stop-producer" ]]; then
   shift
   producer_run_dir=""
@@ -145,10 +257,24 @@ if [[ "${1:-}" == "stop-producer" ]]; then
     esac
   done
   [[ "${producer_run_dir}" == /* && "${producer_socket}" == /* ]] || { usage; exit 2; }
+  validate_producer_stop_isolation "${producer_run_dir}" || exit 1
   for name in integration_bridge module2_server; do
     stop_registered_group "${name}" "${producer_run_dir}" || exit 1
   done
   cleanup_exact_socket "${producer_run_dir}" "${producer_socket}" || exit 1
+  verify_consumer_after_producer_stop "${producer_run_dir}" || {
+    echo "producer-stop terminated the Phase-F stack or Module3 ROS consumer" >&2
+    exit 1
+  }
+  ros_lock_is_owned || {
+    echo "producer-stop released the ROS/Nav2 runtime lock" >&2
+    exit 1
+  }
+  if [[ -e "${producer_socket}" || -S "${producer_socket}" ]] \
+      || socket_has_listener "${producer_socket}" || socket_connects "${producer_socket}"; then
+    echo "Module2 socket remains after producer-stop: ${producer_socket}" >&2
+    exit 1
+  fi
   exit 0
 fi
 
@@ -216,30 +342,42 @@ exit_if_terminating() {
 }
 
 register_child() {
-  local name="$1" pid="$2" pgid="" index prefix
-  for ((index=0; index<100; index++)); do
-    pgid="$(ps -o pgid= -p "${pid}" 2>/dev/null | tr -d '[:space:]')"
-    [[ "${pgid}" =~ ^[1-9][0-9]*$ ]] && break
+  local name="$1" pid="$2" own_pgid anchor_pid="" pgid="" index candidate
+  local previous_anchor="" previous_pgid="" stable_checks=0
+  own_pgid="$(process_group_of_pid "$$")"
+  for ((index=0; index<200; index++)); do
+    candidate="$(independent_group_candidate "${pid}" "${own_pgid}" || true)"
+    if read -r anchor_pid pgid <<<"${candidate}" \
+        && [[ "${anchor_pid}" =~ ^[1-9][0-9]*$ \
+        && "${pgid}" =~ ^[1-9][0-9]*$ ]]; then
+      if [[ "${anchor_pid}" == "${previous_anchor}" \
+          && "${pgid}" == "${previous_pgid}" ]]; then
+        ((stable_checks+=1))
+      else
+        previous_anchor="${anchor_pid}"
+        previous_pgid="${pgid}"
+        stable_checks=1
+      fi
+      ((stable_checks >= 2)) && break
+    else
+      previous_anchor=""
+      previous_pgid=""
+      stable_checks=0
+    fi
     sleep 0.01
   done
-  [[ "${pgid}" =~ ^[1-9][0-9]*$ ]] || {
-    echo "could not identify process group for ${name} pid=${pid}" >&2
+  if ((stable_checks < 2)) || [[ "${pgid}" == "${own_pgid}" ]]; then
+    echo "could not identify a stable independent process group for ${name} pid=${pid}" >&2
     return 1
-  }
+  fi
   child_names+=("${name}")
   child_pids+=("${pid}")
   child_pgids+=("${pgid}")
-  prefix="${run_dir}/.${name}.$$"
-  printf '%s %s\n' "${pid}" "${pgid}" >"${prefix}.identity.tmp"
-  mv -f "${prefix}.identity.tmp" "${run_dir}/${name}.identity"
-  printf '%s\n' "${pid}" >"${prefix}.pid.tmp"
-  mv -f "${prefix}.pid.tmp" "${run_dir}/${name}.pid"
-  printf '%s\n' "${pgid}" >"${prefix}.pgid.tmp"
-  mv -f "${prefix}.pgid.tmp" "${run_dir}/${name}.pgid"
+  write_process_identity "${name}" "${run_dir}" "${anchor_pid}" "${pgid}"
 }
 
-descendant_groups() {
-  local root_pid="$1" current child pgid
+descendant_pids() {
+  local root_pid="$1" current child
   local -a queue=("${root_pid}")
   local -A seen=(["${root_pid}"]=1)
   while ((${#queue[@]})); do
@@ -249,10 +387,36 @@ descendant_groups() {
       [[ "${child}" =~ ^[1-9][0-9]*$ && -z "${seen[${child}]:-}" ]] || continue
       seen["${child}"]=1
       queue+=("${child}")
-      pgid="$(ps -o pgid= -p "${child}" 2>/dev/null | tr -d '[:space:]')"
-      [[ "${pgid}" =~ ^[1-9][0-9]*$ ]] && printf '%s\n' "${pgid}"
+      printf '%s\n' "${child}"
     done < <(ps -o pid= --ppid "${current}" 2>/dev/null || true)
   done
+}
+
+independent_group_candidate() {
+  local root_pid="$1" own_pgid="$2" candidate pgid
+  if process_is_running "${root_pid}"; then
+    pgid="$(process_group_of_pid "${root_pid}")"
+    if [[ "${pgid}" =~ ^[1-9][0-9]*$ && "${pgid}" != "${own_pgid}" ]]; then
+      printf '%s %s\n' "${root_pid}" "${pgid}"
+      return 0
+    fi
+  fi
+  while read -r candidate; do
+    process_is_running "${candidate}" || continue
+    pgid="$(process_group_of_pid "${candidate}")"
+    [[ "${pgid}" =~ ^[1-9][0-9]*$ && "${pgid}" != "${own_pgid}" ]] || continue
+    printf '%s %s\n' "${candidate}" "${pgid}"
+    return 0
+  done < <(descendant_pids "${root_pid}")
+  return 1
+}
+
+descendant_groups() {
+  local root_pid="$1" child pgid
+  while read -r child; do
+    pgid="$(process_group_of_pid "${child}")"
+    [[ "${pgid}" =~ ^[1-9][0-9]*$ ]] && printf '%s\n' "${pgid}"
+  done < <(descendant_pids "${root_pid}")
 }
 
 shutdown() {
@@ -317,6 +481,7 @@ shutdown() {
     rm -f "${run_dir}/${child_names[index]}.identity" \
       "${run_dir}/${child_names[index]}.pid" "${run_dir}/${child_names[index]}.pgid"
   done
+  rm -f "${run_dir}/stack.identity" "${run_dir}/stack.pid" "${run_dir}/stack.pgid"
   if [[ "${failed}" == true ]]; then
     echo "Phase-F stack cleanup left a tracked process group alive" >&2
     exit 1
@@ -327,6 +492,13 @@ trap 'request_shutdown 130' INT
 trap 'request_shutdown 143' TERM
 trap 'request_shutdown 129' HUP
 trap 'shutdown $?' EXIT
+
+stack_pgid="$(process_group_of_pid "$$")"
+[[ "${stack_pgid}" =~ ^[1-9][0-9]*$ ]] || {
+  echo "could not identify Phase-F stack process group" >&2
+  exit 1
+}
+write_process_identity stack "${run_dir}" "$$" "${stack_pgid}"
 
 exit_if_terminating
 setsid --wait -- "${script_dir}/run_v6_kujiale_low_obstacles.sh" ros "${arm}" \

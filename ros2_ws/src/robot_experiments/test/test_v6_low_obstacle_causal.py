@@ -2748,6 +2748,285 @@ def test_cleanup_never_unlinks_active_exact_socket_listener(tmp_path):
         socket_path.unlink(missing_ok=True)
 
 
+def _phase_f_identity(run_dir: Path, name: str) -> tuple[int, int]:
+    values = (run_dir / f"{name}.identity").read_text(
+        encoding="utf-8").split()
+    assert len(values) == 2
+    return int(values[0]), int(values[1])
+
+
+def _phase_f_pid_is_running(pid: int) -> bool:
+    stat = Path(f"/proc/{pid}/stat")
+    return stat.is_file() and stat.read_text(encoding="utf-8").split()[2] != "Z"
+
+
+def _start_fake_phase_f_stack(tmp_path: Path) -> SimpleNamespace:
+    root = PACKAGE.parents[2]
+    project = tmp_path / "project"
+    scripts = project / "scripts"
+    (scripts / "lib").mkdir(parents=True)
+    shutil.copy2(root / "scripts/run_v6_low_obstacle_phase_f_stack.sh", scripts)
+    (scripts / "lib/common.sh").write_text(
+        """#!/usr/bin/env bash
+export PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+require_directory() { [[ -d "$1" ]]; }
+require_file() { [[ -f "$1" ]]; }
+source_ros() { :; }
+""",
+        encoding="utf-8",
+    )
+    heartbeat = tmp_path / "module3.heartbeat"
+    (scripts / "run_v6_kujiale_low_obstacles.sh").write_text(
+        """#!/usr/bin/env bash
+mkdir -p "${ISAAC_NAV_RUNTIME_DIR}"
+exec 9>"${ISAAC_NAV_RUNTIME_DIR}/ros.lock"
+flock -n 9
+trap 'exit 0' INT TERM HUP
+while :; do
+  printf '%s\n' "$(date +%s%N)" >>"${FAKE_MODULE3_HEARTBEAT}"
+  sleep 0.02
+done
+""",
+        encoding="utf-8",
+    )
+    integration = tmp_path / "integration"
+    integration_scripts = integration / "scripts"
+    integration_scripts.mkdir(parents=True)
+    socket_server = tmp_path / "socket_server.py"
+    socket_server.write_text(
+        """import socket
+import sys
+import time
+
+server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+server.bind(sys.argv[1])
+server.listen(1)
+while True:
+    time.sleep(1.0)
+""",
+        encoding="utf-8",
+    )
+    module2_launcher = """#!/usr/bin/env bash
+socket_path=""
+while (($#)); do
+  case "$1" in
+    --socket) socket_path="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+exec python3 "${FAKE_SOCKET_SERVER}" "${socket_path}"
+"""
+    for name in (
+        "run_module2_v310_server.sh",
+        "run_v6_module2_causal_obstacle_server.sh",
+    ):
+        path = integration_scripts / name
+        path.write_text(module2_launcher, encoding="utf-8")
+        path.chmod(0o755)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    (fake_bin / "ros2").write_text(
+        """#!/usr/bin/env bash
+trap 'exit 0' INT TERM HUP
+while :; do sleep 0.05; done
+""",
+        encoding="utf-8",
+    )
+    # Keep each just-launched wrapper in the stack PGID long enough to make the
+    # historical first-ps race deterministic, then create the requested session.
+    (fake_bin / "setsid").write_text(
+        """#!/usr/bin/env bash
+sleep "${FAKE_SETSID_DELAY_SEC}"
+/usr/bin/setsid "$@" &
+wait "$!"
+""",
+        encoding="utf-8",
+    )
+    for path in (
+        scripts / "run_v6_low_obstacle_phase_f_stack.sh",
+        scripts / "run_v6_kujiale_low_obstacles.sh",
+        fake_bin / "ros2",
+        fake_bin / "setsid",
+    ):
+        path.chmod(0o755)
+    module2 = tmp_path / "module2"
+    constraints = (
+        module2 / "configs/kujiale_0026_module1_visual_shadow_v310.yaml"
+    )
+    constraints.parent.mkdir(parents=True)
+    constraints.touch()
+    run_dir = tmp_path / "run"
+    socket_path = tmp_path / "socket/module2.sock"
+    runtime_dir = tmp_path / "runtime"
+    env = os.environ.copy()
+    env.update({
+        "PATH": f"{fake_bin}:{env['PATH']}",
+        "BIO_NAV_INTEGRATION_ROOT": str(integration),
+        "BIO_NAV_MODULE2_V310_ROOT": str(module2),
+        "FAKE_MODULE3_HEARTBEAT": str(heartbeat),
+        "FAKE_SOCKET_SERVER": str(socket_server),
+        "FAKE_SETSID_DELAY_SEC": "0.08",
+        "ISAAC_NAV_RUNTIME_DIR": str(runtime_dir),
+        "BIO_NAV_PHASE_F_CLEANUP_INT_CHECKS": "20",
+        "BIO_NAV_PHASE_F_CLEANUP_TERM_CHECKS": "20",
+        "BIO_NAV_PHASE_F_CLEANUP_QUIET_CHECKS": "2",
+    })
+    process = subprocess.Popen(
+        [
+            str(scripts / "run_v6_low_obstacle_phase_f_stack.sh"),
+            "M3", "--domain", "150", "--run-dir", str(run_dir),
+            "--socket", str(socket_path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+        env=env,
+    )
+    deadline = time.monotonic() + 8.0
+    identities = ("stack", "module3_ros", "module2_server", "integration_bridge")
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            break
+        if (
+            all((run_dir / f"{name}.identity").is_file() for name in identities)
+            and socket_path.exists()
+            and heartbeat.is_file()
+            and len(heartbeat.read_text(encoding="utf-8").splitlines()) >= 3
+        ):
+            break
+        time.sleep(0.02)
+    assert process.poll() is None, process.stdout.read() if process.stdout else ""
+    assert all((run_dir / f"{name}.identity").is_file() for name in identities)
+    assert socket_path.exists()
+    return SimpleNamespace(
+        process=process,
+        script=scripts / "run_v6_low_obstacle_phase_f_stack.sh",
+        run_dir=run_dir,
+        socket=socket_path,
+        runtime_dir=runtime_dir,
+        heartbeat=heartbeat,
+        env=env,
+    )
+
+
+def _stop_fake_phase_f_stack(fake: SimpleNamespace) -> None:
+    if fake.process.poll() is None:
+        os.killpg(fake.process.pid, signal.SIGINT)
+        fake.process.wait(timeout=10.0)
+
+
+def test_phase_f_producer_stop_survives_nested_setsid_registration_race(tmp_path):
+    fake = _start_fake_phase_f_stack(tmp_path)
+    identities = {
+        name: _phase_f_identity(fake.run_dir, name)
+        for name in ("stack", "module3_ros", "module2_server", "integration_bridge")
+    }
+    try:
+        stack_pgid = identities["stack"][1]
+        assert stack_pgid == fake.process.pid
+        assert len({pgid for _pid, pgid in identities.values()}) == 4
+        for name in ("module3_ros", "module2_server", "integration_bridge"):
+            pid, pgid = identities[name]
+            assert pid == pgid
+            assert pgid != stack_pgid
+
+        before = len(fake.heartbeat.read_text(encoding="utf-8").splitlines())
+        stopped = subprocess.run(
+            [
+                str(fake.script), "stop-producer", "--run-dir",
+                str(fake.run_dir), "--socket", str(fake.socket),
+            ],
+            env=fake.env,
+            text=True,
+            capture_output=True,
+            timeout=10.0,
+            check=False,
+        )
+        assert stopped.returncode == 0, stopped.stderr
+        # The Phase-F obstacle TTL is 0.5 s; the ROS/Nav2 consumer must remain
+        # live beyond it after only the producer and bridge are stopped.
+        time.sleep(0.65)
+        after = len(fake.heartbeat.read_text(encoding="utf-8").splitlines())
+        assert after > before
+        assert fake.process.poll() is None
+        assert _phase_f_pid_is_running(identities["module3_ros"][0])
+        assert not _phase_f_pid_is_running(identities["module2_server"][0])
+        assert not _phase_f_pid_is_running(identities["integration_bridge"][0])
+        assert not fake.socket.exists()
+        assert (fake.run_dir / "stack.identity").is_file()
+        assert (fake.run_dir / "module3_ros.identity").is_file()
+        assert not (fake.run_dir / "module2_server.identity").exists()
+        assert not (fake.run_dir / "integration_bridge.identity").exists()
+        with (fake.runtime_dir / "ros.lock").open("a+", encoding="utf-8") as lock:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    finally:
+        _stop_fake_phase_f_stack(fake)
+    assert not list(fake.run_dir.glob("*.identity"))
+    assert not list(fake.run_dir.glob("*.pid"))
+    assert not list(fake.run_dir.glob("*.pgid"))
+    assert causal._lock_is_free(fake.runtime_dir / "ros.lock")
+
+
+def test_phase_f_producer_stop_rejects_consumer_process_group(tmp_path):
+    fake = _start_fake_phase_f_stack(tmp_path)
+    original = {
+        suffix: (fake.run_dir / f"module2_server.{suffix}").read_text(
+            encoding="utf-8")
+        for suffix in ("identity", "pid", "pgid")
+    }
+    identities = {
+        name: _phase_f_identity(fake.run_dir, name)
+        for name in ("stack", "module2_server", "integration_bridge")
+    }
+    try:
+        stack_pid, stack_pgid = identities["stack"]
+        (fake.run_dir / "module2_server.identity").write_text(
+            f"{stack_pid} {stack_pgid}\n", encoding="utf-8")
+        (fake.run_dir / "module2_server.pid").write_text(
+            f"{stack_pid}\n", encoding="utf-8")
+        (fake.run_dir / "module2_server.pgid").write_text(
+            f"{stack_pgid}\n", encoding="utf-8")
+        result = subprocess.run(
+            [
+                str(fake.script), "stop-producer", "--run-dir",
+                str(fake.run_dir), "--socket", str(fake.socket),
+            ],
+            env=fake.env,
+            text=True,
+            capture_output=True,
+            timeout=5.0,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "process groups are not isolated" in result.stderr
+        assert fake.process.poll() is None
+        assert _phase_f_pid_is_running(identities["module2_server"][0])
+        assert _phase_f_pid_is_running(identities["integration_bridge"][0])
+        assert fake.socket.exists()
+    finally:
+        for suffix, content in original.items():
+            (fake.run_dir / f"module2_server.{suffix}").write_text(
+                content, encoding="utf-8")
+        _stop_fake_phase_f_stack(fake)
+
+
+def test_phase_f_normal_trap_shutdown_cleans_all_registered_groups(tmp_path):
+    fake = _start_fake_phase_f_stack(tmp_path)
+    identities = {
+        name: _phase_f_identity(fake.run_dir, name)
+        for name in ("module3_ros", "module2_server", "integration_bridge")
+    }
+    _stop_fake_phase_f_stack(fake)
+    assert all(not _phase_f_pid_is_running(pid) for pid, _pgid in identities.values())
+    assert not list(fake.run_dir.glob("*.identity"))
+    assert not list(fake.run_dir.glob("*.pid"))
+    assert not list(fake.run_dir.glob("*.pgid"))
+    assert not fake.socket.exists()
+    assert causal._lock_is_free(fake.runtime_dir / "ros.lock")
+
+
 def test_phase_f_stack_trap_cleans_its_nested_new_process_group(tmp_path):
     root = PACKAGE.parents[2]
     project = tmp_path / "project"
@@ -2982,10 +3261,16 @@ def test_exact_stack_adapter_maps_profiles_and_keeps_phase_f_isolation():
     assert "setsid --wait --" in stack
     assert "descendant_groups" in stack
     assert 'kill "-${signal_name}" -- "-${pgid}"' in stack
-    assert '"${run_dir}/${name}.identity"' in stack
+    assert '"${directory}/${name}.identity"' in stack
     assert 'mv -f "${prefix}.identity.tmp"' in stack
+    assert "independent_group_candidate" in stack
+    assert "stable_checks" in stack
+    assert '[[ "${pgid}" == "${own_pgid}" ]]' in stack
+    assert "validate_producer_stop_isolation" in stack
+    assert "verify_consumer_after_producer_stop" in stack
+    assert "ros_lock_is_owned" in stack
     assert stack.count("exit_if_terminating") >= 8
-    assert '"${run_dir}/${name}.pgid"' in stack
+    assert '"${directory}/${name}.pgid"' in stack
     assert 'register_child integration_bridge "${integration_bridge_pid}"' in stack
     assert 'register_child module2_server "${module2_server_pid}"' in stack
     assert 'module2_root="${BIO_NAV_MODULE2_V310_ROOT:-}"' in stack
