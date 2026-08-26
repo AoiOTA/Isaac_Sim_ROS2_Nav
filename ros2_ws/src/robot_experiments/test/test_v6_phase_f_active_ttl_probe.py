@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -177,6 +178,10 @@ def test_fake_active_ttl_timeline_passes_and_preserves_adapter_order(arm):
     assert result["action"]["terminal_zero_confirmed"] is True
     if arm == "M3":
         assert result["evaluator_fields"]["critic_stale_active_probe"] == "STALE_REJECTED"
+    else:
+        assert result["positive_apply"]["critic"] is None
+        assert result["evaluator_fields"]["critic_stale_active_probe"] == "NOT_APPLICABLE"
+        assert result["evaluator_fields"]["critic_post_expiry_applied"] is None
 
 
 def test_no_positive_apply_is_probe_not_armed_and_cancels_active_goal():
@@ -669,6 +674,8 @@ def test_plan_is_m2_m3_only_and_keeps_exact_fixed_scene_contract(tmp_path):
     plan = build_probe_plan(manifest, tmp_path / "probe")
 
     assert [row["arm"] for row in plan["runs"]] == ["M2", "M3"]
+    assert plan["selected_arm"] is None
+    assert plan["qualification"] == "ENGINEERING_ONLY_NOT_FORMAL"
     assert plan["nominal_episode_ttl"] == "N/A_SEPARATE_ACTIVE_CONTROLLER_PROBE"
     for row in plan["runs"]:
         assert row["start"]["id"] == "G1"
@@ -680,6 +687,33 @@ def test_plan_is_m2_m3_only_and_keeps_exact_fixed_scene_contract(tmp_path):
         assert row["commands"]["scene"][0].endswith("run_v6_r5_phase_b_kujiale.sh")
         assert row["commands"]["stack"][1] == row["arm"]
         assert row["commands"]["producer_stop"][1] == "stop-producer"
+
+
+def test_selected_m2_plan_contains_only_repeat1_m2_and_no_m3_command(tmp_path):
+    manifest = load_manifest(CONFIG)
+    plan = build_probe_plan(
+        manifest,
+        tmp_path / "probe",
+        selected_arm="M2",
+    )
+
+    assert plan["selected_arm"] == "M2"
+    assert plan["qualification"] == "ENGINEERING_ONLY_NOT_FORMAL"
+    assert plan["mode"] == "M2_ACTIVE_CONTROLLER_TTL_PROBE"
+    assert [(row["arm"], row["repeat"]) for row in plan["runs"]] == [("M2", 1)]
+    assert "M3" not in json.dumps(plan)
+
+
+def test_invalid_selected_arm_is_rejected_by_cli_parser():
+    with pytest.raises(SystemExit) as raised:
+        probe_module.build_parser().parse_args([
+            "plan",
+            "--config", str(CONFIG),
+            "--output-root", "/tmp/ttl-probe",
+            "--selected-arm", "M3",
+        ])
+
+    assert raised.value.code == 2
 
 
 @pytest.mark.parametrize(
@@ -735,3 +769,61 @@ def test_m2_failure_or_cleanup_failure_does_not_start_m3(
     assert result["state"] == "FAILED"
     assert dispatched == ["M2"]
     assert [row["arm"] for row in result["runs"]] == ["M2"]
+
+
+@pytest.mark.parametrize(
+    ("selected_arm", "expected_arms"),
+    [("M2", ["M2"]), (None, ["M2", "M3"])],
+)
+def test_campaign_selection_preserves_default_and_selected_dispatch(
+    tmp_path, monkeypatch, selected_arm, expected_arms
+):
+    manifest = load_manifest(CONFIG)
+    dispatched = []
+
+    monkeypatch.setattr(
+        probe_module,
+        "_start_process",
+        lambda name, *_args, **_kwargs: SimpleNamespace(name=name),
+    )
+    monkeypatch.setattr(
+        probe_module,
+        "_wait_for_startup_ready",
+        lambda *_args, **_kwargs: {"ready": True},
+    )
+    monkeypatch.setattr(
+        probe_module,
+        "_wait_for_cognitive_ready",
+        lambda *_args, **_kwargs: {"ready": True},
+    )
+    monkeypatch.setattr(
+        probe_module,
+        "_stop_process",
+        lambda process, _timeout: {"name": process.name, "stopped": True},
+    )
+    monkeypatch.setattr(
+        probe_module,
+        "_confirm_arm_cleanup",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+
+    def fake_dispatch(_manifest, run, *_args, **_kwargs):
+        dispatched.append(run.arm)
+        return {"state": PASS_STATE}
+
+    monkeypatch.setattr(probe_module, "dispatch_live_probe", fake_dispatch)
+
+    result = probe_module.run_probe_campaign(
+        manifest,
+        tmp_path / "campaign",
+        arming_timeout_sec=1.0,
+        probe_timeout_sec=1.0,
+        shutdown_timeout_sec=1.0,
+        selected_arm=selected_arm,
+    )
+
+    assert result["state"] == "PASS"
+    assert result["selected_arm"] == selected_arm
+    assert result["qualification"] == "ENGINEERING_ONLY_NOT_FORMAL"
+    assert dispatched == expected_arms
+    assert [row["arm"] for row in result["runs"]] == expected_arms

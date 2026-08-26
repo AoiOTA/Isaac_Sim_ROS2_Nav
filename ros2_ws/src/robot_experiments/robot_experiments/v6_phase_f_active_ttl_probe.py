@@ -42,6 +42,8 @@ from .v6_low_obstacle_causal import (
 
 SCHEMA_VERSION = "bio_nav_v6_phase_f_active_ttl_probe_v1"
 ACTIVE_ARMS = ("M2", "M3")
+SELECTABLE_ARMS = ("M2",)
+QUALIFICATION = "ENGINEERING_ONLY_NOT_FORMAL"
 PASS_STATE = "PASS_ACTIVE_CONTROLLER_TTL"
 PROBE_NOT_ARMED = "PROBE_NOT_ARMED"
 DEFAULT_ARMING_TIMEOUT_SEC = 180.0
@@ -601,21 +603,30 @@ def execute_probe_lifecycle(
     return payload
 
 
-def _active_runs(manifest: CausalManifest) -> tuple[RunContract, RunContract]:
+def _active_runs(
+    manifest: CausalManifest,
+    selected_arm: str | None = None,
+) -> tuple[RunContract, ...]:
     rows = tuple(run for run in manifest.runs if run.repeat == 1 and run.arm in ACTIVE_ARMS)
     if tuple(run.arm for run in rows) != ACTIVE_ARMS:
         raise CausalContractError("active TTL probe requires repeat-1 M2 then M3")
-    return rows  # type: ignore[return-value]
+    if selected_arm is None:
+        return rows
+    if selected_arm not in SELECTABLE_ARMS:
+        raise CausalContractError("active TTL probe selected arm must be M2")
+    return tuple(run for run in rows if run.arm == selected_arm)
 
 
 def build_probe_plan(
     manifest: CausalManifest,
     output_root: str | Path,
+    *,
+    selected_arm: str | None = None,
 ) -> dict[str, Any]:
     root = Path(output_root).expanduser().resolve()
     templates = exact_adapter_templates(manifest)
     rows: list[dict[str, Any]] = []
-    for run in _active_runs(manifest):
+    for run in _active_runs(manifest, selected_arm):
         values = _adapter_values(manifest, run, root)
         run_dir = Path(values["run_dir"])
         rows.append({
@@ -645,7 +656,13 @@ def build_probe_plan(
         })
     return {
         "schema_version": SCHEMA_VERSION,
-        "mode": "M2_M3_ACTIVE_CONTROLLER_TTL_PROBE",
+        "mode": (
+            "M2_ACTIVE_CONTROLLER_TTL_PROBE"
+            if selected_arm == "M2"
+            else "M2_M3_ACTIVE_CONTROLLER_TTL_PROBE"
+        ),
+        "selected_arm": selected_arm,
+        "qualification": QUALIFICATION,
         "nominal_episode_ttl": "N/A_SEPARATE_ACTIVE_CONTROLLER_PROBE",
         "ordered_steps": (
             "start_scene", "start_active_stack", "wait_readiness",
@@ -971,10 +988,11 @@ def run_probe_campaign(
     arming_timeout_sec: float,
     probe_timeout_sec: float,
     shutdown_timeout_sec: float,
+    selected_arm: str | None = None,
 ) -> dict[str, Any]:
     root = Path(output_root).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    plan = build_probe_plan(manifest, root)
+    plan = build_probe_plan(manifest, root, selected_arm=selected_arm)
     existing = [row["run_directory"] for row in plan["runs"] if Path(row["run_directory"]).exists()]
     if existing:
         raise CausalContractError("refusing to overwrite probe directories: " + ",".join(existing))
@@ -985,7 +1003,11 @@ def run_probe_campaign(
     env.setdefault("RMW_IMPLEMENTATION", "rmw_fastrtps_cpp")
     results: list[dict[str, Any]] = []
     for row in plan["runs"]:
-        run = next(item for item in _active_runs(manifest) if item.run_id == row["run_id"])
+        run = next(
+            item
+            for item in _active_runs(manifest, selected_arm)
+            if item.run_id == row["run_id"]
+        )
         run_dir = Path(row["run_directory"])
         run_dir.mkdir(parents=True)
         managed: list[_ManagedProcess] = []
@@ -1079,7 +1101,14 @@ def run_probe_campaign(
             break
     summary = {
         "schema_version": SCHEMA_VERSION,
-        "state": "PASS" if len(results) == 2 and all(row["state"] == PASS_STATE for row in results) else "FAILED",
+        "state": (
+            "PASS"
+            if len(results) == len(plan["runs"])
+            and all(row["state"] == PASS_STATE for row in results)
+            else "FAILED"
+        ),
+        "selected_arm": selected_arm,
+        "qualification": QUALIFICATION,
         "output_root": str(root),
         "runs": results,
     }
@@ -1105,10 +1134,12 @@ def build_parser() -> argparse.ArgumentParser:
     plan = subparsers.add_parser("plan")
     plan.add_argument("--config", required=True)
     plan.add_argument("--output-root", required=True)
+    plan.add_argument("--selected-arm", choices=SELECTABLE_ARMS)
     plan.add_argument("--output")
     run = subparsers.add_parser("run")
     run.add_argument("--config", required=True)
     run.add_argument("--output-root", required=True)
+    run.add_argument("--selected-arm", choices=SELECTABLE_ARMS)
     run.add_argument("--arming-timeout-sec", type=float, default=DEFAULT_ARMING_TIMEOUT_SEC)
     run.add_argument("--probe-timeout-sec", type=float, default=DEFAULT_PROBE_TIMEOUT_SEC)
     run.add_argument("--shutdown-timeout-sec", type=float, default=DEFAULT_SHUTDOWN_TIMEOUT_SEC)
@@ -1121,7 +1152,14 @@ def cli(argv: Sequence[str] | None = None) -> int:
     try:
         manifest = load_manifest(args.config)
         if args.command == "plan":
-            _write(build_probe_plan(manifest, args.output_root), args.output)
+            _write(
+                build_probe_plan(
+                    manifest,
+                    args.output_root,
+                    selected_arm=args.selected_arm,
+                ),
+                args.output,
+            )
             return 0
         for value, name in (
             (args.arming_timeout_sec, "arming timeout"),
@@ -1136,6 +1174,7 @@ def cli(argv: Sequence[str] | None = None) -> int:
             arming_timeout_sec=args.arming_timeout_sec,
             probe_timeout_sec=args.probe_timeout_sec,
             shutdown_timeout_sec=args.shutdown_timeout_sec,
+            selected_arm=args.selected_arm,
         )
         _write(result, args.output)
         return 0 if result["state"] == "PASS" else 2
