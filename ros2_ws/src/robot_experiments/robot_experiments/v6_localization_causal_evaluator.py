@@ -17,6 +17,13 @@ import statistics
 import sys
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
+from .v6_localization_causal import (
+    SEED_CONFIRMATION_POSITION_THRESHOLD_M,
+    SEED_CONFIRMATION_YAW_THRESHOLD_DEG,
+    _pose_disagreement,
+    _propagate_module1_odom_delta,
+)
+
 
 PHASE_DE_EVENT_SCHEMA = "bio_nav_v6_phase_de_localization_event_v1"
 PHASE_DE_GT_SCHEMA = "bio_nav_v6_phase_de_localization_gt_v1"
@@ -683,6 +690,92 @@ def _goal_success(row: Mapping[str, Any]) -> bool:
     }
 
 
+def _fault_pose(row: Mapping[str, Any], name: str) -> tuple[float, float, float]:
+    pose = _mapping(row.get(name), f"fault_injected.{name}")
+    if set(pose) != {"x", "y", "yaw_deg"}:
+        raise EvaluationError(f"fault_injected.{name} pose fields changed")
+    return (
+        _finite(pose.get("x"), f"fault_injected.{name}.x"),
+        _finite(pose.get("y"), f"fault_injected.{name}.y"),
+        _finite(pose.get("yaw_deg"), f"fault_injected.{name}.yaw_deg"),
+    )
+
+
+def _fault_discriminability(row: Mapping[str, Any]) -> dict[str, Any]:
+    pre_amcl = _fault_pose(row, "pre_fault_amcl_map_pose")
+    pre_module1 = _fault_pose(row, "pre_fault_module1_odom_pose")
+    post_amcl = _fault_pose(row, "post_fault_amcl_map_pose")
+    post_module1 = _fault_pose(row, "post_fault_module1_odom_pose")
+    recorded_delta = _fault_pose(row, "module1_odom_delta")
+    recorded_prediction = _fault_pose(row, "predicted_post_amcl_map_pose")
+    predicted, module1_delta = _propagate_module1_odom_delta(
+        pre_amcl, pre_module1, post_module1
+    )
+    position_m, yaw_deg = _pose_disagreement(post_amcl, predicted)
+    recorded_position_m = _finite(
+        row.get("amcl_disagreement_position_m"),
+        "fault_injected.amcl_disagreement_position_m",
+    )
+    recorded_yaw_deg = _finite(
+        row.get("amcl_disagreement_yaw_deg"),
+        "fault_injected.amcl_disagreement_yaw_deg",
+    )
+    position_threshold_m = _finite(
+        row.get("seed_confirmation_position_threshold_m"),
+        "fault_injected.seed_confirmation_position_threshold_m",
+    )
+    yaw_threshold_deg = _finite(
+        row.get("seed_confirmation_yaw_threshold_deg"),
+        "fault_injected.seed_confirmation_yaw_threshold_deg",
+    )
+    raw_values = (
+        *recorded_delta,
+        *recorded_prediction,
+        recorded_position_m,
+        recorded_yaw_deg,
+    )
+    calculated_values = (*module1_delta, *predicted, position_m, yaw_deg)
+    if any(
+        not math.isclose(raw, calculated, rel_tol=1.0e-9, abs_tol=1.0e-9)
+        for raw, calculated in zip(raw_values, calculated_values)
+    ):
+        raise EvaluationError("Phase E fault SE2 discriminability fields disagree")
+    if (
+        position_threshold_m != SEED_CONFIRMATION_POSITION_THRESHOLD_M
+        or yaw_threshold_deg != SEED_CONFIRMATION_YAW_THRESHOLD_DEG
+    ):
+        raise EvaluationError("Phase E seed_confirmation thresholds changed")
+    jump_observed = bool(
+        position_m > position_threshold_m or yaw_deg > yaw_threshold_deg
+    )
+    if row.get("amcl_jump_observed") is not jump_observed:
+        raise EvaluationError("Phase E AMCL jump classification changed")
+    lost_observed = row.get("supervisor_lost_observed")
+    if not isinstance(lost_observed, bool):
+        raise EvaluationError("Phase E supervisor LOST observation must be boolean")
+    expected_outcome = (
+        "FAULT_DISCRIMINATIVE"
+        if jump_observed or lost_observed
+        else "INVALID_NOT_DISCRIMINATIVE"
+    )
+    if row.get("outcome") != expected_outcome:
+        raise EvaluationError("Phase E fault discriminability outcome changed")
+    return {
+        "pre_amcl_map_pose": dict(row["pre_fault_amcl_map_pose"]),
+        "pre_module1_odom_pose": dict(row["pre_fault_module1_odom_pose"]),
+        "post_amcl_map_pose": dict(row["post_fault_amcl_map_pose"]),
+        "post_module1_odom_pose": dict(row["post_fault_module1_odom_pose"]),
+        "module1_odom_delta": dict(row["module1_odom_delta"]),
+        "predicted_post_amcl_map_pose": dict(row["predicted_post_amcl_map_pose"]),
+        "amcl_disagreement_position_m": position_m,
+        "amcl_disagreement_yaw_deg": yaw_deg,
+        "seed_confirmation_position_threshold_m": position_threshold_m,
+        "seed_confirmation_yaw_threshold_deg": yaw_threshold_deg,
+        "amcl_jump_observed": jump_observed,
+        "supervisor_lost_observed": lost_observed,
+    }
+
+
 def evaluate_phase_de_episode(
     runtime_events: Sequence[Mapping[str, Any]],
     ground_truth_rows: Sequence[Mapping[str, Any]],
@@ -743,6 +836,7 @@ def evaluate_phase_de_episode(
 
     fault_rows = by_event["fault_injected"]
     fault_outcome = None
+    fault_discriminability = None
     if identity["phase"] == "E":
         if len(fault_rows) != 1:
             raise EvaluationError("Phase E requires exactly one fault event")
@@ -758,10 +852,11 @@ def evaluate_phase_de_episode(
             or fault_row.get("first_post_fault_amcl_pose_observed") is not True
         ):
             raise EvaluationError("Phase E particle-spread fault contract changed")
+        fault_discriminability = _fault_discriminability(fault_row)
         fault_outcome = str(fault_row.get("outcome", ""))
         if fault_outcome not in {
             "FAULT_DISCRIMINATIVE",
-            "INVALID_FAULT_NOT_DISCRIMINATIVE",
+            "INVALID_NOT_DISCRIMINATIVE",
         }:
             raise EvaluationError("Phase E fault outcome is invalid")
         g2_results = [
@@ -804,12 +899,11 @@ def evaluate_phase_de_episode(
         ):
             raise EvaluationError("Phase E request count ledger changed")
         if (
-            fault_outcome == "INVALID_FAULT_NOT_DISCRIMINATIVE"
-            and episode_end.get("stop_reason")
-            != "INVALID_FAULT_NOT_DISCRIMINATIVE"
+            fault_outcome == "INVALID_NOT_DISCRIMINATIVE"
+            and episode_end.get("stop_reason") != "INVALID_NOT_DISCRIMINATIVE"
         ):
             raise EvaluationError("invalid fault STOP reason changed")
-        if fault_outcome == "INVALID_FAULT_NOT_DISCRIMINATIVE":
+        if fault_outcome == "INVALID_NOT_DISCRIMINATIVE":
             route_success = False
         if fault_outcome == "FAULT_DISCRIMINATIVE":
             if not g3_dispatch or min(
@@ -869,6 +963,7 @@ def evaluate_phase_de_episode(
             None if not fault_rows else fault_rows[0].get("kind")
         ),
         "fault_outcome": fault_outcome,
+        "fault_discriminability": fault_discriminability,
         "evaluation_kind": "ENGINEERING_RAW_METRICS_ONLY",
         "formal_gate": False,
         "ground_truth_policy": "separate_passive_offline_stream",

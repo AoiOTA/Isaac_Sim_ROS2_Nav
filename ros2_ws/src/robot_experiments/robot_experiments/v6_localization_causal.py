@@ -58,6 +58,8 @@ RECOVERY_BY_ARM = {
     "R1": "supervisor_manual_rescue",
 }
 STARTUP_AMCL_POSES_REQUIRED = 3
+SEED_CONFIRMATION_POSITION_THRESHOLD_M = 0.75
+SEED_CONFIRMATION_YAW_THRESHOLD_DEG = 20.0
 RUN4_CANDIDATE_STATUS = "READ_ONLY_CAUSAL_CANDIDATE_STARTUP_ONLY"
 RUN4_RECOVERY_QUALIFICATION = "NOT_ACTIVE_RECOVERY_QUALIFIED"
 RUN4_ALLOWED_SUPERVISOR_MODES = ("shadow", "startup")
@@ -504,6 +506,52 @@ def _yaw_deg(quaternion: Any) -> float:
     return math.degrees(math.atan2(siny, cosy))
 
 
+def _wrap_yaw_deg(value: float) -> float:
+    return (float(value) + 180.0) % 360.0 - 180.0
+
+
+def _propagate_module1_odom_delta(
+    pre_amcl_map_pose: tuple[float, float, float],
+    pre_module1_odom_pose: tuple[float, float, float],
+    post_module1_odom_pose: tuple[float, float, float],
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    """Apply the Module1 odom SE(2) delta to the pre-fault AMCL map anchor."""
+
+    odom_dx = post_module1_odom_pose[0] - pre_module1_odom_pose[0]
+    odom_dy = post_module1_odom_pose[1] - pre_module1_odom_pose[1]
+    pre_odom_yaw = math.radians(pre_module1_odom_pose[2])
+    local_dx = math.cos(pre_odom_yaw) * odom_dx + math.sin(pre_odom_yaw) * odom_dy
+    local_dy = -math.sin(pre_odom_yaw) * odom_dx + math.cos(pre_odom_yaw) * odom_dy
+    delta_yaw = _wrap_yaw_deg(
+        post_module1_odom_pose[2] - pre_module1_odom_pose[2]
+    )
+    pre_map_yaw = math.radians(pre_amcl_map_pose[2])
+    predicted = (
+        pre_amcl_map_pose[0]
+        + math.cos(pre_map_yaw) * local_dx
+        - math.sin(pre_map_yaw) * local_dy,
+        pre_amcl_map_pose[1]
+        + math.sin(pre_map_yaw) * local_dx
+        + math.cos(pre_map_yaw) * local_dy,
+        _wrap_yaw_deg(pre_amcl_map_pose[2] + delta_yaw),
+    )
+    return predicted, (local_dx, local_dy, delta_yaw)
+
+
+def _pose_disagreement(
+    observed: tuple[float, float, float],
+    predicted: tuple[float, float, float],
+) -> tuple[float, float]:
+    return (
+        math.hypot(observed[0] - predicted[0], observed[1] - predicted[1]),
+        abs(_wrap_yaw_deg(observed[2] - predicted[2])),
+    )
+
+
+def _pose_fields(pose: tuple[float, float, float]) -> dict[str, float]:
+    return {"x": pose[0], "y": pose[1], "yaw_deg": pose[2]}
+
+
 def _contains_ground_truth(value: Any, *, key: str = "") -> bool:
     lowered = key.lower()
     if "ground_truth" in lowered or lowered in {"gt_pose", "gt_region", "gt_region_id"}:
@@ -548,8 +596,12 @@ class LocalizationCausalNode(V6FormalNode):
         self._prior_write_count = 0
         self._amcl_count = 0
         self._particle_cloud_count = 0
+        self._module1_odom_count = 0
         self._last_amcl_covariance: tuple[float, float, float] | None = None
+        self._last_amcl_pose: tuple[float, float, float] | None = None
+        self._last_module1_odom_pose: tuple[float, float, float] | None = None
         self._first_post_fault_amcl_covariance: tuple[float, float, float] | None = None
+        self._first_post_fault_amcl_pose: tuple[float, float, float] | None = None
         self._fault_observation_active = False
         self._fault_amcl_baseline = 0
         self._fault_particle_baseline = 0
@@ -570,6 +622,7 @@ class LocalizationCausalNode(V6FormalNode):
         from diagnostic_msgs.msg import DiagnosticArray
         from geometry_msgs.msg import PoseWithCovarianceStamped
         from nav2_msgs.msg import ParticleCloud
+        from nav_msgs.msg import Odometry
         from rcl_interfaces.msg import SetParametersResult
         from rclpy.clock import ClockType
         from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
@@ -629,6 +682,12 @@ class LocalizationCausalNode(V6FormalNode):
                     ParticleCloud,
                     "/particle_cloud",
                     self._particle_cloud,
+                    qos_profile_sensor_data,
+                ),
+                self.node.create_subscription(
+                    Odometry,
+                    "/bio_nav/module1/odom",
+                    self._module1_odom,
                     qos_profile_sensor_data,
                 ),
             ]
@@ -733,13 +792,29 @@ class LocalizationCausalNode(V6FormalNode):
         if post_fault and self._first_post_fault_amcl_covariance is None:
             self._first_post_fault_amcl_covariance = self._last_amcl_covariance
         pose = message.pose.pose
+        self._last_amcl_pose = (
+            float(pose.position.x),
+            float(pose.position.y),
+            _yaw_deg(pose.orientation),
+        )
+        if post_fault and self._first_post_fault_amcl_pose is None:
+            self._first_post_fault_amcl_pose = self._last_amcl_pose
         self._event(
             "estimated_pose",
-            x=float(pose.position.x),
-            y=float(pose.position.y),
-            yaw_deg=_yaw_deg(pose.orientation),
+            x=self._last_amcl_pose[0],
+            y=self._last_amcl_pose[1],
+            yaw_deg=self._last_amcl_pose[2],
             covariance_xy_yaw=[covariance[0], covariance[7], covariance[35]],
             post_fault=post_fault,
+        )
+
+    def _module1_odom(self, message: Any) -> None:
+        pose = message.pose.pose
+        self._module1_odom_count += 1
+        self._last_module1_odom_pose = (
+            float(pose.position.x),
+            float(pose.position.y),
+            _yaw_deg(pose.orientation),
         )
 
     def _particle_cloud(self, message: Any) -> None:
@@ -1051,7 +1126,12 @@ class LocalizationCausalNode(V6FormalNode):
         if not (no_active_goal and self._last_cmd_zero is True and stationary):
             self.guard.stop("F2_stationary_boundary_not_confirmed")
             return
+        if self._last_amcl_pose is None or self._last_module1_odom_pose is None:
+            self.guard.stop("F2_pre_fault_pose_anchor_missing")
+            return
 
+        pre_amcl_map_pose = self._last_amcl_pose
+        pre_module1_odom_pose = self._last_module1_odom_pose
         self._fault_candidate_baseline = self._candidate_snapshot()
         self._fault_service_request_count = 1
         if not self._call_empty_service(
@@ -1066,6 +1146,7 @@ class LocalizationCausalNode(V6FormalNode):
         self._fault_amcl_baseline = self._amcl_count
         self._fault_particle_baseline = self._particle_cloud_count
         self._first_post_fault_amcl_covariance = None
+        self._first_post_fault_amcl_pose = None
         self._fault_observation_active = True
         observed = self._spin_until(
             lambda: self._amcl_count > self._fault_amcl_baseline
@@ -1073,23 +1154,45 @@ class LocalizationCausalNode(V6FormalNode):
             min(10.0, self.config.recovery_timeout_s),
         )
         if not observed or self.guard.state == "STOP":
-            self.guard.stop("F2_first_post_fault_evidence_timeout")
+            self.guard.stop("F2_first_post_fault_amcl_pose_timeout")
             return
-        lost_observed = False
-        if not self._covariance_recovered(self._first_post_fault_amcl_covariance):
-            lost_observed = self._spin_until(
-                lambda: (
-                    self._last_supervisor.get("state", "").upper() == "LOST"
-                    and self._last_supervisor.get("reason", "")
-                    == "amcl_covariance_lost"
-                )
-                or self.guard.state == "STOP",
-                self.config.recovery_timeout_s,
-            )
+
+        # ParticleCloud uses sensor-data QoS and can arrive after AMCL pose.
+        # Observe it for the existing bounded post-service window, but it is
+        # corroborating telemetry and never makes an otherwise valid fault fail.
+        self._spin_until(
+            lambda: self._particle_cloud_count > self._fault_particle_baseline
+            or self.guard.state == "STOP",
+            min(10.0, self.config.recovery_timeout_s),
+        )
+        if self.guard.state == "STOP":
+            return
+
+        post_amcl_map_pose = self._first_post_fault_amcl_pose
+        post_module1_odom_pose = self._last_module1_odom_pose
+        if post_amcl_map_pose is None or post_module1_odom_pose is None:
+            self.guard.stop("F2_post_fault_pose_missing")
+            return
+        predicted_map_pose, module1_delta = _propagate_module1_odom_delta(
+            pre_amcl_map_pose,
+            pre_module1_odom_pose,
+            post_module1_odom_pose,
+        )
+        disagreement_position_m, disagreement_yaw_deg = _pose_disagreement(
+            post_amcl_map_pose,
+            predicted_map_pose,
+        )
+        jump_observed = bool(
+            disagreement_position_m > SEED_CONFIRMATION_POSITION_THRESHOLD_M
+            or disagreement_yaw_deg > SEED_CONFIRMATION_YAW_THRESHOLD_DEG
+        )
+        lost_observed = (
+            self._last_supervisor.get("state", "").upper() == "LOST"
+        )
         fault_outcome = (
             "FAULT_DISCRIMINATIVE"
-            if lost_observed
-            else "INVALID_FAULT_NOT_DISCRIMINATIVE"
+            if jump_observed or lost_observed
+            else "INVALID_NOT_DISCRIMINATIVE"
         )
         self._event(
             "fault_injected",
@@ -1105,10 +1208,25 @@ class LocalizationCausalNode(V6FormalNode):
             first_post_fault_covariance_xy_yaw=list(
                 self._first_post_fault_amcl_covariance or ()
             ),
+            pre_fault_amcl_map_pose=_pose_fields(pre_amcl_map_pose),
+            pre_fault_module1_odom_pose=_pose_fields(pre_module1_odom_pose),
+            post_fault_amcl_map_pose=_pose_fields(post_amcl_map_pose),
+            post_fault_module1_odom_pose=_pose_fields(post_module1_odom_pose),
+            module1_odom_delta=_pose_fields(module1_delta),
+            predicted_post_amcl_map_pose=_pose_fields(predicted_map_pose),
+            amcl_disagreement_position_m=disagreement_position_m,
+            amcl_disagreement_yaw_deg=disagreement_yaw_deg,
+            seed_confirmation_position_threshold_m=(
+                SEED_CONFIRMATION_POSITION_THRESHOLD_M
+            ),
+            seed_confirmation_yaw_threshold_deg=(
+                SEED_CONFIRMATION_YAW_THRESHOLD_DEG
+            ),
             outcome=fault_outcome,
+            amcl_jump_observed=jump_observed,
             supervisor_lost_observed=lost_observed,
         )
-        if fault_outcome == "INVALID_FAULT_NOT_DISCRIMINATIVE":
+        if fault_outcome == "INVALID_NOT_DISCRIMINATIVE":
             self.guard.stop(fault_outcome)
 
     def _recover(self, method: str) -> None:

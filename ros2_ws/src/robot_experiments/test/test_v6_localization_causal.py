@@ -16,10 +16,14 @@ from robot_experiments.v6_localization_causal import (
     PHASE_D_STARTUP_INITIALPOSE,
     PHASE_E_MANUAL_RECOVERY_EXPERIMENT,
     RUN4_CANDIDATE_STATUS,
+    SEED_CONFIRMATION_POSITION_THRESHOLD_M,
+    SEED_CONFIRMATION_YAW_THRESHOLD_DEG,
     STARTUP_AMCL_POSES_REQUIRED,
     LocalizationCausalNode,
     LocalizationConfigError,
     _contains_ground_truth,
+    _pose_disagreement,
+    _propagate_module1_odom_delta,
     _require_sim_time,
     build_plan,
     cli,
@@ -527,7 +531,10 @@ def test_planning_prior_uses_dominant_mode_fields_directly():
     ]
 
 
-def test_fault_calls_jazzy_service_once_then_requires_post_response_amcl_not_cloud():
+@pytest.mark.parametrize("cloud_after_pose", (False, True))
+def test_r0_89m_fault_is_discriminative_with_late_or_missing_best_effort_cloud(
+    cloud_after_pose,
+):
     class EmptyService:
         class Request:
             pass
@@ -555,6 +562,8 @@ def test_fault_calls_jazzy_service_once_then_requires_post_response_amcl_not_clo
     adapter._fault_service_request_count = 0
     adapter._amcl_count = 3
     adapter._particle_cloud_count = 4
+    adapter._last_amcl_pose = (0.0, 0.0, 0.0)
+    adapter._last_module1_odom_pose = (5.0, -2.0, 10.0)
     adapter._event = lambda event, **payload: events.append((event, payload))
     adapter.node = SimpleNamespace(
         get_clock=lambda: SimpleNamespace(
@@ -579,11 +588,11 @@ def test_fault_calls_jazzy_service_once_then_requires_post_response_amcl_not_clo
         spins += 1
         if spins == 3:
             adapter._amcl_count += 1
-            adapter._first_post_fault_amcl_covariance = (1.0, 1.0, 1.0)
-        elif spins == 4:
-            adapter._last_supervisor.update(
-                state="LOST", reason="amcl_covariance_lost"
-            )
+            adapter._first_post_fault_amcl_covariance = (0.1, 0.1, 0.1)
+            adapter._first_post_fault_amcl_pose = (8.928, 0.0, 101.22)
+            adapter._last_module1_odom_pose = (5.0017, -2.0, 11.63)
+        elif spins == 4 and cloud_after_pose:
+            adapter._particle_cloud_count += 1
         return bool(predicate())
 
     adapter._spin_until = spin_until
@@ -594,8 +603,86 @@ def test_fault_calls_jazzy_service_once_then_requires_post_response_amcl_not_clo
     fault = next(payload for event, payload in events if event == "fault_injected")
     assert fault["kind"] == "amcl_global_localization_particle_spread"
     assert fault["service"] == "/reinitialize_global_localization"
-    assert fault["first_post_fault_particle_cloud_observed"] is False
+    assert fault["first_post_fault_particle_cloud_observed"] is cloud_after_pose
     assert fault["outcome"] == "FAULT_DISCRIMINATIVE"
+    assert fault["amcl_jump_observed"] is True
+    assert fault["supervisor_lost_observed"] is False
+    assert fault["amcl_disagreement_position_m"] > 8.9
+    assert fault["amcl_disagreement_yaw_deg"] == pytest.approx(99.59)
+    assert fault["seed_confirmation_position_threshold_m"] == 0.75
+    assert fault["seed_confirmation_yaw_threshold_deg"] == 20.0
+
+
+def test_small_jump_is_invalid_and_yaw_disagreement_wraps():
+    predicted, delta = _propagate_module1_odom_delta(
+        (1.0, 2.0, 179.0),
+        (4.0, 5.0, 179.0),
+        (4.0, 5.0, -179.0),
+    )
+    position_m, yaw_deg = _pose_disagreement((1.1, 2.0, -177.0), predicted)
+
+    assert delta[2] == pytest.approx(2.0)
+    assert predicted[2] == pytest.approx(-179.0)
+    assert position_m == pytest.approx(0.1)
+    assert yaw_deg == pytest.approx(2.0)
+    assert not (
+        position_m > SEED_CONFIRMATION_POSITION_THRESHOLD_M
+        or yaw_deg > SEED_CONFIRMATION_YAW_THRESHOLD_DEG
+    )
+
+
+def test_fault_without_strict_post_service_amcl_pose_stops():
+    class EmptyService:
+        class Request:
+            pass
+
+    stops = []
+    events = []
+    adapter = LocalizationCausalNode.__new__(LocalizationCausalNode)
+    adapter.config = load_config(CONFIG)
+    adapter._types = {"EmptyService": EmptyService}
+    adapter.guard = SimpleNamespace(
+        state="LEG_SUCCEEDED",
+        goal_publications=1,
+        completed_leg_ids=["G2"],
+        stop=stops.append,
+    )
+    adapter._supervisor_initialpose_count = 0
+    adapter._last_supervisor = {
+        "state": "NORMAL",
+        "reason": "amcl_healthy",
+        "reset_attempts": "0",
+    }
+    adapter._last_cmd_zero = True
+    adapter._cmd_vel_sim_zero_since = 0.0
+    adapter._fault_service_request_count = 0
+    adapter._amcl_count = 3
+    adapter._particle_cloud_count = 4
+    adapter._last_amcl_pose = (0.0, 0.0, 0.0)
+    adapter._last_module1_odom_pose = (0.0, 0.0, 0.0)
+    adapter._event = lambda event, **payload: events.append((event, payload))
+    adapter.node = SimpleNamespace(
+        get_clock=lambda: SimpleNamespace(
+            now=lambda: SimpleNamespace(nanoseconds=5_000_000_000)
+        )
+    )
+    future = SimpleNamespace(done=lambda: True, result=lambda: object())
+    adapter.reinitialize_global_localization_client = SimpleNamespace(
+        wait_for_service=lambda timeout_sec: True,
+        call_async=lambda _request: future,
+    )
+    spins = 0
+
+    def spin_until(predicate, _timeout):
+        nonlocal spins
+        spins += 1
+        return bool(predicate()) if spins < 3 else False
+
+    adapter._spin_until = spin_until
+    adapter._fault()
+
+    assert stops == ["F2_first_post_fault_amcl_pose_timeout"]
+    assert not [event for event, _ in events if event == "fault_injected"]
 
 
 def test_r1_fresh_candidate_gate_uses_exact_post_fault_supervisor_diagnostics():

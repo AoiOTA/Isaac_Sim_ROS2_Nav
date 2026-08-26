@@ -45,6 +45,47 @@ def _gt(phase, arm, seed, stamp_s, *, x, region_id="east"):
     }
 
 
+def _fault_fields(
+    *,
+    pre_amcl=(0.0, 0.0, 0.0),
+    pre_module1=(5.0, -2.0, 10.0),
+    post_module1=(5.0017, -2.0, 11.63),
+    post_amcl=(8.928, 0.0, 101.22),
+    supervisor_lost=False,
+):
+    predicted, delta = evaluator._propagate_module1_odom_delta(
+        pre_amcl, pre_module1, post_module1
+    )
+    position_m, yaw_deg = evaluator._pose_disagreement(post_amcl, predicted)
+    jump = bool(
+        position_m > evaluator.SEED_CONFIRMATION_POSITION_THRESHOLD_M
+        or yaw_deg > evaluator.SEED_CONFIRMATION_YAW_THRESHOLD_DEG
+    )
+
+    def pose(value):
+        return {"x": value[0], "y": value[1], "yaw_deg": value[2]}
+
+    return {
+        "pre_fault_amcl_map_pose": pose(pre_amcl),
+        "pre_fault_module1_odom_pose": pose(pre_module1),
+        "post_fault_amcl_map_pose": pose(post_amcl),
+        "post_fault_module1_odom_pose": pose(post_module1),
+        "module1_odom_delta": pose(delta),
+        "predicted_post_amcl_map_pose": pose(predicted),
+        "amcl_disagreement_position_m": position_m,
+        "amcl_disagreement_yaw_deg": yaw_deg,
+        "seed_confirmation_position_threshold_m": 0.75,
+        "seed_confirmation_yaw_threshold_deg": 20.0,
+        "amcl_jump_observed": jump,
+        "supervisor_lost_observed": supervisor_lost,
+        "outcome": (
+            "FAULT_DISCRIMINATIVE"
+            if jump or supervisor_lost
+            else "INVALID_NOT_DISCRIMINATIVE"
+        ),
+    }
+
+
 def _episode(phase, arm, seed=9001, *, ready_s=2.0, recover_s=None):
     events = [_event(phase, arm, seed, "episode_start", 0.0)]
     if phase == "D":
@@ -124,7 +165,7 @@ def _episode(phase, arm, seed=9001, *, ready_s=2.0, recover_s=None):
                     service_request_count=1,
                     service_response_observed=True,
                     first_post_fault_amcl_pose_observed=True,
-                    outcome="FAULT_DISCRIMINATIVE",
+                    **_fault_fields(),
                 ),
             ]
         )
@@ -291,6 +332,15 @@ def test_phase_e_pair_reports_fault_pause_recovery_and_supervisor_diagnostics():
     assert result["baseline"]["fault_kind"] == (
         "amcl_global_localization_particle_spread"
     )
+    assert result["baseline"]["fault_discriminability"][
+        "amcl_disagreement_position_m"
+    ] > 8.9
+    assert result["baseline"]["fault_discriminability"][
+        "amcl_disagreement_yaw_deg"
+    ] == pytest.approx(99.59)
+    assert result["baseline"]["fault_discriminability"][
+        "amcl_jump_observed"
+    ] is True
     assert result["experimental"]["timestamps_s"]["seed"] == 2.2
     assert result["baseline"]["localization"]["time_to_recover_s"] == pytest.approx(2.8)
     assert result["experimental"]["localization"]["time_to_recover_s"] == pytest.approx(1.8)
@@ -333,14 +383,18 @@ def test_phase_e_invalid_fault_stops_without_rescue_or_g3_and_stays_raw_only():
     runtime = [
         dict(
             row,
-            outcome="INVALID_FAULT_NOT_DISCRIMINATIVE",
-            supervisor_lost_observed=False,
+            **_fault_fields(
+                pre_amcl=(0.0, 0.0, 179.0),
+                pre_module1=(0.0, 0.0, 179.0),
+                post_module1=(0.0, 0.0, -179.0),
+                post_amcl=(0.1, 0.0, -177.0),
+            ),
         )
         if row["event"] == "fault_injected"
         else dict(
             row,
             state="STOP",
-            stop_reason="INVALID_FAULT_NOT_DISCRIMINATIVE",
+            stop_reason="INVALID_NOT_DISCRIMINATIVE",
             completed_leg_ids=["G2"],
             manual_rescue_count=0,
             supervisor_initialpose_count=0,
@@ -351,7 +405,9 @@ def test_phase_e_invalid_fault_stops_without_rescue_or_g3_and_stays_raw_only():
     ]
     result = evaluate_phase_de_episode(runtime, truth)
 
-    assert result["fault_outcome"] == "INVALID_FAULT_NOT_DISCRIMINATIVE"
+    assert result["fault_outcome"] == "INVALID_NOT_DISCRIMINATIVE"
+    assert result["fault_discriminability"]["amcl_disagreement_position_m"] == pytest.approx(0.1)
+    assert result["fault_discriminability"]["amcl_disagreement_yaw_deg"] == pytest.approx(2.0)
     assert result["recovery_requests"]["manual"] == 0
     assert result["initialpose"]["by_source"] == {"runner": 1}
     assert result["route"]["success"] is False
