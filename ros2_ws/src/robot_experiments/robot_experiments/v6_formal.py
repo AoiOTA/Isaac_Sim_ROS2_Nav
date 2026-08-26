@@ -713,6 +713,14 @@ def _message_summary(message: Any) -> dict[str, Any]:
             value = getattr(message, name)
             if isinstance(value, (str, bool, int, float)) or value is None:
                 summary[name] = value
+    for vector_name in ("linear", "angular"):
+        vector = getattr(message, vector_name, None)
+        if vector is not None:
+            summary[vector_name] = {
+                axis: float(getattr(vector, axis))
+                for axis in ("x", "y", "z")
+                if hasattr(vector, axis)
+            }
     return summary
 
 
@@ -784,6 +792,7 @@ class V6FormalNode:
         self._terminal_zero_settled = False
         self._terminal_zero_confirmed = False
         self._terminal_zero_reason = "not_required"
+        self._terminal_topic_summary: dict[str, dict[str, Any]] = {}
         self._cmd_vel_sim_last_receive_monotonic: float | None = None
         self._cmd_vel_sim_last_nonzero_monotonic: float | None = None
         self._cmd_vel_sim_zero_stamps: deque[float] = deque()
@@ -857,8 +866,29 @@ class V6FormalNode:
     def _write(self, event: str, **payload: Any) -> None:
         append_evidence_jsonl(self.output_jsonl, event, **payload)
 
-    def _capture(self, topic: str, message: Any) -> None:
-        self._write("topic", topic=topic, message=_message_summary(message))
+    def _capture(self, topic: str, message: Any, *, important: bool = False) -> None:
+        summary = _message_summary(message)
+        settling = (
+            getattr(self, "_terminal_started_monotonic", None) is not None
+            and not getattr(self, "_terminal_zero_settled", False)
+        )
+        if settling and not important:
+            topics = getattr(self, "_terminal_topic_summary", None)
+            if topics is None:
+                topics = {}
+                self._terminal_topic_summary = topics
+            topic_summary = topics.setdefault(
+                topic, {"count": 0, "last_message": summary}
+            )
+            topic_summary["count"] += 1
+            topic_summary["last_message"] = summary
+            return
+        self._write("topic", topic=topic, message=summary)
+
+    def _flush_terminal_topic_summary(self) -> None:
+        topics = getattr(self, "_terminal_topic_summary", {})
+        self._terminal_topic_summary = {}
+        self._write("terminal_topic_summary", topics=topics)
 
     def _capture_callback(self, topic: str):
         return lambda message: self._capture(topic, message)
@@ -984,13 +1014,13 @@ class V6FormalNode:
             self._cancel_active_navigation_once(
                 self.guard.stop_reason or "route_failed"
             )
-        self._capture("/bio_nav/route_goal_complete", message)
+        self._capture("/bio_nav/route_goal_complete", message, important=True)
 
     def _route_result(self, message: Any) -> None:
         self._track_route_signal("route_goal_result")
         row = self._json_message(message)
         self.route_goal_results.append(row)
-        self._capture("/bio_nav/route_goal_result", message)
+        self._capture("/bio_nav/route_goal_result", message, important=True)
 
     def _track_route_signal(self, kind: str) -> None:
         """Route traffic is only legal after this runner's first goal."""
@@ -1011,11 +1041,14 @@ class V6FormalNode:
         self._write("obstacle_state", state=row)
 
     def _collision(self, message: Any) -> None:
+        first_collision = bool(message.data) and not self.collision
         self.collision = self.collision or bool(message.data)
         if message.data:
             self.guard.stop("collision")
             self._cancel_active_navigation_once("collision")
-        self._capture("/simulation/collision", message)
+        self._capture(
+            "/simulation/collision", message, important=first_collision
+        )
 
     def _cancel_active_navigation_once(self, reason: str) -> None:
         self._start_terminal_settle(cancel_navigation=True, reason=reason)
@@ -1100,6 +1133,7 @@ class V6FormalNode:
                 self._terminal_zero_settled = True
                 self._terminal_zero_confirmed = True
                 self._terminal_zero_reason = "terminal_zero_confirmed"
+                self._flush_terminal_topic_summary()
                 self._write(
                     "terminal_zero_confirmed",
                     root_reason=self.guard.stop_reason,
@@ -1110,6 +1144,7 @@ class V6FormalNode:
         self._terminal_zero_reason = "terminal_zero_timeout"
         if self.guard.state == "SUCCEEDED":
             self.guard.stop("terminal_zero_timeout_after_success")
+        self._flush_terminal_topic_summary()
         self._write("terminal_zero_timeout", root_reason=self.guard.stop_reason)
         return False
 

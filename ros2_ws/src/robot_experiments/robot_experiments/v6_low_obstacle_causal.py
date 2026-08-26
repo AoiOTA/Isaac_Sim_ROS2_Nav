@@ -39,6 +39,7 @@ GT_PREFIX = "/" + "ground_truth/"
 # The runtime dispatcher/recorder is estimated-state only.  Passive Ground
 # Truth evidence is captured by a separate process and joined offline.
 DISPATCHER_TOPICS = (
+    "/clock",
     "/odom",
     "/amcl_pose",
     "/scan",
@@ -57,6 +58,10 @@ DISPATCHER_TOPICS = (
     "/plan",
     "/optimal_trajectory",
     "/cmd_vel",
+    "/cmd_vel_nav",
+    "/cmd_vel_smoothed",
+    "/cmd_vel_sim",
+    "/collision_monitor_state",
     "/bio_nav/canonical_route",
     "/bio_nav/route_progress",
     "/bio_nav/route_goal_complete",
@@ -200,26 +205,31 @@ class RunResult:
     arm: str
     verdict: str
     reasons: tuple[str, ...]
-    synchronized_frames: int
-    scan_invisible_rgbd_pairs: int
-    typed_spatial_matches: int
-    typed_spatial_total: int
-    source_visible_count: int
-    source_matched_count: int
-    source_recall: float
-    candidate_true_positive_count: int
-    candidate_false_positive_count: int
-    candidate_precision: float
-    candidate_radius_max_m: float
-    best_center_errors_m: tuple[float, ...]
-    path_length_m: float
-    local_trajectory_length_m: float
-    near_obstacle_speed_mps: float
-    minimum_clearance_m: float
-    collision: bool
-    success: bool
+    synchronized_frames: int | None
+    scan_invisible_rgbd_pairs: int | None
+    typed_spatial_matches: int | None
+    typed_spatial_total: int | None
+    source_visible_count: int | None
+    source_matched_count: int | None
+    source_recall: float | None
+    candidate_true_positive_count: int | None
+    candidate_false_positive_count: int | None
+    candidate_precision: float | None
+    candidate_radius_max_m: float | None
+    best_center_errors_m: tuple[float, ...] | None
+    path_length_m: float | None
+    local_trajectory_length_m: float | None
+    near_obstacle_speed_mps: float | None
+    minimum_clearance_m: float | None
+    collision: bool | None
+    success: bool | None
+    action_state: str | None
+    terminal_zero_confirmed: bool | None
     reroute_direction: str
     critic_participation: str
+    critic_applied: bool | None
+    critic_status_count: int | None
+    critic_applied_count: int | None
     critic_ttl_status: str
     critic_post_expiry_applied: bool | None
     critic_stale_active_probe: str
@@ -262,6 +272,25 @@ def _bool(value: Any, name: str) -> bool:
     if not isinstance(value, bool):
         raise CausalContractError(f"{name} must be boolean")
     return value
+
+
+def _known_bool(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _known_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _known_float(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    result = float(value)
+    return result if math.isfinite(result) else None
+
+
+def _known_mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
 
 
 def _source_module3_root(manifest_path: Path) -> Path | None:
@@ -3465,11 +3494,10 @@ def _scan_and_spatial_metrics(
             ))
         else:
             candidate_fp += len(accepted)
-    if valid_scan_samples == 0:
-        raise CausalContractError("no synchronized non-empty /scan sample was recorded")
     candidate_total = candidate_tp + candidate_fp
     return {
         "synchronized_frames": synchronized,
+        "valid_scan_samples": valid_scan_samples,
         "scan_invisible_rgbd_pairs": invisible,
         "source_visible_count": source_visible,
         "source_matched_count": source_matched,
@@ -3492,6 +3520,10 @@ REQUIRED_EVIDENCE_KEYS = (
 
 
 def _evaluate_run(manifest: CausalManifest, run: RunContract, path: Path) -> tuple[RunResult, dict[str, Any]]:
+    row: Mapping[str, Any] = {}
+    spatial: Mapping[str, Any] | None = None
+    plan: tuple[tuple[float, float], ...] = ()
+    optimal_trajectory: tuple[tuple[float, float], ...] = ()
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
         row = _mapping(raw, str(path))
@@ -3646,6 +3678,10 @@ def _evaluate_run(manifest: CausalManifest, run: RunContract, path: Path) -> tup
             physical_obstacle=physical_obstacle,
             validate_obstacles=active_obstacle_validation,
         )
+        if spatial["valid_scan_samples"] == 0:
+            raise CausalContractError(
+                "no synchronized non-empty /scan sample was recorded"
+            )
         spatial_gate_reasons: list[str] = []
         if active_obstacle_validation and spatial["source_visible_count"] == 0:
             if run.arm == "M1":
@@ -3760,8 +3796,15 @@ def _evaluate_run(manifest: CausalManifest, run: RunContract, path: Path) -> tup
             minimum_clearance_m=clearance,
             collision=collision,
             success=success,
+            action_state=(
+                action.get("state") if isinstance(action.get("state"), str) else None
+            ),
+            terminal_zero_confirmed=terminal_zero,
             reroute_direction=path_direction(plan),
             critic_participation=critic_participation,
+            critic_applied=_known_bool(critic.get("applied")),
+            critic_status_count=_known_int(critic.get("status_count")),
+            critic_applied_count=_known_int(critic.get("applied_count")),
             critic_ttl_status=str(
                 freshness.get("critic_ttl_status") or "NOT_APPLICABLE"
             ),
@@ -3776,37 +3819,99 @@ def _evaluate_run(manifest: CausalManifest, run: RunContract, path: Path) -> tup
         )
         return result, {"raw": row, "plan": plan, "local_trajectory": optimal_trajectory}
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError, CausalContractError) as exc:
+        passive = _known_mapping(row.get("passive"))
+        action = _known_mapping(row.get("action"))
+        critic = _known_mapping(row.get("critic"))
+        freshness = _known_mapping(row.get("freshness"))
+        spatial = spatial or {}
+        candidate_true_positive = _known_int(
+            spatial.get("candidate_true_positive_count")
+        )
+        candidate_false_positive = _known_int(
+            spatial.get("candidate_false_positive_count")
+        )
+        critic_applied = _known_bool(critic.get("applied"))
+        critic_reason = critic.get("reason", critic.get("fallback_reason"))
+        if critic_applied is True:
+            critic_participation = (
+                "online_applied"
+                if isinstance(critic_reason, str)
+                and "cost_delta_applied=true" in critic_reason
+                else "applied_unverified"
+            )
+        elif critic_applied is False:
+            critic_participation = "none"
+        else:
+            critic_participation = "unavailable"
+        action_state = action.get("state")
+        best_center_errors = spatial.get("best_center_errors_m")
         return RunResult(
             run_id=run.run_id,
             repeat=run.repeat,
             arm=run.arm,
             verdict="INVALID",
             reasons=(str(exc),),
-            synchronized_frames=0,
-            scan_invisible_rgbd_pairs=0,
-            typed_spatial_matches=0,
-            typed_spatial_total=0,
-            source_visible_count=0,
-            source_matched_count=0,
-            source_recall=0.0,
-            candidate_true_positive_count=0,
-            candidate_false_positive_count=0,
-            candidate_precision=0.0,
-            candidate_radius_max_m=0.0,
-            best_center_errors_m=(),
-            path_length_m=0.0,
-            local_trajectory_length_m=0.0,
-            near_obstacle_speed_mps=0.0,
-            minimum_clearance_m=0.0,
-            collision=False,
-            success=False,
-            reroute_direction="unknown",
-            critic_participation="none",
-            critic_ttl_status="UNAVAILABLE",
-            critic_post_expiry_applied=None,
-            critic_stale_active_probe="UNAVAILABLE",
+            synchronized_frames=_known_int(spatial.get("synchronized_frames")),
+            scan_invisible_rgbd_pairs=_known_int(
+                spatial.get("scan_invisible_rgbd_pairs")
+            ),
+            typed_spatial_matches=candidate_true_positive,
+            typed_spatial_total=(
+                candidate_true_positive + candidate_false_positive
+                if candidate_true_positive is not None
+                and candidate_false_positive is not None
+                else None
+            ),
+            source_visible_count=_known_int(spatial.get("source_visible_count")),
+            source_matched_count=_known_int(spatial.get("source_matched_count")),
+            source_recall=_known_float(spatial.get("source_recall")),
+            candidate_true_positive_count=candidate_true_positive,
+            candidate_false_positive_count=candidate_false_positive,
+            candidate_precision=_known_float(spatial.get("candidate_precision")),
+            candidate_radius_max_m=_known_float(
+                spatial.get("candidate_radius_max_m")
+            ),
+            best_center_errors_m=(
+                tuple(float(value) for value in best_center_errors)
+                if isinstance(best_center_errors, (list, tuple))
+                else None
+            ),
+            path_length_m=path_length(plan) if plan else None,
+            local_trajectory_length_m=(
+                path_length(optimal_trajectory) if optimal_trajectory else None
+            ),
+            near_obstacle_speed_mps=_known_float(
+                critic.get("near_obstacle_speed_mps")
+            ),
+            minimum_clearance_m=_known_float(
+                passive.get("minimum_clearance_m")
+            ),
+            collision=_known_bool(passive.get("collision")),
+            success=_known_bool(passive.get("success")),
+            action_state=action_state if isinstance(action_state, str) else None,
+            terminal_zero_confirmed=_known_bool(
+                action.get("terminal_zero_confirmed")
+            ),
+            reroute_direction=path_direction(plan) if plan else "unavailable",
+            critic_participation=critic_participation,
+            critic_applied=critic_applied,
+            critic_status_count=_known_int(critic.get("status_count")),
+            critic_applied_count=_known_int(critic.get("applied_count")),
+            critic_ttl_status=(
+                str(freshness["critic_ttl_status"])
+                if freshness.get("critic_ttl_status") is not None
+                else "UNAVAILABLE"
+            ),
+            critic_post_expiry_applied=_known_bool(
+                freshness.get("critic_post_expiry_applied")
+            ),
+            critic_stale_active_probe=(
+                str(freshness["critic_stale_active_probe"])
+                if freshness.get("critic_stale_active_probe") is not None
+                else "UNAVAILABLE"
+            ),
             evidence_file=str(path),
-        ), {"raw": {}, "plan": (), "local_trajectory": ()}
+        ), {"raw": row, "plan": plan, "local_trajectory": optimal_trajectory}
 
 
 def _pair(

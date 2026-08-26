@@ -600,6 +600,96 @@ def test_missing_evidence_is_invalid(tmp_path):
     assert "missing evidence: costmaps" in result.reasons[0]
 
 
+def test_unavailable_invalid_facts_are_null_not_false_or_zero(tmp_path):
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    run = manifest.runs[0]
+    (tmp_path / f"{run.run_id}.json").unlink()
+
+    summary = evaluate(manifest, tmp_path)
+    result = next(item for item in summary.runs if item.run_id == run.run_id)
+
+    assert result.verdict == "INVALID"
+    assert result.collision is None
+    assert result.success is None
+    assert result.terminal_zero_confirmed is None
+    assert result.source_recall is None
+    assert result.critic_applied is None
+    assert result.critic_participation == "unavailable"
+
+
+@pytest.mark.parametrize("arm_name", ["M1", "M2"])
+def test_prevalidation_failure_preserves_raw_collision_and_action_facts(
+    tmp_path, arm_name
+):
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    run = next(item for item in manifest.runs if item.arm == arm_name)
+    row = _evidence(manifest, run)
+    row["module2_uds_connected"] = False
+    row["passive"].update({"collision": True, "success": False})
+    row["action"].update({
+        "state": "STOP",
+        "terminal_zero_confirmed": True,
+    })
+    (tmp_path / f"{run.run_id}.json").write_text(json.dumps(row), encoding="utf-8")
+
+    summary = evaluate(manifest, tmp_path)
+    result = next(item for item in summary.runs if item.run_id == run.run_id)
+
+    assert result.verdict == "INVALID"
+    assert result.collision is True
+    assert result.success is False
+    assert result.action_state == "STOP"
+    assert result.terminal_zero_confirmed is True
+    assert result.source_recall is None
+    assert summary.verdict == "INVALID"
+
+
+def test_invalid_m3_preserves_raw_critic_application_facts(tmp_path):
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    run = next(item for item in manifest.runs if item.arm == "M3")
+    row = _evidence(manifest, run)
+    row["module2_uds_connected"] = False
+    row["critic"].update({
+        "applied": True,
+        "reason": "cost_delta_applied=true;obstacle_applied=true",
+        "status_count": 645,
+        "applied_count": 645,
+    })
+    (tmp_path / f"{run.run_id}.json").write_text(json.dumps(row), encoding="utf-8")
+
+    summary = evaluate(manifest, tmp_path)
+    result = next(item for item in summary.runs if item.run_id == run.run_id)
+
+    assert result.verdict == "INVALID"
+    assert result.critic_applied is True
+    assert result.critic_status_count == 645
+    assert result.critic_applied_count == 645
+    assert result.critic_participation == "online_applied"
+
+
+def test_late_invalid_run_preserves_successfully_computed_source_metrics(tmp_path):
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    run = next(item for item in manifest.runs if item.arm == "M2")
+    row = _evidence(manifest, run)
+    row["freshness"]["ttl_clear_applicability"] = "invalid"
+    (tmp_path / f"{run.run_id}.json").write_text(json.dumps(row), encoding="utf-8")
+
+    summary = evaluate(manifest, tmp_path)
+    result = next(item for item in summary.runs if item.run_id == run.run_id)
+
+    assert result.verdict == "INVALID"
+    assert result.source_visible_count == 1
+    assert result.source_matched_count == 1
+    assert result.source_recall == 1.0
+    assert result.candidate_true_positive_count == 1
+    assert result.candidate_false_positive_count == 0
+    assert result.candidate_precision == 1.0
+
+
 @pytest.mark.parametrize("arm_name", ["M0", "M1"])
 @pytest.mark.parametrize("outcome", ["collision", "navigation_failed"])
 def test_baseline_collision_and_navigation_failure_are_valid_causal_rows(
@@ -1475,7 +1565,7 @@ def test_phase_f_qos_records_transient_local_tf_static():
     )
     assert document["/tf_static"] == {
         "history": "keep_last",
-        "depth": 1,
+        "depth": 100,
         "reliability": "reliable",
         "durability": "transient_local",
     }
@@ -2579,11 +2669,27 @@ def test_phase_f_recorder_uses_explicit_best_effort_sensor_qos(tmp_path):
         "/scan",
         "/camera/front/depth/image_raw",
         "/camera/front/camera_info",
+        "/clock",
     ):
         assert qos[topic]["reliability"] == "best_effort"
         assert qos[topic]["durability"] == "volatile"
+    for topic in (
+        "/cmd_vel_nav",
+        "/cmd_vel_smoothed",
+        "/cmd_vel_sim",
+        "/collision_monitor_state",
+    ):
+        assert topic in command
+        assert qos[topic] == {
+            "history": "keep_last",
+            "depth": 1,
+            "reliability": "reliable",
+            "durability": "volatile",
+        }
+    assert qos["/tf_static"]["depth"] == 100
     assert command[command.index("--output") + 1] == str(tmp_path / "bag")
     assert "/scan" in command
+    assert "/clock" in command
 
 
 def _run_low_obstacle_wrapper(

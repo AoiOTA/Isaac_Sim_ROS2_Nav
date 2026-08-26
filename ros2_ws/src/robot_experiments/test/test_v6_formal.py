@@ -506,6 +506,7 @@ def _terminal_adapter(
     adapter._terminal_zero_settled = False
     adapter._terminal_zero_confirmed = False
     adapter._terminal_zero_reason = "not_required"
+    adapter._terminal_topic_summary = {}
     adapter._cmd_vel_sim_last_receive_monotonic = None
     adapter._cmd_vel_sim_last_nonzero_monotonic = None
     adapter._cmd_vel_sim_zero_stamps = deque()
@@ -679,6 +680,38 @@ def test_downstream_nonzero_resets_zero_window(monkeypatch):
     adapter._start_terminal_settle(cancel_navigation=True, reason="collision")
     assert adapter._settle_terminal_zero()
     assert clock.now >= 10.48
+
+
+def test_terminal_capture_writer_stall_cannot_starve_zero_observation(monkeypatch):
+    adapter, clock, _lifecycle = _terminal_adapter(
+        monkeypatch,
+        state="SUCCEEDED",
+        downstream_events=(
+            (0.05, False),
+            (0.10, False),
+            (0.12, True),
+            (0.20, False),
+            (0.38, False),
+        ),
+    )
+    adapter._capture = V6FormalNode._capture.__get__(adapter, V6FormalNode)
+    writes = []
+
+    def stalled_write(event, **payload):
+        writes.append((event, payload, adapter._terminal_zero_confirmed))
+        clock.now += 1.0
+
+    adapter._write = stalled_write
+    adapter._start_terminal_settle(cancel_navigation=False, reason="SUCCEEDED")
+
+    assert adapter._settle_terminal_zero()
+    assert adapter._terminal_zero_confirmed
+    summary_event, payload, confirmed_before_stall = writes[0]
+    assert summary_event == "terminal_topic_summary"
+    assert confirmed_before_stall
+    assert payload["topics"]["/cmd_vel_sim"]["count"] == 5
+    assert payload["topics"]["/cmd_vel_sim"]["last_message"]["linear"]["x"] == 0.0
+    assert writes[-1][0] == "terminal_zero_confirmed"
 
 
 def test_command_observation_and_terminal_publish_qos_are_depth_one():

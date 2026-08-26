@@ -93,6 +93,7 @@ run_order:
 
 capture:
   dispatcher_topics:
+    - /clock
     - /odom
     - /amcl_pose
     - /scan
@@ -111,6 +112,10 @@ capture:
     - /plan
     - /optimal_trajectory
     - /cmd_vel
+    - /cmd_vel_nav
+    - /cmd_vel_smoothed
+    - /cmd_vel_sim
+    - /collision_monitor_state
     - /bio_nav/canonical_route
     - /bio_nav/route_progress
     - /bio_nav/route_goal_complete
