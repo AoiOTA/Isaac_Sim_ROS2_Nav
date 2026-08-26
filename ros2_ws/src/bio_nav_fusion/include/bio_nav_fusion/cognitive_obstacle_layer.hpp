@@ -93,6 +93,12 @@ public:
   static const char * tfFailureReason() {return "tf";}
 
 private:
+  friend class CognitiveObstacleLayerTestPeer;
+
+  void synchronizeCostmapGeometry(
+    const nav2_costmap_2d::Costmap2D & master_grid);
+  static std::string applicationReason(
+    uint32_t active_cells, uint32_t raised_cells);
   void obstacleCallback(
     const bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr message);
   void publishStatus(

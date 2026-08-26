@@ -452,10 +452,54 @@ void CognitiveObstacleLayer::updateBounds(
   current_ = true;
 }
 
+void CognitiveObstacleLayer::synchronizeCostmapGeometry(
+  const nav2_costmap_2d::Costmap2D & master_grid)
+{
+  if (getSizeInCellsX() != master_grid.getSizeInCellsX() ||
+    getSizeInCellsY() != master_grid.getSizeInCellsY() ||
+    getResolution() != master_grid.getResolution())
+  {
+    resizeMap(
+      master_grid.getSizeInCellsX(), master_grid.getSizeInCellsY(),
+      master_grid.getResolution(), master_grid.getOriginX(),
+      master_grid.getOriginY());
+    return;
+  }
+  if (getOriginX() != master_grid.getOriginX() ||
+    getOriginY() != master_grid.getOriginY())
+  {
+    nav2_costmap_2d::Costmap2D::updateOrigin(
+      master_grid.getOriginX(), master_grid.getOriginY());
+    const double residual_x = master_grid.getOriginX() - getOriginX();
+    const double residual_y = master_grid.getOriginY() - getOriginY();
+    if (std::abs(residual_x) >= 0.5 * getResolution() ||
+      std::abs(residual_y) >= 0.5 * getResolution())
+    {
+      nav2_costmap_2d::Costmap2D::updateOrigin(
+        master_grid.getOriginX() + std::copysign(0.5 * getResolution(), residual_x),
+        master_grid.getOriginY() + std::copysign(0.5 * getResolution(), residual_y));
+    }
+    // Both maps share a resolution and cell alignment. Keep the exact master
+    // origin after updateOrigin has shifted and cleared the backing cells.
+    origin_x_ = master_grid.getOriginX();
+    origin_y_ = master_grid.getOriginY();
+  }
+}
+
+std::string CognitiveObstacleLayer::applicationReason(
+  uint32_t active_cells, uint32_t raised_cells)
+{
+  if (raised_cells > 0U) {
+    return "";
+  }
+  return active_cells > 0U ? "masked" : "no_costmap_cells";
+}
+
 void CognitiveObstacleLayer::updateCosts(
   nav2_costmap_2d::Costmap2D & master_grid,
   int min_i, int min_j, int max_i, int max_j)
 {
+  synchronizeCostmapGeometry(master_grid);
   resetMap(
     static_cast<unsigned int>(std::max(0, min_i)),
     static_cast<unsigned int>(std::max(0, min_j)),
@@ -556,9 +600,8 @@ void CognitiveObstacleLayer::updateCosts(
     }
   }
   updateWithMax(master_grid, min_i, min_j, max_i, max_j);
-  const bool applied = raised_cells > 0U;
-  const std::string reason = applied ? "" :
-    (active_cells > 0U ? "masked" : "no_costmap_cells");
+  const std::string reason = applicationReason(active_cells, raised_cells);
+  const bool applied = reason.empty();
   const double age_s = static_cast<double>(
     now.nanoseconds() - stampNs(message->validation_stamp)) * 1.0e-9;
   publishStatus(

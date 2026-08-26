@@ -14,6 +14,7 @@
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "nav2_costmap_2d/cost_values.hpp"
 #include "nav2_costmap_2d/costmap_2d_ros.hpp"
+#include "nav2_costmap_2d/layered_costmap.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "tf2_ros/buffer.h"
 
@@ -187,6 +188,31 @@ public:
   }
 };
 
+class CognitiveObstacleLayerTestPeer
+{
+public:
+  static void configureActive(
+    CognitiveObstacleLayer & layer,
+    const bio_nav_interfaces::msg::CognitiveObstacleArray & message)
+  {
+    layer.mode_ = "active";
+    layer.maximum_age_s_ = 0.5;
+    layer.maximum_ood_probability_ = 0.2;
+    layer.latest_ =
+      std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(message);
+    layer.expected_ = CognitiveObstacleLayer::Identity{
+      message.reset_epoch, message.recurrent_session_id, message.map_version,
+      message.cognitive_tile_id, message.tile_revision, message.graph_revision,
+      message.model_id};
+    layer.identity_bound_ = true;
+  }
+
+  static std::string applicationReason(uint32_t active_cells, uint32_t raised_cells)
+  {
+    return CognitiveObstacleLayer::applicationReason(active_cells, raised_cells);
+  }
+};
+
 }  // namespace bio_nav_fusion
 
 namespace
@@ -200,6 +226,20 @@ public:
   {
     global_frame_ = "map";
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
+  }
+};
+
+class CognitiveObstacleLayerHarness : public bio_nav_fusion::CognitiveObstacleLayer
+{
+public:
+  void bind(
+    nav2_costmap_2d::LayeredCostmap & layered_costmap,
+    tf2_ros::Buffer & tf_buffer, const rclcpp::Clock::SharedPtr & clock)
+  {
+    layered_costmap_ = &layered_costmap;
+    tf_ = &tf_buffer;
+    clock_ = clock;
+    setDefaultValue(nav2_costmap_2d::FREE_SPACE);
   }
 };
 
@@ -1024,6 +1064,124 @@ TEST(CognitiveObstacleLayer, tf_failure_has_explicit_zero_raise_fail_open_contra
   using bio_nav_fusion::CognitiveObstacleLayer;
   EXPECT_STREQ(CognitiveObstacleLayer::tfFailureReason(), "tf");
   EXPECT_EQ(CognitiveObstacleLayer::mergeCellCost("active", 40U, 0U), 40U);
+}
+
+TEST(CognitiveObstacleLayer, rolling_master_origin_is_synchronized_before_cell_application)
+{
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  auto clock = std::make_shared<rclcpp::Clock>(RCL_SYSTEM_TIME);
+  tf2_ros::Buffer tf_buffer(clock);
+  nav2_costmap_2d::LayeredCostmap layered_costmap("odom", true, false);
+  constexpr double resolution = 0.05;
+  constexpr double master_origin_x = 0.9499999996274724;
+  constexpr double master_origin_y = -2.0000000003725287;
+  constexpr double candidate_base_x = 2.1784563103032464;
+  constexpr double candidate_base_y = -0.09315676066294576;
+  constexpr double candidate_odom_x = 4.834160581752312;
+  constexpr double candidate_odom_y = 1.070551391724286;
+  layered_costmap.resizeMap(
+    80U, 80U, resolution, master_origin_x, master_origin_y);
+  auto * master = layered_costmap.getCostmap();
+
+  CognitiveObstacleLayerHarness layer;
+  layer.bind(layered_costmap, tf_buffer, clock);
+  // Reproduce the Pilot15 defect: same 4x4 m geometry, but the private layer
+  // still has the initialization origin while the rolling master has moved.
+  layer.resizeMap(80U, 80U, resolution, 0.0, 0.0);
+
+  auto message = obstacleFixture();
+  const int64_t stamp_ns = clock->now().nanoseconds() - 10000000LL;
+  retimeFreshObstacle(message, stamp_ns);
+  message.obstacles[0].pose_xy_m = {candidate_base_x, candidate_base_y};
+  message.obstacles[0].radius_m = 0.02;
+  geometry_msgs::msg::TransformStamped transform;
+  transform.header.frame_id = "odom";
+  transform.header.stamp = message.validation_stamp;
+  transform.child_frame_id = "base_link";
+  transform.transform.translation.x = candidate_odom_x - candidate_base_x;
+  transform.transform.translation.y = candidate_odom_y - candidate_base_y;
+  transform.transform.rotation.w = 1.0;
+  ASSERT_TRUE(tf_buffer.setTransform(transform, "rolling_layer_test"));
+
+  unsigned int mx = 0U;
+  unsigned int my = 0U;
+  EXPECT_FALSE(layer.worldToMap(candidate_odom_x, candidate_odom_y, mx, my));
+  bio_nav_fusion::CognitiveObstacleLayerTestPeer::configureActive(layer, message);
+  layer.updateCosts(*master, 0, 0, 80, 80);
+
+  EXPECT_DOUBLE_EQ(layer.getOriginX(), master->getOriginX());
+  EXPECT_DOUBLE_EQ(layer.getOriginY(), master->getOriginY());
+  ASSERT_TRUE(layer.worldToMap(candidate_odom_x, candidate_odom_y, mx, my));
+  EXPECT_EQ(layer.getCost(mx, my), nav2_costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_EQ(master->getCost(mx, my), nav2_costmap_2d::LETHAL_OBSTACLE);
+}
+
+TEST(CognitiveObstacleLayer, consecutive_origin_shifts_clear_old_cells_and_apply_new_cells)
+{
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  auto clock = std::make_shared<rclcpp::Clock>(RCL_SYSTEM_TIME);
+  tf2_ros::Buffer tf_buffer(clock);
+  nav2_costmap_2d::LayeredCostmap layered_costmap("map", true, false);
+  layered_costmap.resizeMap(80U, 80U, 0.05, -2.0, -2.0);
+  auto * master = layered_costmap.getCostmap();
+  CognitiveObstacleLayerHarness layer;
+  layer.bind(layered_costmap, tf_buffer, clock);
+  layer.resizeMap(80U, 80U, 0.05, -2.0, -2.0);
+
+  const auto apply = [&](double origin_x, double target_x, uint64_t sequence,
+      int64_t stamp_ns) {
+      master->updateOrigin(origin_x, -2.0);
+      master->resetMap(0U, 0U, 80U, 80U);
+      auto message = obstacleFixture();
+      message.sequence = sequence;
+      retimeFreshObstacle(message, stamp_ns);
+      message.obstacles[0].pose_xy_m = {0.0, 0.0};
+      geometry_msgs::msg::TransformStamped transform;
+      transform.header.frame_id = "map";
+      transform.header.stamp = message.validation_stamp;
+      transform.child_frame_id = "base_link";
+      transform.transform.translation.x = target_x;
+      transform.transform.translation.y = -0.35;
+      transform.transform.rotation.w = 1.0;
+      ASSERT_TRUE(tf_buffer.setTransform(transform, "rolling_layer_test"));
+      bio_nav_fusion::CognitiveObstacleLayerTestPeer::configureActive(layer, message);
+      layer.updateCosts(*master, 0, 0, 80, 80);
+      unsigned int mx = 0U;
+      unsigned int my = 0U;
+      ASSERT_TRUE(layer.worldToMap(target_x, -0.35, mx, my));
+      EXPECT_EQ(layer.getCost(mx, my), nav2_costmap_2d::LETHAL_OBSTACLE);
+      EXPECT_EQ(master->getCost(mx, my), nav2_costmap_2d::LETHAL_OBSTACLE);
+    };
+
+  const int64_t now_ns = clock->now().nanoseconds();
+  apply(-2.0, -0.45, 7U, now_ns - 30000000LL);
+  apply(-1.0, 1.95, 8U, now_ns - 20000000LL);
+  unsigned int old_mx = 0U;
+  unsigned int old_my = 0U;
+  ASSERT_TRUE(layer.worldToMap(-0.45, -0.35, old_mx, old_my));
+  EXPECT_EQ(layer.getCost(old_mx, old_my), nav2_costmap_2d::FREE_SPACE);
+
+  apply(0.0, 3.45, 9U, now_ns - 10000000LL);
+  EXPECT_FALSE(layer.worldToMap(-0.45, -0.35, old_mx, old_my));
+  ASSERT_TRUE(layer.worldToMap(1.95, -0.35, old_mx, old_my));
+  EXPECT_EQ(layer.getCost(old_mx, old_my), nav2_costmap_2d::FREE_SPACE);
+
+  // A fixed origin takes the no-op geometry path and must keep applying cells.
+  apply(0.0, 3.45, 10U, now_ns - 5000000LL);
+  EXPECT_DOUBLE_EQ(layer.getOriginX(), 0.0);
+  EXPECT_DOUBLE_EQ(layer.getOriginY(), -2.0);
+}
+
+TEST(CognitiveObstacleLayer, application_status_distinguishes_applied_masked_and_no_cells)
+{
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  EXPECT_EQ(Peer::applicationReason(12U, 4U), "");
+  EXPECT_EQ(Peer::applicationReason(12U, 0U), "masked");
+  EXPECT_EQ(Peer::applicationReason(0U, 0U), "no_costmap_cells");
 }
 
 TEST(CognitiveRiskCritic, nearer_and_more_directionally_deviant_cost_more)
