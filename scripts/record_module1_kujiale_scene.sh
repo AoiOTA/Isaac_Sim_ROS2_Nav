@@ -69,6 +69,9 @@ topics=(
   /clock
   /camera/front/image_raw
   /camera/front/camera_info
+  /experiment/paired_appearance/baseline/image_raw
+  /experiment/paired_appearance/variant/image_raw
+  /experiment/paired_appearance/state
   /joint_states
   /wheel/odom
   /imu/data_raw

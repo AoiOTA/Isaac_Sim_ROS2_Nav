@@ -10,6 +10,7 @@ used to dispatch a goal.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from dataclasses import dataclass
 import json
 import math
@@ -94,13 +95,20 @@ REQUIRED_CAPTURE_STREAMS = (
     "/scan",
 )
 
+PAIRED_BASELINE_TOPIC = "/experiment/paired_appearance/baseline/image_raw"
+PAIRED_VARIANT_TOPIC = "/experiment/paired_appearance/variant/image_raw"
+PAIRED_STATE_TOPIC = "/experiment/paired_appearance/state"
+PAIRED_IMAGE_STREAMS = (PAIRED_BASELINE_TOPIC, PAIRED_VARIANT_TOPIC)
+PAIRED_APPEARANCE_PROFILES = frozenset({"dim_cool", "bright_warm"})
+
 
 @dataclass(frozen=True)
 class TargetedTeachingManifest:
     path: Path
     raw: Mapping[str, Any]
     route_id: str
-    dataset: Mapping[str, str]
+    dataset: Mapping[str, Any]
+    paired_appearance: Mapping[str, Any] | None
     runtime: Mapping[str, Any]
     assets: Mapping[str, str]
     valid_state_ids: frozenset[int]
@@ -108,6 +116,47 @@ class TargetedTeachingManifest:
     best_effort_leg_ids: frozenset[str]
     episode: Episode
     formal_manifest: Manifest
+
+
+def image_stamp_ns(message: Any) -> int:
+    stamp = message.header.stamp
+    return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+
+
+def paired_stamp_summary(
+    baseline_stamps: Mapping[int, int],
+    variant_stamps: Mapping[int, int],
+) -> dict[str, Any]:
+    baseline = Counter(baseline_stamps)
+    variant = Counter(variant_stamps)
+    matched = baseline & variant
+    baseline_count = sum(baseline.values())
+    variant_count = sum(variant.values())
+    return {
+        "baseline_count": baseline_count,
+        "variant_count": variant_count,
+        "matched_count": sum(matched.values()),
+        "same_stamp": bool(baseline_count > 0 and baseline == variant),
+    }
+
+
+def paired_state_error(payload: str, expected_profile: str) -> str:
+    try:
+        state = json.loads(payload)
+    except (TypeError, json.JSONDecodeError):
+        return "paired_state_invalid_json"
+    if not isinstance(state, Mapping):
+        return "paired_state_not_mapping"
+    expected = {
+        "schema": "bio_nav_paired_appearance_capture_v1",
+        "baseline_profile_id": "baseline",
+        "variant_profile_id": expected_profile,
+        "simulation_time_advanced_during_capture": False,
+    }
+    for name, value in expected.items():
+        if state.get(name) != value:
+            return f"paired_state_mismatch:{name}"
+    return ""
 
 
 def state_id_for_map_xy(x: float, y: float) -> int:
@@ -237,25 +286,30 @@ def load_targeted_teaching_manifest(
     raw = _mapping(raw, "manifest")
     if raw.get("schema_version") != SCHEMA_VERSION:
         raise V6ContractError(f"schema_version must be {SCHEMA_VERSION}")
-    _require_exact_keys(
-        raw,
-        {
-            "schema_version",
-            "mode",
-            "intended_use",
-            "scene",
-            "runtime",
-            "assets",
-            "dataset",
-            "mission",
-            "episodes",
-        },
-        "manifest",
-    )
+    manifest_keys = {
+        "schema_version",
+        "mode",
+        "intended_use",
+        "scene",
+        "runtime",
+        "assets",
+        "dataset",
+        "mission",
+        "episodes",
+    }
+    if "paired_appearance" in raw:
+        manifest_keys.add("paired_appearance")
+    _require_exact_keys(raw, manifest_keys, "manifest")
     if raw.get("mode") != MODE:
         raise V6ContractError(f"mode must be {MODE}")
-    if raw.get("intended_use") != "raw_teaching_capture":
-        raise V6ContractError("intended_use must be raw_teaching_capture")
+    if raw.get("intended_use") not in {
+        "raw_teaching_capture",
+        "read_only_validation_capture",
+    }:
+        raise V6ContractError(
+            "intended_use must be raw_teaching_capture or "
+            "read_only_validation_capture"
+        )
 
     scene = _mapping(raw.get("scene"), "scene")
     _require_exact_keys(scene, {"id", "revision", "world", "category"}, "scene")
@@ -271,14 +325,91 @@ def load_targeted_teaching_manifest(
     assets, valid_state_ids = _validate_assets(raw.get("assets"))
 
     dataset = _mapping(raw.get("dataset"), "dataset")
-    _require_exact_keys(dataset, {"route_id", "role", "split", "status"}, "dataset")
     route_id = str(dataset.get("route_id", ""))
-    if route_id not in {"EN", "SW"}:
-        raise V6ContractError("dataset.route_id must be EN or SW")
-    if dataset.get("role") != "train" or dataset.get("split") != "A_base":
-        raise V6ContractError("dataset must be role=train and split=A_base")
+    role = dataset.get("role")
+    split = dataset.get("split")
+    if role == "train":
+        _require_exact_keys(
+            dataset, {"route_id", "role", "split", "status"}, "dataset"
+        )
+        if route_id not in {"EN", "SW"} or split != "A_base":
+            raise V6ContractError(
+                "training dataset must use route EN/SW and split A_base"
+            )
+        if "paired_appearance" in raw:
+            raise V6ContractError("training dataset cannot enable paired appearance")
+        if raw.get("intended_use") != "raw_teaching_capture":
+            raise V6ContractError(
+                "training dataset intended_use must be raw_teaching_capture"
+            )
+    elif role in {"validation", "read_only_test"}:
+        _require_exact_keys(
+            dataset,
+            {
+                "route_id",
+                "role",
+                "split",
+                "status",
+                "evaluation_read_only",
+            },
+            "dataset",
+        )
+        expected_identity = {
+            "validation": ("V1", "validation"),
+            "read_only_test": ("T1", "test"),
+        }[str(role)]
+        if (route_id, split) != expected_identity:
+            raise V6ContractError(
+                f"dataset role {role} must use route/split {expected_identity}"
+            )
+        if dataset.get("evaluation_read_only") is not True:
+            raise V6ContractError(
+                "validation/test dataset must set evaluation_read_only=true"
+            )
+        if "paired_appearance" not in raw:
+            raise V6ContractError(
+                "validation/test dataset requires paired_appearance"
+            )
+        if raw.get("intended_use") != "read_only_validation_capture":
+            raise V6ContractError(
+                "validation dataset intended_use must be "
+                "read_only_validation_capture"
+            )
+    else:
+        raise V6ContractError(
+            "dataset.role must be train, validation, or read_only_test"
+        )
     if dataset.get("status") != "raw_until_audit":
         raise V6ContractError("dataset.status must be raw_until_audit")
+
+    paired_appearance: Mapping[str, Any] | None = None
+    if "paired_appearance" in raw:
+        paired = _mapping(raw.get("paired_appearance"), "paired_appearance")
+        _require_exact_keys(
+            paired,
+            {
+                "baseline_profile_id",
+                "variant_profile_id",
+                "same_stamp_required",
+                "simulation_time_advanced_during_capture",
+            },
+            "paired_appearance",
+        )
+        if paired.get("baseline_profile_id") != "baseline":
+            raise V6ContractError(
+                "paired_appearance.baseline_profile_id must be baseline"
+            )
+        if paired.get("variant_profile_id") not in PAIRED_APPEARANCE_PROFILES:
+            raise V6ContractError(
+                "paired_appearance.variant_profile_id must be dim_cool or bright_warm"
+            )
+        if paired.get("same_stamp_required") is not True:
+            raise V6ContractError("paired appearance images must require the same stamp")
+        if paired.get("simulation_time_advanced_during_capture") is not False:
+            raise V6ContractError(
+                "paired appearance capture must not advance simulation time"
+            )
+        paired_appearance = dict(paired)
 
     mission = _mapping(raw.get("mission"), "mission")
     _require_exact_keys(
@@ -350,7 +481,8 @@ def load_targeted_teaching_manifest(
         path=manifest_path,
         raw=raw,
         route_id=route_id,
-        dataset={name: str(value) for name, value in dataset.items()},
+        dataset=dict(dataset),
+        paired_appearance=paired_appearance,
         runtime=runtime,
         assets=assets,
         valid_state_ids=valid_state_ids,
@@ -366,8 +498,9 @@ def stream_dropout_reason(
     *,
     now: float,
     timeout_sec: float = STREAM_DROPOUT_TIMEOUT_SEC,
+    required_topics: tuple[str, ...] = REQUIRED_CAPTURE_STREAMS,
 ) -> str:
-    for topic in REQUIRED_CAPTURE_STREAMS:
+    for topic in required_topics:
         stamp = last_seen.get(topic)
         if stamp is None:
             return f"stream_missing:{topic}"
@@ -398,9 +531,10 @@ class Module1TargetedTeachingNode(V6FormalPilotRuntime):
         )
         from bio_nav_interfaces.msg import PlanningPrior
         from nav_msgs.msg import Odometry
-        from rclpy.qos import QoSProfile, ReliabilityPolicy
+        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
         from rosgraph_msgs.msg import Clock
         from sensor_msgs.msg import CameraInfo, Image, LaserScan
+        from std_msgs.msg import String
 
         self.targeted_manifest = manifest
         self.best_effort_not_covered: list[str] = []
@@ -410,7 +544,24 @@ class Module1TargetedTeachingNode(V6FormalPilotRuntime):
         self._stream_last_seen: dict[str, float | None] = {
             topic: None for topic in REQUIRED_CAPTURE_STREAMS
         }
+        self._paired_baseline_stamps: Counter[int] = Counter()
+        self._paired_variant_stamps: Counter[int] = Counter()
+        self._paired_state_valid = False
+        self._paired_state_error = "paired_state_missing"
+        self._paired_profile = str(
+            (manifest.paired_appearance or {}).get("variant_profile_id", "")
+        )
+        if self._paired_profile:
+            self._stream_last_seen.update(
+                {topic: None for topic in PAIRED_IMAGE_STREAMS}
+            )
         sensor = QoSProfile(depth=5, reliability=ReliabilityPolicy.BEST_EFFORT)
+        reliable = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
+        latched = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
         # These subscriptions are passive presence/freshness checks only.
         # GT pose fields are never read and never enter the dispatch manifest.
         self.passive_evaluator_subscriptions = [
@@ -453,6 +604,28 @@ class Module1TargetedTeachingNode(V6FormalPilotRuntime):
                 sensor,
             )
         ]
+        self.paired_capture_subscriptions = []
+        if self._paired_profile:
+            self.paired_capture_subscriptions = [
+                self.node.create_subscription(
+                    Image,
+                    PAIRED_BASELINE_TOPIC,
+                    self._paired_image_callback(PAIRED_BASELINE_TOPIC),
+                    reliable,
+                ),
+                self.node.create_subscription(
+                    Image,
+                    PAIRED_VARIANT_TOPIC,
+                    self._paired_image_callback(PAIRED_VARIANT_TOPIC),
+                    reliable,
+                ),
+                self.node.create_subscription(
+                    String,
+                    PAIRED_STATE_TOPIC,
+                    self._paired_state_callback,
+                    latched,
+                ),
+            ]
         self.stream_health_timer = self.node.create_timer(
             0.5, self._check_capture_streams
         )
@@ -462,6 +635,48 @@ class Module1TargetedTeachingNode(V6FormalPilotRuntime):
             self._stream_last_seen[topic] = time.monotonic()
 
         return callback
+
+    def _paired_image_callback(self, topic: str):
+        def callback(message: Any) -> None:
+            self._stream_last_seen[topic] = time.monotonic()
+            stamp = image_stamp_ns(message)
+            if topic == PAIRED_BASELINE_TOPIC:
+                self._paired_baseline_stamps[stamp] += 1
+            else:
+                self._paired_variant_stamps[stamp] += 1
+
+        return callback
+
+    def _paired_state_callback(self, message: Any) -> None:
+        reason = paired_state_error(message.data, self._paired_profile)
+        self._paired_state_valid = not reason
+        self._paired_state_error = reason
+
+    def _set_episode_parameters(self, timeout_sec: float) -> None:
+        super()._set_episode_parameters(timeout_sec)
+        if not self._paired_profile:
+            return
+        Parameter = self._types["Parameter"]
+        future = self.isaac_parameters.set_parameters(
+            [
+                Parameter(
+                    "paired_appearance_profile_id",
+                    value=self._paired_profile,
+                )
+            ]
+        )
+        if not self._spin_until(future.done, timeout_sec):
+            raise V6ContractError("setting paired appearance profile timed out")
+        response = future.result()
+        if response is None or any(
+            not result.successful for result in response.results
+        ):
+            raise V6ContractError("Isaac rejected paired appearance profile")
+        self._write(
+            "paired_appearance_profile_set",
+            profile_id=self._paired_profile,
+            baseline_authority=True,
+        )
 
     def _teaching_clock(self, message: Any) -> None:
         stamp_ns = int(message.clock.sec) * 1_000_000_000 + int(
@@ -500,8 +715,13 @@ class Module1TargetedTeachingNode(V6FormalPilotRuntime):
     def _check_capture_streams(self) -> None:
         if self.guard.state != "NAVIGATING":
             return
+        required_topics = REQUIRED_CAPTURE_STREAMS
+        if self._paired_profile:
+            required_topics += PAIRED_IMAGE_STREAMS
         reason = stream_dropout_reason(
-            self._stream_last_seen, now=time.monotonic()
+            self._stream_last_seen,
+            now=time.monotonic(),
+            required_topics=required_topics,
         )
         if reason:
             self.guard.stop(reason)
@@ -545,6 +765,30 @@ class Module1TargetedTeachingNode(V6FormalPilotRuntime):
 
     def result(self) -> dict[str, Any]:
         row = super().result()
+        paired = paired_stamp_summary(
+            self._paired_baseline_stamps,
+            self._paired_variant_stamps,
+        )
+        if not self._paired_profile:
+            paired.update({"enabled": False, "state_valid": False})
+        else:
+            paired.update(
+                {
+                    "enabled": True,
+                    "baseline_profile_id": "baseline",
+                    "variant_profile_id": self._paired_profile,
+                    "state_valid": self._paired_state_valid,
+                    "state_error": self._paired_state_error,
+                    "simulation_time_advanced_during_capture": False,
+                }
+            )
+        read_only_eligible = bool(
+            self.targeted_manifest.dataset["role"]
+            in {"validation", "read_only_test"}
+            and self.targeted_manifest.dataset["evaluation_read_only"] is True
+            and paired["same_stamp"]
+            and paired["state_valid"]
+        )
         row.update(
             {
                 "mode": MODE,
@@ -553,6 +797,12 @@ class Module1TargetedTeachingNode(V6FormalPilotRuntime):
                 "best_effort_not_covered": list(self.best_effort_not_covered),
                 "planning_prior_message_count": self.planning_prior_messages,
                 "trusted_write_count": self.trusted_write_count,
+                "paired_appearance": paired,
+                "training_eligible": self.targeted_manifest.dataset["role"]
+                == "train",
+                "head_eligible": self.targeted_manifest.dataset["role"]
+                == "train",
+                "read_only_eligible": read_only_eligible,
             }
         )
         self._write("targeted_teaching_result", **row)
@@ -590,6 +840,13 @@ def cli(argv: list[str] | None = None) -> int:
                         "best_effort_leg_ids": sorted(
                             manifest.best_effort_leg_ids
                         ),
+                        "paired_appearance": dict(
+                            manifest.paired_appearance or {}
+                        ),
+                        "training_eligible": manifest.dataset["role"] == "train",
+                        "head_eligible": manifest.dataset["role"] == "train",
+                        "read_only_eligible": manifest.dataset["role"]
+                        in {"validation", "read_only_test"},
                         "dispatch": False,
                     },
                     sort_keys=True,
@@ -618,6 +875,10 @@ def cli(argv: list[str] | None = None) -> int:
                 and not result["collision"]
                 and result["terminal_zero_confirmed"]
                 and result["trusted_write_count"] == 0
+                and (
+                    result["dataset"]["role"] == "train"
+                    or result["read_only_eligible"]
+                )
             )
             return 0 if passed else 2
         finally:
@@ -639,6 +900,10 @@ if __name__ == "__main__":
 __all__ = [
     "MODE",
     "Module1TargetedTeachingNode",
+    "PAIRED_BASELINE_TOPIC",
+    "PAIRED_IMAGE_STREAMS",
+    "PAIRED_STATE_TOPIC",
+    "PAIRED_VARIANT_TOPIC",
     "REQUIRED_CAPTURE_STREAMS",
     "SCHEMA_VERSION",
     "STREAM_DROPOUT_TIMEOUT_SEC",
@@ -646,6 +911,8 @@ __all__ = [
     "TargetedTeachingManifest",
     "V6FormalPilotRuntime",
     "load_targeted_teaching_manifest",
+    "paired_stamp_summary",
+    "paired_state_error",
     "state_id_for_map_xy",
     "stream_dropout_reason",
 ]
