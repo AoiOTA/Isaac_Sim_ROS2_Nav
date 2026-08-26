@@ -380,6 +380,8 @@ def test_same_sequence_new_validation_revision_cannot_splice_old_positive(arm):
         )
     assert timeline.armed is True
     timeline.begin_producer_stop()
+    assert timeline.armed_source_identity is None
+    timeline.mark_producer_stopped()
     assert timeline.armed_source_identity.validation_stamp_ns == 1_100_000_000
 
 
@@ -427,6 +429,7 @@ def test_expired_coherent_source_is_skipped_and_newer_fresh_source_selected():
     )
     assert timeline.armed is True
     timeline.begin_producer_stop()
+    timeline.mark_producer_stopped()
     assert timeline.armed_source_identity.source_sequence == 8
     assert timeline.ttl_expiry_ns == 1_800_000_000
     assert timeline.observation_end_ns == 2_000_000_000
@@ -841,14 +844,14 @@ def test_inflight_other_identity_apply_waits_for_stop_complete_before_failure(ar
             reason="cost_delta_applied=true",
         )
     timeline.begin_producer_stop()
-    timeline.observe_clock(timeline.ttl_expiry_ns)
+    timeline.observe_clock(1_100_000_000)
 
-    def observe_other_apply():
+    def observe_other_apply(status_stamp_ns):
         timeline.observe_layer(
             consumer="global",
             **_identity(8),
-            status_stamp_ns=timeline.ttl_expiry_ns,
-            message_age_ms=_age_ms(timeline.ttl_expiry_ns),
+            status_stamp_ns=status_stamp_ns,
+            message_age_ms=_age_ms(status_stamp_ns),
             applied=True,
             raised_cell_count=1,
             active_cell_count=1,
@@ -856,12 +859,196 @@ def test_inflight_other_identity_apply_waits_for_stop_complete_before_failure(ar
             reason="",
         )
 
-    observe_other_apply()
+    observe_other_apply(1_100_000_000)
     assert timeline.post_stop_identity_changed is False
     timeline.mark_producer_stopped()
-    observe_other_apply()
+    timeline.observe_clock(timeline.ttl_expiry_ns)
+    observe_other_apply(timeline.ttl_expiry_ns)
     assert timeline.post_stop_identity_changed is True
     assert timeline.post_expiry_applied is False
+
+
+@pytest.mark.parametrize("arm", ["M2", "M3"])
+def test_stop_complete_arms_latest_inflight_pilot21_revision(arm):
+    timeline = ActiveTtlTimeline(arm, margin_ns=200_000_000)
+    timeline.observe_clock(25_600_000_000)
+    timeline.start_goal()
+    _observe_positive(
+        timeline,
+        sequence=115,
+        validation_stamp_ns=25_400_000_000,
+        validation_ttl_ns=1_000_000_000,
+        status_stamp_ns=25_600_000_000,
+    )
+    if arm == "M3":
+        timeline.observe_critic(
+            **_identity(115),
+            status_stamp_ns=25_600_000_000,
+            message_age_ms=200.0,
+            applied=True,
+            reason="cost_delta_applied=true",
+        )
+    timeline.begin_producer_stop()
+    assert timeline.armed_source_identity is None
+    assert timeline.ttl_expiry_ns is None
+
+    _observe_positive(
+        timeline,
+        sequence=118,
+        validation_stamp_ns=25_700_000_000,
+        validation_ttl_ns=500_000_000,
+        status_stamp_ns=25_900_000_000,
+    )
+    if arm == "M3":
+        timeline.observe_critic(
+            **_identity(118),
+            status_stamp_ns=25_900_000_000,
+            message_age_ms=200.0,
+            applied=True,
+            reason="cost_delta_applied=true",
+        )
+    timeline.observe_clock(26_083_000_000)
+    timeline.mark_producer_stopped()
+
+    assert timeline.armed_source_identity.source_sequence == 118
+    assert timeline.armed_validation_stamp_ns == 25_700_000_000
+    assert timeline.ttl_expiry_ns == 26_200_000_000
+    assert timeline.observation_end_ns == 26_400_000_000
+    assert timeline.post_stop_identity_changed is False
+    assert timeline.post_expiry_applied is False
+
+
+@pytest.mark.parametrize("arm", ["M2", "M3"])
+def test_inflight_old_revision_status_cannot_complete_latest_revision(arm):
+    timeline = ActiveTtlTimeline(arm, margin_ns=200_000_000)
+    timeline.observe_clock(25_600_000_000)
+    timeline.start_goal()
+    _observe_positive(
+        timeline,
+        sequence=115,
+        validation_stamp_ns=25_400_000_000,
+        validation_ttl_ns=1_000_000_000,
+        status_stamp_ns=25_600_000_000,
+    )
+    if arm == "M3":
+        timeline.observe_critic(
+            **_identity(115),
+            status_stamp_ns=25_600_000_000,
+            message_age_ms=200.0,
+            applied=True,
+            reason="cost_delta_applied=true",
+        )
+    timeline.begin_producer_stop()
+
+    timeline.observe_typed(
+        **_identity(118),
+        validation_stamp_ns=25_700_000_000,
+        validation_ttl_ns=500_000_000,
+        trusted_write=True,
+        healthy=True,
+        observation_valid=True,
+        obstacle_count=1,
+    )
+    timeline.observe_layer(
+        consumer="global",
+        **_identity(118),
+        status_stamp_ns=25_900_000_000,
+        message_age_ms=200.0,
+        applied=True,
+        raised_cell_count=1,
+        active_cell_count=1,
+        maximum_cost_increase=1,
+        reason="",
+    )
+    if arm == "M3":
+        timeline.observe_critic(
+            **_identity(118),
+            status_stamp_ns=25_900_000_000,
+            message_age_ms=200.0,
+            applied=True,
+            reason="cost_delta_applied=true",
+        )
+    timeline.observe_layer(
+        consumer="local",
+        **_identity(115),
+        status_stamp_ns=26_000_000_000,
+        message_age_ms=600.0,
+        applied=True,
+        raised_cell_count=1,
+        active_cell_count=1,
+        maximum_cost_increase=1,
+        reason="",
+    )
+    timeline.observe_clock(26_083_000_000)
+
+    with pytest.raises(
+        CausalContractError,
+        match=probe_module.HARNESS_NO_FRESH_REVISION_AT_DROPOUT,
+    ):
+        timeline.mark_producer_stopped()
+    assert timeline.armed_source_identity is None
+    assert timeline.post_stop_identity_changed is False
+    assert timeline.post_expiry_applied is False
+
+
+def test_stop_complete_after_latest_raw_expiry_fails_harness_explicitly():
+    timeline = ActiveTtlTimeline("M2", margin_ns=200_000_000)
+    timeline.observe_clock(25_600_000_000)
+    timeline.start_goal()
+    _observe_positive(
+        timeline,
+        sequence=115,
+        validation_stamp_ns=25_400_000_000,
+        validation_ttl_ns=1_000_000_000,
+        status_stamp_ns=25_600_000_000,
+    )
+    timeline.begin_producer_stop()
+    _observe_positive(
+        timeline,
+        sequence=118,
+        validation_stamp_ns=25_700_000_000,
+        validation_ttl_ns=500_000_000,
+        status_stamp_ns=25_900_000_000,
+    )
+    timeline.observe_clock(26_200_000_000)
+
+    with pytest.raises(
+        CausalContractError,
+        match=probe_module.HARNESS_NO_FRESH_REVISION_AT_DROPOUT,
+    ):
+        timeline.mark_producer_stopped()
+    assert timeline.producer_stopped is False
+    assert timeline.events[-1]["reason"] == (
+        probe_module.HARNESS_NO_FRESH_REVISION_AT_DROPOUT
+    )
+
+
+@pytest.mark.parametrize("arm", ["M2", "M3"])
+def test_stop_complete_without_new_revision_uses_intent_precondition_source(arm):
+    timeline = ActiveTtlTimeline(arm, margin_ns=200_000_000)
+    timeline.observe_clock(25_600_000_000)
+    timeline.start_goal()
+    _observe_positive(
+        timeline,
+        sequence=115,
+        validation_stamp_ns=25_400_000_000,
+        validation_ttl_ns=1_000_000_000,
+        status_stamp_ns=25_600_000_000,
+    )
+    if arm == "M3":
+        timeline.observe_critic(
+            **_identity(115),
+            status_stamp_ns=25_600_000_000,
+            message_age_ms=200.0,
+            applied=True,
+            reason="cost_delta_applied=true",
+        )
+    timeline.begin_producer_stop()
+    timeline.observe_clock(25_700_000_000)
+    timeline.mark_producer_stopped()
+
+    assert timeline.armed_source_identity.source_sequence == 115
+    assert timeline.ttl_expiry_ns == 26_400_000_000
 
 
 def test_matching_identity_actual_apply_after_raw_expiry_is_failure():
@@ -908,7 +1095,7 @@ def _live_adapter_without_ros(timeline, producer_stop):
     return adapter, spin_calls
 
 
-def test_live_stop_freezes_intent_before_subprocess_and_refreshes_clock():
+def test_live_stop_marks_intent_before_subprocess_and_refreshes_clock():
     timeline = ActiveTtlTimeline("M2", margin_ns=200_000_000)
     timeline.observe_clock(1_000_000_000)
     timeline.start_goal()
@@ -920,15 +1107,16 @@ def test_live_stop_freezes_intent_before_subprocess_and_refreshes_clock():
             (
                 timeline.producer_stop_intent,
                 timeline.producer_stopped,
-                timeline.armed_source_identity.source_sequence,
+                timeline.armed_source_identity,
             )
         )
 
     adapter, spin_calls = _live_adapter_without_ros(timeline, producer_stop)
     adapter.stop_producer()
 
-    assert observed == [(True, False, 7)]
+    assert observed == [(True, False, None)]
     assert timeline.producer_stopped is True
+    assert timeline.armed_source_identity.source_sequence == 7
     assert timeline.clock_ns == 1_000_000_001
     assert len(spin_calls) == 2
     assert [event["event"] for event in timeline.events[-2:]] == [
@@ -937,7 +1125,7 @@ def test_live_stop_freezes_intent_before_subprocess_and_refreshes_clock():
     ]
 
 
-def test_live_stop_failure_is_explicit_after_intent_freeze():
+def test_live_stop_failure_is_explicit_after_stop_intent():
     timeline = ActiveTtlTimeline("M2", margin_ns=200_000_000)
     timeline.observe_clock(1_000_000_000)
     timeline.start_goal()

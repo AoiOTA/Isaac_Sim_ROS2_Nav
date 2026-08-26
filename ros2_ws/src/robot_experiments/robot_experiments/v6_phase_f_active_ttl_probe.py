@@ -52,7 +52,9 @@ DEFAULT_PROBE_TIMEOUT_SEC = 30.0
 DEFAULT_SHUTDOWN_TIMEOUT_SEC = 20.0
 FAST_PRODUCER_DROPOUT_GUARD_NS = 250_000_000
 MIN_STOP_GUARD_NS = FAST_PRODUCER_DROPOUT_GUARD_NS
+STOP_COMPLETE_EXPIRY_GUARD_NS = 1_000_000
 REVISION_MATCH_TOLERANCE_NS = 1_000_000
+HARNESS_NO_FRESH_REVISION_AT_DROPOUT = "HARNESS_NO_FRESH_REVISION_AT_DROPOUT"
 PARENT_DOMAIN_ENV_NAMES = (
     "ROS_DOMAIN_ID",
     "ISAAC_NAV_EXPECTED_DOMAIN_ID",
@@ -248,7 +250,7 @@ class ActiveTtlTimeline:
         observation_valid: bool,
         obstacle_count: int,
     ) -> None:
-        if not self.action_active or self.producer_stop_intent:
+        if not self.action_active or self.producer_stopped:
             return
         if (
             not trusted_write
@@ -382,7 +384,11 @@ class ActiveTtlTimeline:
             and self._same_revision(self.armed_source_identity, identity)
         )
 
-    def _coherent_positive_source(self) -> TtlSourceIdentity | None:
+    def _coherent_positive_source(
+        self,
+        *,
+        required_guard_ns: int = MIN_STOP_GUARD_NS,
+    ) -> TtlSourceIdentity | None:
         candidates: list[TtlSourceIdentity] = []
         for identity, (validation_stamp_ns, validation_ttl_ns) in (
             self.trusted_sources.items()
@@ -409,7 +415,7 @@ class ActiveTtlTimeline:
             ttl_expiry_ns = validation_stamp_ns + validation_ttl_ns
             if any(stamp > ttl_expiry_ns for stamp in status_stamps):
                 continue
-            if self.clock_ns + MIN_STOP_GUARD_NS > ttl_expiry_ns:
+            if self.clock_ns + int(required_guard_ns) > ttl_expiry_ns:
                 continue
             candidates.append(identity)
         if not candidates:
@@ -477,7 +483,7 @@ class ActiveTtlTimeline:
             return
         status_stamp = int(status_stamp_ns)
         positive = bool(applied) and int(raised_cell_count) > 0
-        if not self.producer_stop_intent:
+        if not self.producer_stopped:
             if self.action_active and positive:
                 self.positive_layers.add(scope)
                 self.positive_layer_sources.setdefault(identity, {})[scope] = (
@@ -581,7 +587,7 @@ class ActiveTtlTimeline:
         status_stamp = int(status_stamp_ns)
         cost_delta_applied = "cost_delta_applied=true" in reason_tokens
         positive = bool(applied) and cost_delta_applied
-        if not self.producer_stop_intent:
+        if not self.producer_stopped:
             if self.action_active and positive:
                 self.positive_critic = True
                 self.positive_critic_sources[identity] = status_stamp
@@ -658,27 +664,20 @@ class ActiveTtlTimeline:
             raise CausalContractError("active TTL probe lacks a trusted validation timeline")
         validation_stamp_ns, validation_ttl_ns = self.trusted_sources[source_identity]
         ttl_expiry_ns = validation_stamp_ns + validation_ttl_ns
-        observation_end_ns = ttl_expiry_ns + self.margin_ns
         if self.clock_ns + MIN_STOP_GUARD_NS > ttl_expiry_ns:
             raise CausalContractError(
                 "active TTL probe source expired before producer stop intent"
             )
         self.producer_stop_intent = True
         self.active_at_dropout = self.action_active
-        self.armed_source_identity = source_identity
-        self.armed_validation_stamp_ns = validation_stamp_ns
-        self.armed_validation_ttl_ns = validation_ttl_ns
-        self.ttl_expiry_ns = ttl_expiry_ns
-        self.observation_end_ns = observation_end_ns
         self._event(
             "producer_stop_intent",
-            reset_epoch=source_identity.reset_epoch,
-            recurrent_session_id=source_identity.recurrent_session_id,
-            map_version=source_identity.map_version,
-            source_sequence=source_identity.source_sequence,
-            source_validation_stamp_ns=source_identity.validation_stamp_ns,
-            ttl_expiry_ns=self.ttl_expiry_ns,
-            observation_end_ns=self.observation_end_ns,
+            precondition_reset_epoch=source_identity.reset_epoch,
+            precondition_recurrent_session_id=source_identity.recurrent_session_id,
+            precondition_map_version=source_identity.map_version,
+            precondition_source_sequence=source_identity.source_sequence,
+            precondition_source_validation_stamp_ns=source_identity.validation_stamp_ns,
+            precondition_ttl_expiry_ns=ttl_expiry_ns,
             action_active=self.active_at_dropout,
         )
 
@@ -689,12 +688,37 @@ class ActiveTtlTimeline:
             raise CausalContractError("active TTL probe attempted duplicate producer stop")
         if self.producer_stop_failed_reason:
             raise CausalContractError("active TTL probe cannot complete failed producer stop")
+        source_identity = self._coherent_positive_source(
+            required_guard_ns=STOP_COMPLETE_EXPIRY_GUARD_NS,
+        )
+        if source_identity is None:
+            self._event(
+                "producer_stopped_without_fresh_revision",
+                reason=HARNESS_NO_FRESH_REVISION_AT_DROPOUT,
+            )
+            raise CausalContractError(HARNESS_NO_FRESH_REVISION_AT_DROPOUT)
+        validation_stamp_ns, validation_ttl_ns = self.trusted_sources[source_identity]
+        ttl_expiry_ns = validation_stamp_ns + validation_ttl_ns
+        self.armed_source_identity = source_identity
+        self.armed_validation_stamp_ns = validation_stamp_ns
+        self.armed_validation_ttl_ns = validation_ttl_ns
+        self.ttl_expiry_ns = ttl_expiry_ns
+        self.observation_end_ns = ttl_expiry_ns + self.margin_ns
         self.producer_stopped = True
-        self._event("producer_stopped")
+        self._event(
+            "producer_stopped",
+            reset_epoch=source_identity.reset_epoch,
+            recurrent_session_id=source_identity.recurrent_session_id,
+            map_version=source_identity.map_version,
+            source_sequence=source_identity.source_sequence,
+            source_validation_stamp_ns=source_identity.validation_stamp_ns,
+            ttl_expiry_ns=self.ttl_expiry_ns,
+            observation_end_ns=self.observation_end_ns,
+        )
 
     def mark_producer_stop_failed(self, reason: str) -> None:
         if not self.producer_stop_intent:
-            raise CausalContractError("producer stop failed before timeline freeze")
+            raise CausalContractError("producer stop failed before producer stop intent")
         self.producer_stop_failed_reason = str(reason) or "producer_stop_failed"
         self._event("producer_stop_failed", reason=self.producer_stop_failed_reason)
 
