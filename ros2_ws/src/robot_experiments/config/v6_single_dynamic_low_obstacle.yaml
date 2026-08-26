@@ -40,7 +40,9 @@ criteria:
   depth_min_obstacle_points: 3
   minimum_actor_position_span_m: 0.60
   minimum_candidate_position_span_m: 0.20
-  old_position_clear_timeout_sec: 0.70
+  # At the ~1 Hz published costmaps, require the vacated cell to disappear by
+  # the second observed publication instead of imposing a sub-period timeout.
+  old_position_clear_max_costmap_samples: 2
   old_position_cost_max: 10
   reverse_speed_limit_mps: -0.05
   spin_linear_speed_max_mps: 0.03
