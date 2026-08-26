@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import shlex
+import shutil
 import signal
 import subprocess
 import time
@@ -28,6 +30,35 @@ REPO = PACKAGE.parents[2]
 CONFIG = PACKAGE / "config/v6_phase_g_causal.yaml"
 WRAPPER = REPO / "scripts/run_v6_phase_g_causal.sh"
 STACK = REPO / "scripts/run_v6_cognitive_graph_causal_stack.sh"
+
+
+def _fake_phase_g_isaac_wrapper(tmp_path: Path) -> Path:
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    wrapper = scripts / WRAPPER.name
+    shutil.copy2(WRAPPER, wrapper)
+    isaac = scripts / "run_v6_kujiale_low_obstacles.sh"
+    isaac.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s|%s|%s|%s\\n' \"$ROS_DOMAIN_ID\" "
+        "\"$ISAAC_NAV_EXPECTED_DOMAIN_ID\" "
+        "\"$BIO_NAV_PHASE_B_DOMAIN_ID\" \"$*\"\n",
+        encoding="utf-8",
+    )
+    isaac.chmod(0o755)
+    return wrapper
+
+
+def _phase_g_domain_clean_env() -> dict[str, str]:
+    env = os.environ.copy()
+    for name in (
+        "ROS_DOMAIN_ID",
+        "ISAAC_NAV_EXPECTED_DOMAIN_ID",
+        "BIO_NAV_PHASE_B_DOMAIN_ID",
+        "BIO_NAV_PHASE_G_DOMAIN_ID",
+    ):
+        env.pop(name, None)
+    return env
 
 
 def _result(
@@ -365,6 +396,80 @@ def test_wrapper_cli_matches_stack_contract_and_mcap_reuse() -> None:
     ):
         assert fragment in source
     subprocess.run(["bash", "-n", str(WRAPPER)], check=True)
+
+
+def test_isaac_dry_run_exposes_selected_phase_b_domain_and_argv(
+    tmp_path: Path,
+) -> None:
+    wrapper = _fake_phase_g_isaac_wrapper(tmp_path)
+    result = subprocess.run(
+        [
+            "bash", str(wrapper), "--dry-run", "--domain", "226",
+            "--arm", "G2", "isaac", "--probe", "value with space",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=_phase_g_domain_clean_env(),
+    )
+
+    assert shlex.split(result.stdout) == [
+        "env",
+        "BIO_NAV_PHASE_B_DOMAIN_ID=226",
+        str(wrapper.parent / "run_v6_kujiale_low_obstacles.sh"),
+        "isaac",
+        "--probe",
+        "value with space",
+    ]
+
+
+def test_isaac_child_receives_all_selected_domain_variables(tmp_path: Path) -> None:
+    wrapper = _fake_phase_g_isaac_wrapper(tmp_path)
+    result = subprocess.run(
+        ["bash", str(wrapper), "--domain", "226", "--arm", "G2", "isaac"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=_phase_g_domain_clean_env(),
+    )
+
+    assert result.stdout == "226|226|226|isaac\n"
+
+
+def test_isaac_child_receives_phase_g_default_domain(tmp_path: Path) -> None:
+    wrapper = _fake_phase_g_isaac_wrapper(tmp_path)
+    result = subprocess.run(
+        ["bash", str(wrapper), "--arm", "G0", "isaac"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=_phase_g_domain_clean_env(),
+    )
+
+    assert result.stdout == "151|151|151|isaac\n"
+
+
+def test_isaac_domain_forwarding_does_not_assign_readonly_parent_variable(
+    tmp_path: Path,
+) -> None:
+    wrapper = _fake_phase_g_isaac_wrapper(tmp_path)
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "readonly BIO_NAV_PHASE_B_DOMAIN_ID=150; "
+            "export BIO_NAV_PHASE_B_DOMAIN_ID; "
+            "source \"$1\" --domain 226 --arm G1 isaac",
+            "phase-g-readonly-test",
+            str(wrapper),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=_phase_g_domain_clean_env(),
+    )
+
+    assert result.stdout == "226|226|226|isaac\n"
 
 
 def test_stack_waits_for_delayed_setsid_groups_and_cleans_up(tmp_path: Path) -> None:

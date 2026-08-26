@@ -123,7 +123,8 @@ case "${component}" in
       --arm "${arm}" "$@"
     ;;
   isaac)
-    run_command "${isaac_entry}" isaac "$@"
+    run_command env BIO_NAV_PHASE_B_DOMAIN_ID="${domain_id}" \
+      "${isaac_entry}" isaac "$@"
     ;;
   stack)
     [[ -x "${stack_entry}" || "${dry_run}" == true ]] || {
