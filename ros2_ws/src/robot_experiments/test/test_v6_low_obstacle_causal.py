@@ -254,6 +254,15 @@ def test_manifest_freezes_exact_twelve_counterbalanced_runs_and_identity():
     assert manifest.criteria["source_recall_min"] == 0.80
     assert manifest.criteria["candidate_precision_min"] == 0.50
     assert manifest.criteria["candidate_radius_max_m"] == 0.35
+    assert manifest.criteria["selection_policy"] == (
+        "simplest_valid_arm_with_observed_net_benefit"
+    )
+    assert manifest.criteria["m1_m0_path_similarity_diagnostic_only"] is True
+    assert manifest.criteria["active_clearance_gain_diagnostic_only"] is True
+    assert manifest.criteria[
+        "m3_m2_trajectory_separation_diagnostic_only"
+    ] is True
+    assert manifest.criteria["selected_arm_active_ttl_required"] is True
     assert manifest.criteria["depth_obstacle_bounds_tolerance_m"] <= 0.02
     assert manifest.criteria["depth_min_height_above_floor_m"] >= 0.02
 
@@ -410,7 +419,10 @@ def test_offline_causal_evaluator_passes_isolation_clearance_and_m3_local_effect
     manifest = load_manifest(CONFIG)
     _write_evidence(tmp_path, manifest)
     summary = evaluate(manifest, tmp_path)
-    assert summary.verdict == "PASS_ENGINEERING_CAUSAL"
+    assert summary.verdict == "PASS_ENGINEERING_CAUSAL_CANDIDATE_TTL_PENDING"
+    assert summary.formal_qualification is False
+    assert summary.phase_f_complete is False
+    assert summary.selected_arm_active_ttl_status == "PENDING"
     assert all(pair.hausdorff_m <= 0.15 for pair in summary.m1_vs_m0)
     assert all(pair.length_delta_fraction <= 0.05 for pair in summary.m1_vs_m0)
     assert min(pair.clearance_gain_m for pair in summary.m2_vs_m1) >= 0.20
@@ -430,7 +442,7 @@ def test_evaluator_consumes_campaign_nested_run_output_layout(tmp_path):
             json.dumps(_evidence(manifest, run)), encoding="utf-8"
         )
     summary = evaluate(manifest, tmp_path)
-    assert summary.verdict == "PASS_ENGINEERING_CAUSAL"
+    assert summary.verdict == "PASS_ENGINEERING_CAUSAL_CANDIDATE_TTL_PENDING"
     assert all(
         Path(result.evidence_file).parent.name == result.run_id
         for result in summary.runs
@@ -524,7 +536,7 @@ def test_m3_separation_target_is_diagnostic_when_other_net_benefit_exists(tmp_pa
     manifest = load_manifest(CONFIG)
     _write_evidence(tmp_path, manifest, m3_same_as_m2=True)
     summary = evaluate(manifest, tmp_path)
-    assert summary.verdict == "PASS_ENGINEERING_CAUSAL"
+    assert summary.verdict == "PASS_ENGINEERING_CAUSAL_CANDIDATE_TTL_PENDING"
     assert summary.selected_arm == "M3"
     assert "M3_trajectory_separation_below_diagnostic_target" in summary.reasons
 
@@ -551,7 +563,7 @@ def test_pilot_selects_simpler_m2_when_m3_has_no_incremental_net_benefit(
 
     summary = evaluate(manifest, tmp_path, pilot=True)
 
-    assert summary.verdict == "PASS_ENGINEERING_PILOT"
+    assert summary.verdict == "PASS_ENGINEERING_CAUSAL_CANDIDATE_TTL_PENDING"
     assert summary.selected_arm == "M2"
     assert summary.selection_outcome == (
         "NO_INCREMENTAL_BENEFIT_KEEP_M2_CRITIC_OFF"
@@ -565,6 +577,138 @@ def test_pilot_selects_simpler_m2_when_m3_has_no_incremental_net_benefit(
     assert manifest.criteria["source_recall_min"] == 0.80
     assert manifest.criteria["candidate_precision_min"] == 0.50
     assert manifest.criteria["candidate_radius_max_m"] == 0.35
+
+
+def test_invalid_m3_does_not_block_valid_m2_selection(tmp_path):
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    run = next(
+        item for item in manifest.runs if item.repeat == 1 and item.arm == "M3"
+    )
+    row = _evidence(manifest, run)
+    row["module2_uds_connected"] = False
+    (tmp_path / f"{run.run_id}.json").write_text(
+        json.dumps(row), encoding="utf-8"
+    )
+
+    summary = evaluate(manifest, tmp_path, pilot=True)
+    result = next(item for item in summary.runs if item.arm == "M3")
+
+    assert result.verdict == "INVALID"
+    assert summary.verdict == "PASS_ENGINEERING_CAUSAL_CANDIDATE_TTL_PENDING"
+    assert summary.selected_arm == "M2"
+    assert summary.selection_outcome == "M3_NOT_ADMITTED_EVIDENCE_INSUFFICIENT"
+    assert "M3_NOT_ADMITTED_EVIDENCE_INSUFFICIENT" in summary.reasons
+    assert "NO_INCREMENTAL_BENEFIT_KEEP_M2_CRITIC_OFF" not in summary.reasons
+    assert summary.formal_qualification is False
+    assert summary.phase_f_complete is False
+    assert summary.selected_arm_active_ttl_status == "PENDING"
+
+
+def test_path_and_clearance_diagnostic_targets_do_not_block_m2_selection(
+    tmp_path,
+):
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    runs = {run.arm: run for run in manifest.runs if run.repeat == 1}
+
+    m1 = _evidence(manifest, runs["M1"])
+    m1["plan"] = [[0.45, -5.35], [2.0, -0.2], [0.80, 4.80]]
+    (tmp_path / f'{runs["M1"].run_id}.json').write_text(
+        json.dumps(m1), encoding="utf-8"
+    )
+
+    m2 = _evidence(manifest, runs["M2"])
+    m2["plan"] = m1["plan"]
+    m2["optimal_trajectory"] = m1["plan"]
+    m2["passive"]["minimum_clearance_m"] = 0.19
+    (tmp_path / f'{runs["M2"].run_id}.json').write_text(
+        json.dumps(m2), encoding="utf-8"
+    )
+
+    m3 = _evidence(manifest, runs["M3"])
+    m3["module2_uds_connected"] = False
+    (tmp_path / f'{runs["M3"].run_id}.json').write_text(
+        json.dumps(m3), encoding="utf-8"
+    )
+
+    summary = evaluate(manifest, tmp_path, pilot=True)
+
+    assert summary.selected_arm == "M2"
+    assert summary.verdict == "PASS_ENGINEERING_CAUSAL_CANDIDATE_TTL_PENDING"
+    assert "M1_vs_M0_path_similarity_below_diagnostic_target" in summary.reasons
+    assert "M2_median_clearance_gain_below_diagnostic_target" in summary.reasons
+
+
+def test_invalid_m2_cannot_be_selected_or_rescued_by_m3(tmp_path):
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    run = next(
+        item for item in manifest.runs if item.repeat == 1 and item.arm == "M2"
+    )
+    row = _evidence(manifest, run)
+    row["synchronized_samples"][0]["typed_obstacles"][0]["radius_m"] = 0.36
+    (tmp_path / f"{run.run_id}.json").write_text(
+        json.dumps(row), encoding="utf-8"
+    )
+
+    summary = evaluate(manifest, tmp_path, pilot=True)
+
+    assert summary.verdict == "INVALID"
+    assert summary.selected_arm is None
+    assert summary.selection_outcome == "NOT_SELECTED_INVALID_EVIDENCE"
+    assert summary.selected_arm_active_ttl_status == "NOT_APPLICABLE_NO_SELECTION"
+    assert any(
+        "M2 candidate radius exceeds engineering threshold" in reason
+        for reason in summary.reasons
+    )
+
+
+@pytest.mark.parametrize("scope", ["global", "local"])
+def test_m2_requires_obstacle_layer_applied_status(tmp_path, scope):
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    run = next(
+        item for item in manifest.runs if item.repeat == 1 and item.arm == "M2"
+    )
+    row = _evidence(manifest, run)
+    row["layer"][scope]["applied_count"] = 0
+    (tmp_path / f"{run.run_id}.json").write_text(
+        json.dumps(row), encoding="utf-8"
+    )
+
+    summary = evaluate(manifest, tmp_path, pilot=True)
+    result = next(item for item in summary.runs if item.arm == "M2")
+
+    assert result.verdict == "INVALID"
+    assert "active obstacle layer lacks global/local applied status" in result.reasons
+    assert summary.selected_arm is None
+
+
+def test_evaluate_cli_zero_is_pilot_candidate_only(tmp_path):
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    pilot_output = tmp_path / "pilot-summary.json"
+    full_output = tmp_path / "full-summary.json"
+
+    assert cli([
+        "evaluate", "--config", str(CONFIG),
+        "--evidence-dir", str(tmp_path), "--pilot",
+        "--output", str(pilot_output),
+    ]) == 0
+    assert cli([
+        "evaluate", "--config", str(CONFIG),
+        "--evidence-dir", str(tmp_path),
+        "--output", str(full_output),
+    ]) == 2
+    for output in (pilot_output, full_output):
+        payload = json.loads(output.read_text(encoding="utf-8"))
+        assert payload["verdict"] == (
+            "PASS_ENGINEERING_CAUSAL_CANDIDATE_TTL_PENDING"
+        )
+        assert payload["formal_qualification"] is False
+        assert payload["phase_f_complete"] is False
+        assert payload["selected_arm_active_ttl_status"] == "PENDING"
 
 
 @pytest.mark.parametrize(
@@ -827,7 +971,7 @@ def test_invalid_source_row_keeps_pair_diagnostics_and_reports_all_blockers(
         "M2 source recall below engineering threshold" in reason
         for reason in summary.reasons
     )
-    assert "M1_vs_M0_isolation_failed" in summary.reasons
+    assert "M1_vs_M0_path_similarity_below_diagnostic_target" in summary.reasons
     assert "M2_median_clearance_gain_below_diagnostic_target" in summary.reasons
     assert "M2_reroute_direction_inconsistent" in summary.reasons
     assert "M3_trajectory_separation_below_diagnostic_target" in summary.reasons
@@ -1658,6 +1802,8 @@ def test_m1_evaluator_rejects_non_shadow_or_layer_write_evidence(tmp_path, fault
     assert result.verdict == "INVALID"
     if fault == "layer_write":
         assert "M1 shadow obstacle layer applied or raised" in result.reasons[0]
+        assert summary.selected_arm is None
+        assert summary.selection_outcome == "NOT_SELECTED_INVALID_EVIDENCE"
     else:
         assert "M1 typed candidate violates untrusted shadow semantics" in result.reasons[0]
 
@@ -2807,7 +2953,7 @@ def test_pilot_evaluator_uses_only_one_four_arm_repeat(tmp_path):
     manifest = load_manifest(CONFIG)
     _write_evidence(tmp_path, manifest)
     summary = evaluate(manifest, tmp_path, pilot=True)
-    assert summary.verdict == "PASS_ENGINEERING_PILOT"
+    assert summary.verdict == "PASS_ENGINEERING_CAUSAL_CANDIDATE_TTL_PENDING"
     assert [result.arm for result in summary.runs] == ["M0", "M1", "M2", "M3"]
     assert len(summary.m3_vs_m2) == 1
 

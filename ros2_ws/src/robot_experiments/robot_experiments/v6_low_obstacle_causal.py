@@ -253,9 +253,12 @@ class PairResult:
 @dataclass(frozen=True)
 class CausalSummary:
     qualification: str
+    formal_qualification: bool
+    phase_f_complete: bool
     verdict: str
     reasons: tuple[str, ...]
     selected_arm: str | None
+    selected_arm_active_ttl_status: str
     selection_outcome: str
     runs: tuple[RunResult, ...]
     m1_vs_m0: tuple[PairResult, ...]
@@ -522,6 +525,18 @@ def load_manifest(path: str | Path) -> CausalManifest:
             raise CausalContractError(f"criteria.{key} must be within [0, 1]")
     if float(criteria.get("candidate_radius_max_m", 0.0)) <= 0.0:
         raise CausalContractError("criteria.candidate_radius_max_m must be positive")
+    if criteria.get("selection_policy") != "simplest_valid_arm_with_observed_net_benefit":
+        raise CausalContractError(
+            "criteria.selection_policy must select the simplest valid arm with observed net benefit"
+        )
+    for key in (
+        "m1_m0_path_similarity_diagnostic_only",
+        "active_clearance_gain_diagnostic_only",
+        "m3_m2_trajectory_separation_diagnostic_only",
+        "selected_arm_active_ttl_required",
+    ):
+        if criteria.get(key) is not True:
+            raise CausalContractError(f"criteria.{key} must be true")
     return CausalManifest(
         path=manifest_path,
         module3_root=module3_root,
@@ -3666,8 +3681,18 @@ def _evaluate_run(manifest: CausalManifest, run: RunContract, path: Path) -> tup
                     raise CausalContractError(
                         "M1 shadow obstacle layer applied or raised Costmap cells"
                     )
-        if arm.obstacle_layer_mode == "active" and any(cells <= 0 for cells in layer_cells):
-            raise CausalContractError("active obstacle layer lacks global/local applied cells")
+        if arm.obstacle_layer_mode == "active":
+            if any(cells <= 0 for cells in layer_cells):
+                raise CausalContractError("active obstacle layer lacks global/local applied cells")
+            if any(
+                int(_mapping(layer.get(scope), f"layer.{scope}").get(
+                    "applied_count", 0
+                )) <= 0
+                for scope in ("global", "local")
+            ):
+                raise CausalContractError(
+                    "active obstacle layer lacks global/local applied status"
+                )
         if arm.critic_mode != "active" and critic.get("applied") is not False:
             raise CausalContractError("off/shadow critic must not be applied")
         if not isinstance(critic.get("reason"), str) or not critic["reason"]:
@@ -4072,7 +4097,7 @@ def evaluate(
         )
         for pair in m1_m0
     ):
-        add_reason("M1_vs_M0_isolation_failed")
+        add_reason("M1_vs_M0_path_similarity_below_diagnostic_target")
 
     clearance_target = float(manifest.criteria["active_clearance_gain_min_m"])
     for arm, pairs in (("M2", m2_m1), ("M3", m3_m1)):
@@ -4121,31 +4146,56 @@ def evaluate(
             or abs(pair.near_obstacle_speed_delta_mps) > 1.0e-9
         )
 
-    m2_pairs = {pair.repeat: pair for pair in m2_m1}
+    def arm_results(arm: str) -> list[RunResult]:
+        return [evaluated[(repeat, arm)][0] for repeat in repeats]
+
+    m0_results = arm_results("M0")
+    m1_results = arm_results("M1")
+
+    # Phase-F isolation is established by valid M0/M1 rows with the same
+    # collision outcome while M1 remains zero-write. The zero-write property
+    # is an individual M1 validity gate above; global-plan similarity is only a
+    # diagnostic target because stochastic replanning can change an otherwise
+    # isolated shadow trajectory.
+    baseline_isolation = all(
+        m0.verdict == "VALID"
+        and m0.collision is True
+        and m1.verdict == "VALID"
+        and m1.collision is True
+        for m0, m1 in zip(m0_results, m1_results)
+    )
+
+    # M2 admission deliberately keeps the model-data and write-path gates in
+    # _evaluate_run. Its observed net benefit is the causal outcome change
+    # from the isolated M1 collision to success without collision; clearance
+    # and path-shape magnitudes remain useful diagnostics, not extra gates.
     m2_net_benefit = all(
-        repeat in m2_pairs
-        and (m1 := evaluated[(repeat, "M1")][0]).verdict == "VALID"
-        and (m1.collision is True or m1.success is False)
+        (m1 := evaluated[(repeat, "M1")][0]).verdict == "VALID"
+        and m1.collision is True
         and (m2 := evaluated[(repeat, "M2")][0]).verdict == "VALID"
         and m2.success is True
         and m2.collision is False
-        and m2_pairs[repeat].clearance_gain_m > 0.0
-        and control_changed(m2_pairs[repeat])
+        and m2.terminal_zero_confirmed is True
         for repeat in repeats
     )
 
     m3_pairs = {pair.repeat: pair for pair in m3_m2}
-    m3_incremental_benefit = all(
+    m3_admitted = all(
         repeat in m3_pairs
         and (m3 := evaluated[(repeat, "M3")][0]).verdict == "VALID"
         and m3.success is True
         and m3.collision is False
+        and m3.terminal_zero_confirmed is True
         and m3.critic_participation == "online_applied"
         and (_known_int(
             _known_mapping(evaluated[(repeat, "M3")][1]["raw"].get("critic")).get(
                 "cost_delta_nonzero_count"
             )
         ) or 0) > 0
+        for repeat in repeats
+    )
+    m3_incremental_benefit = m3_admitted and all(
+        repeat in m3_pairs
         and (
             m3_pairs[repeat].clearance_gain_m > 0.0
             or m3_pairs[repeat].near_obstacle_speed_delta_mps < 0.0
@@ -4153,14 +4203,20 @@ def evaluate(
         and control_changed(m3_pairs[repeat])
         for repeat in repeats
     )
-    if not m3_incremental_benefit:
+    if not m3_admitted:
+        add_reason("M3_NOT_ADMITTED_EVIDENCE_INSUFFICIENT")
+    elif not m3_incremental_benefit:
         add_reason("M3_NO_INCREMENTAL_BENEFIT_DIAGNOSTIC")
 
-    if invalid:
+    selection_critical_invalid = [
+        result for result in invalid_results if result.arm in {"M0", "M1", "M2"}
+    ]
+    if selection_critical_invalid:
         verdict = "INVALID"
         selected_arm = None
         selection_outcome = "NOT_SELECTED_INVALID_EVIDENCE"
-    elif "M1_vs_M0_isolation_failed" in reasons:
+    elif not baseline_isolation:
+        add_reason("M0_M1_BASELINE_COLLISION_ISOLATION_NOT_DEMONSTRATED")
         verdict = "FAIL"
         selected_arm = None
         selection_outcome = "NOT_SELECTED_SHADOW_ISOLATION_FAILED"
@@ -4170,14 +4226,17 @@ def evaluate(
         selected_arm = None
         selection_outcome = "NO_CAUSAL_NET_BENEFIT"
     elif m3_incremental_benefit:
-        verdict = "PASS_ENGINEERING_PILOT" if pilot else "PASS_ENGINEERING_CAUSAL"
+        verdict = "PASS_ENGINEERING_CAUSAL_CANDIDATE_TTL_PENDING"
         selected_arm = "M3"
         selection_outcome = "INCREMENTAL_BENEFIT_KEEP_M3_CRITIC_ON"
     else:
-        add_reason("NO_INCREMENTAL_BENEFIT_KEEP_M2_CRITIC_OFF")
-        verdict = "PASS_ENGINEERING_PILOT" if pilot else "PASS_ENGINEERING_CAUSAL"
+        verdict = "PASS_ENGINEERING_CAUSAL_CANDIDATE_TTL_PENDING"
         selected_arm = "M2"
-        selection_outcome = "NO_INCREMENTAL_BENEFIT_KEEP_M2_CRITIC_OFF"
+        if not m3_admitted:
+            selection_outcome = "M3_NOT_ADMITTED_EVIDENCE_INSUFFICIENT"
+        else:
+            add_reason("NO_INCREMENTAL_BENEFIT_KEEP_M2_CRITIC_OFF")
+            selection_outcome = "NO_INCREMENTAL_BENEFIT_KEEP_M2_CRITIC_OFF"
 
     visualizations: list[Mapping[str, Any]] = []
     for repeat in repeats:
@@ -4198,9 +4257,14 @@ def evaluate(
         })
     return CausalSummary(
         qualification="ENGINEERING_ONLY_NOT_FORMAL",
+        formal_qualification=False,
+        phase_f_complete=False,
         verdict=verdict,
         reasons=tuple(reasons),
         selected_arm=selected_arm,
+        selected_arm_active_ttl_status=(
+            "PENDING" if selected_arm is not None else "NOT_APPLICABLE_NO_SELECTION"
+        ),
         selection_outcome=selection_outcome,
         runs=tuple(ordered_results),
         m1_vs_m0=tuple(m1_m0),
@@ -4318,7 +4382,15 @@ def cli(argv: list[str] | None = None) -> int:
         if args.command == "evaluate":
             summary = evaluate(manifest, args.evidence_dir, pilot=args.pilot)
             _write_or_print(summary, args.output)
-            return 0 if summary.verdict in {"PASS_ENGINEERING_CAUSAL", "PASS_ENGINEERING_PILOT"} else 2
+            # Exit zero is intentionally limited to a pilot arm-selection
+            # candidate. The selected arm still needs the separate active TTL
+            # probe, so this does not declare Phase F or formal qualification
+            # complete.
+            return 0 if (
+                args.pilot
+                and summary.verdict
+                == "PASS_ENGINEERING_CAUSAL_CANDIDATE_TTL_PENDING"
+            ) else 2
         if args.command == "record-evidence":
             candidates = [run for run in manifest.runs if run.run_id == args.run_id]
             if len(candidates) != 1:

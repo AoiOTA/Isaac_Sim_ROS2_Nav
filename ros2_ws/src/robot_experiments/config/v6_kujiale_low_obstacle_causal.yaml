@@ -150,10 +150,21 @@ criteria:
   source_recall_min: 0.80
   candidate_precision_min: 0.50
   candidate_radius_max_m: 0.35
+  selection_policy: simplest_valid_arm_with_observed_net_benefit
+  # The following path/clearance values are diagnostic targets from the
+  # experiment design. They describe effect size; they are not arm-admission
+  # gates when M0/M1 preserve zero-write isolation and M2 changes collision to
+  # success without collision.
+  m1_m0_path_similarity_diagnostic_only: true
   m1_m0_path_hausdorff_max_m: 0.15
   m1_m0_path_length_delta_max_fraction: 0.05
+  active_clearance_gain_diagnostic_only: true
   active_clearance_gain_min_m: 0.20
+  m3_m2_trajectory_separation_diagnostic_only: true
   m3_m2_trajectory_separation_min_m: 0.05
+  # A selected engineering candidate is not Phase-F complete until its
+  # separate active-controller TTL probe passes.
+  selected_arm_active_ttl_required: true
   repeats_required: 3
   active_no_new_collision_required: true
   active_direction_consistency_required: true
