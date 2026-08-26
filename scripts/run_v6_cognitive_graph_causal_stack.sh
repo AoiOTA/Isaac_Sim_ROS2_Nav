@@ -142,6 +142,9 @@ if [[ "${dry_run}" == true ]]; then
   exit 0
 fi
 
+export ISAAC_NAV_EXPECTED_DOMAIN_ID="${domain_id}"
+export ROS_DOMAIN_ID="${domain_id}"
+
 # shellcheck source=lib/common.sh
 source "${script_dir}/lib/common.sh"
 require_directory "${integration_root}"
@@ -155,8 +158,6 @@ require_directory "${module2_root}"
 module2_root="$(cd "${module2_root}" && pwd -P)"
 require_file "${module2_root}/configs/kujiale_0026_module1_visual_shadow_v310.yaml"
 export BIO_NAV_MODULE2_V310_ROOT="${module2_root}"
-export ISAAC_NAV_EXPECTED_DOMAIN_ID="${domain_id}"
-export ROS_DOMAIN_ID="${domain_id}"
 
 mkdir -p "${run_dir}" "$(dirname "${socket_path}")"
 if [[ -S "${socket_path}" ]] && grep -Fq "${socket_path}" /proc/net/unix; then

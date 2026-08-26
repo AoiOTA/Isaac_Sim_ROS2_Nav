@@ -1,3 +1,5 @@
+import os
+import socket
 import subprocess
 from pathlib import Path
 
@@ -79,6 +81,51 @@ def test_obstacle_arm_is_held_m3_or_whole_group_m2_fallback(tmp_path):
     assert " primary M3 " not in m3
     assert " primary M2 " not in m2
     assert values["obstacle_arm"] == "M2"
+
+
+def test_nondefault_domain_reaches_active_socket_check_without_readonly_error(
+    tmp_path,
+):
+    integration_root = tmp_path / "integration"
+    module2_root = tmp_path / "module2"
+    (integration_root / "scripts").mkdir(parents=True)
+    (integration_root / "scripts/run_v6_module2_graph_causal_server.sh").touch()
+    candidate_manifest = (
+        integration_root
+        / "ros2_ws/src/bio_nav_ros_bridge/config"
+        / "kujiale_0026_run4_read_only_shadow_candidate.json"
+    )
+    candidate_manifest.parent.mkdir(parents=True)
+    candidate_manifest.touch()
+    (module2_root / "configs").mkdir(parents=True)
+    (
+        module2_root / "configs/kujiale_0026_module1_visual_shadow_v310.yaml"
+    ).touch()
+
+    socket_path = tmp_path / "active.sock"
+    env = os.environ.copy()
+    env["BIO_NAV_INTEGRATION_ROOT"] = str(integration_root)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as active_socket:
+        active_socket.bind(str(socket_path))
+        active_socket.listen()
+        result = subprocess.run(
+            [
+                str(STACK),
+                "--arm", "G0",
+                "--domain", "151",
+                "--run-dir", str(tmp_path / "run"),
+                "--socket", str(socket_path),
+                "--module2-root", str(module2_root),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+    assert result.returncode == 1
+    assert "refusing to replace active Module2 socket" in result.stderr
+    assert "readonly variable" not in result.stderr
 
 
 def test_graph_stack_rejects_partial_or_out_of_contract_arms(tmp_path):
