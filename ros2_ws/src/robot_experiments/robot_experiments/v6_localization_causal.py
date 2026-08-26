@@ -57,6 +57,23 @@ RECOVERY_BY_ARM = {
     "R0": "global_localization",
     "R1": "supervisor_manual_rescue",
 }
+RUN4_CANDIDATE_STATUS = "READ_ONLY_CAUSAL_CANDIDATE_STARTUP_ONLY"
+RUN4_RECOVERY_QUALIFICATION = "NOT_ACTIVE_RECOVERY_QUALIFIED"
+RUN4_ALLOWED_SUPERVISOR_MODES = ("shadow", "startup")
+PHASE_D_STARTUP_INITIALPOSE = {
+    "S0": {
+        "source": "runner",
+        "seed_kind": "broad_initialpose",
+        "expected_total_count": 1,
+        "expected_supervisor_count": 0,
+    },
+    "S1": {
+        "source": "supervisor",
+        "seed_kind": "cognitive_prior",
+        "expected_total_count": 1,
+        "expected_supervisor_count": 1,
+    },
+}
 ALLOWED_EVENTS = frozenset(
     {
         "episode_start",
@@ -115,6 +132,7 @@ class SeedPose:
 class LocalizationConfig:
     path: Path
     phase_b_manifest: Path
+    phase_d_run4_candidate: Mapping[str, Any]
     seeds: Mapping[str, int]
     broad_seed: SeedPose
     wrong_region_seed: SeedPose
@@ -163,6 +181,7 @@ def load_config(path: str | Path) -> LocalizationConfig:
         "schema_version",
         "phase_b_manifest",
         "held_constants",
+        "phase_d_run4_candidate",
         "arms",
         "seeds",
         "startup",
@@ -197,6 +216,60 @@ def load_config(path: str | Path) -> LocalizationConfig:
     if dict(held) != required_held:
         raise LocalizationConfigError(
             "held_constants must keep Module2/CPG/obstacles off and GT evaluator-only"
+        )
+
+    candidate = _mapping(
+        raw.get("phase_d_run4_candidate"), "phase_d_run4_candidate"
+    )
+    candidate_keys = {
+        "integration_manifest",
+        "status",
+        "recovery_qualification",
+        "allowed_supervisor_modes",
+        "model_id",
+        "checkpoint",
+        "checkpoint_sha256",
+        "posterior_pregate_config",
+        "posterior_pregate_config_sha256",
+        "startup_initialpose",
+    }
+    if set(candidate) != candidate_keys:
+        raise LocalizationConfigError(
+            f"phase_d_run4_candidate keys must be {sorted(candidate_keys)}"
+        )
+    if candidate.get("status") != RUN4_CANDIDATE_STATUS:
+        raise LocalizationConfigError(
+            "Phase D Run4 candidate must have startup-only status"
+        )
+    if candidate.get("recovery_qualification") != RUN4_RECOVERY_QUALIFICATION:
+        raise LocalizationConfigError(
+            "Phase D Run4 candidate must remain non-recovery"
+        )
+    if tuple(candidate.get("allowed_supervisor_modes", ())) != (
+        RUN4_ALLOWED_SUPERVISOR_MODES
+    ):
+        raise LocalizationConfigError(
+            "Phase D Run4 candidate must allow only shadow and startup"
+        )
+    for name in (
+        "integration_manifest",
+        "model_id",
+        "checkpoint",
+        "checkpoint_sha256",
+        "posterior_pregate_config",
+        "posterior_pregate_config_sha256",
+    ):
+        if not str(candidate.get(name, "")).strip():
+            raise LocalizationConfigError(
+                f"phase_d_run4_candidate.{name} must be non-empty"
+            )
+    startup_initialpose = _mapping(
+        candidate.get("startup_initialpose"),
+        "phase_d_run4_candidate.startup_initialpose",
+    )
+    if dict(startup_initialpose) != PHASE_D_STARTUP_INITIALPOSE:
+        raise LocalizationConfigError(
+            "Phase D startup initialpose source/count contract changed"
         )
 
     arms = _mapping(raw.get("arms"), "arms")
@@ -283,6 +356,7 @@ def load_config(path: str | Path) -> LocalizationConfig:
     return LocalizationConfig(
         path=config_path,
         phase_b_manifest=base_path,
+        phase_d_run4_candidate=dict(candidate),
         seeds=seeds,
         broad_seed=broad_seed,
         wrong_region_seed=wrong_seed,
@@ -333,6 +407,12 @@ def build_plan(config: LocalizationConfig) -> dict[str, Any]:
                 "startup": startup,
                 "supervisor_mode": SUPERVISOR_MODE_BY_ARM[arm],
                 "recovery": RECOVERY_BY_ARM[arm],
+                "run4_candidate_enabled": PHASE_BY_ARM[arm] == "D",
+                "expected_startup_initialpose": (
+                    PHASE_D_STARTUP_INITIALPOSE[arm]
+                    if PHASE_BY_ARM[arm] == "D"
+                    else None
+                ),
                 "actions": list(route_actions(config, arm)),
             }
         )
@@ -342,6 +422,8 @@ def build_plan(config: LocalizationConfig) -> dict[str, Any]:
         "qualification": QUALIFICATION,
         "formal_qualification": NOT_QUALIFIED,
         "ground_truth_policy": "passive_evaluator_only",
+        "phase_d_run4_candidate": dict(config.phase_d_run4_candidate),
+        "phase_e_run4_candidate_enabled": False,
         "single_round_arm_count": 4,
         "runs": rows,
     }
@@ -1057,6 +1139,7 @@ def cli(argv: Sequence[str] | None = None) -> int:
                 "schema_version": CONFIG_SCHEMA,
                 "event_schema": EVENT_SCHEMA,
                 "phase_b_manifest": str(config.phase_b_manifest),
+                "phase_d_run4_candidate": dict(config.phase_d_run4_candidate),
                 "arms": list(ARMS),
                 "qualification": QUALIFICATION,
                 "formal_qualification": NOT_QUALIFIED,

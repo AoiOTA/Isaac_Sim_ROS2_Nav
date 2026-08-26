@@ -1,5 +1,7 @@
 import json
+import os
 from pathlib import Path
+import subprocess
 
 import pytest
 import yaml
@@ -9,6 +11,8 @@ from robot_experiments.v6_localization_causal import (
     ARMS,
     CONFIG_SCHEMA,
     EVENT_SCHEMA,
+    PHASE_D_STARTUP_INITIALPOSE,
+    RUN4_CANDIDATE_STATUS,
     LocalizationCausalNode,
     LocalizationConfigError,
     _contains_ground_truth,
@@ -22,6 +26,8 @@ from robot_experiments.v6_localization_causal import (
 
 PACKAGE = Path(__file__).resolve().parents[1]
 CONFIG = PACKAGE / "config" / "v6_localization_causal.yaml"
+REPO = Path(__file__).resolve().parents[4]
+WRAPPER = REPO / "scripts" / "run_v6_localization_causal.sh"
 
 
 def test_config_freezes_only_four_single_round_arms_and_held_constants():
@@ -38,6 +44,19 @@ def test_config_freezes_only_four_single_round_arms_and_held_constants():
     ) == pytest.approx((-2.20, -2.95, -42.0))
     assert config.seeds["S0"] == config.seeds["S1"]
     assert config.seeds["R0"] == config.seeds["R1"]
+    assert config.phase_d_run4_candidate["status"] == RUN4_CANDIDATE_STATUS
+    assert config.phase_d_run4_candidate["model_id"] == (
+        "kujiale_0026_visual_heads_run4_v310"
+    )
+    assert config.phase_d_run4_candidate["checkpoint"].endswith(
+        "/kujiale_0026_visual_heads_run4_v310.pt"
+    )
+    assert config.phase_d_run4_candidate["posterior_pregate_config"].endswith(
+        "/posterior_region_pregate_config_v1.json"
+    )
+    assert config.phase_d_run4_candidate["startup_initialpose"] == (
+        PHASE_D_STARTUP_INITIALPOSE
+    )
 
 
 def test_plan_has_no_old_s3_r2_or_60_run_matrix():
@@ -49,6 +68,128 @@ def test_plan_has_no_old_s3_r2_or_60_run_matrix():
     assert len(plan["runs"]) == 4
     assert not {"S3", "R2"} & {row["arm"] for row in plan["runs"]}
     assert "core_run_count" not in plan
+    assert plan["phase_e_run4_candidate_enabled"] is False
+    by_arm = {row["arm"]: row for row in plan["runs"]}
+    assert by_arm["S0"]["run4_candidate_enabled"] is True
+    assert by_arm["S1"]["run4_candidate_enabled"] is True
+    assert by_arm["R0"]["run4_candidate_enabled"] is False
+    assert by_arm["R1"]["run4_candidate_enabled"] is False
+    assert by_arm["S0"]["expected_startup_initialpose"] == {
+        "source": "runner",
+        "seed_kind": "broad_initialpose",
+        "expected_total_count": 1,
+        "expected_supervisor_count": 0,
+    }
+    assert by_arm["S1"]["expected_startup_initialpose"] == {
+        "source": "supervisor",
+        "seed_kind": "cognitive_prior",
+        "expected_total_count": 1,
+        "expected_supervisor_count": 1,
+    }
+    assert by_arm["R0"]["expected_startup_initialpose"] is None
+    assert by_arm["R1"]["expected_startup_initialpose"] is None
+
+
+def test_config_rejects_non_startup_run4_candidate_status(tmp_path):
+    raw = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    raw["phase_d_run4_candidate"]["status"] = "SHADOW_ONLY"
+    path = tmp_path / "not_startup_allowed.yaml"
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    with pytest.raises(LocalizationConfigError, match="startup-only status"):
+        load_config(path)
+
+
+def _write_candidate_manifest(
+    path: Path, *, status: str = RUN4_CANDIDATE_STATUS
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "status": status,
+                "recovery_qualification": "NOT_ACTIVE_RECOVERY_QUALIFIED",
+                "default_enabled": False,
+                "allowed_supervisor_modes": ["shadow", "startup"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _run_wrapper(
+    tmp_path: Path,
+    arm: str,
+    component: str,
+    *,
+    status: str = RUN4_CANDIDATE_STATUS,
+) -> subprocess.CompletedProcess[str]:
+    integration = tmp_path / "integration"
+    module2 = tmp_path / "module2"
+    manifest = integration / (
+        "ros2_ws/src/bio_nav_ros_bridge/config/"
+        "kujiale_0026_run4_read_only_shadow_candidate.json"
+    )
+    _write_candidate_manifest(manifest, status=status)
+    env = os.environ.copy()
+    env.update(
+        {
+            "BIO_NAV_INTEGRATION_ROOT": str(integration),
+            "BIO_NAV_MODULE2_V310_ROOT": str(module2),
+            "BIO_NAV_PHASE_DE_RUN4_CANDIDATE_MANIFEST": str(manifest),
+            "BIO_NAV_PHASE_DE_SOCKET_PATH": str(tmp_path / "module2.sock"),
+        }
+    )
+    return subprocess.run(
+        [
+            "bash",
+            str(WRAPPER),
+            "--dry-run",
+            "--arm",
+            arm,
+            component,
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+def test_s0_s1_argv_share_run4_server_manifest_and_keep_seed_modes(tmp_path):
+    outputs = {
+        (arm, component): _run_wrapper(tmp_path, arm, component)
+        for arm in ("S0", "S1")
+        for component in ("module1", "bridge")
+    }
+    assert all(result.returncode == 0 for result in outputs.values())
+    manifest = tmp_path / (
+        "integration/ros2_ws/src/bio_nav_ros_bridge/config/"
+        "kujiale_0026_run4_read_only_shadow_candidate.json"
+    )
+    for arm in ("S0", "S1"):
+        server = outputs[(arm, "module1")].stdout
+        bridge = outputs[(arm, "bridge")].stdout
+        assert f"--candidate-manifest {manifest}" in server
+        assert f"localization_candidate_manifest:={manifest}" in bridge
+    assert "localization_supervisor_mode:=shadow" in outputs[("S0", "bridge")].stdout
+    assert "localization_supervisor_mode:=startup" in outputs[("S1", "bridge")].stdout
+
+
+def test_r0_r1_argv_keep_old_path_without_run4_candidate(tmp_path):
+    r0 = _run_wrapper(tmp_path, "R0", "module1")
+    r1 = _run_wrapper(tmp_path, "R1", "bridge")
+    assert r0.returncode == 0
+    assert r1.returncode == 0
+    assert "module1-shadow" in r0.stdout
+    assert "localization_supervisor_mode:=active" in r1.stdout
+    assert "candidate-manifest" not in r0.stdout
+    assert "localization_candidate_manifest" not in r1.stdout
+
+
+def test_wrapper_fails_closed_when_run4_manifest_is_not_startup_allowed(tmp_path):
+    result = _run_wrapper(tmp_path, "S1", "module1", status="SHADOW_ONLY")
+    assert result.returncode != 0
+    assert "not startup-allowed" in result.stderr
 
 
 def test_phase_d_actions_are_one_ordinary_full_route():

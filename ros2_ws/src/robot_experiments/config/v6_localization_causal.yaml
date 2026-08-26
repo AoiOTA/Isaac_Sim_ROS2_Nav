@@ -9,6 +9,22 @@ held_constants:
   ground_truth_policy: passive_evaluator_only
   initial_pose_source: runner_or_supervisor_only
 
+phase_d_run4_candidate:
+  integration_manifest: ros2_ws/src/bio_nav_ros_bridge/config/kujiale_0026_run4_read_only_shadow_candidate.json
+  status: READ_ONLY_CAUSAL_CANDIDATE_STARTUP_ONLY
+  recovery_qualification: NOT_ACTIVE_RECOVERY_QUALIFIED
+  allowed_supervisor_modes: [shadow, startup]
+  model_id: kujiale_0026_visual_heads_run4_v310
+  checkpoint: /mnt/nas_home/Bio_Nav_Data/experiments/runs/v6r5_kujiale_run4_20260826T112503Z/checkpoints/kujiale_0026_visual_heads_run4_v310.pt
+  checkpoint_sha256: 80f0b104c68899f1865a4369f091a16631ed8f178b895c84b8d072cbe10a7821
+  posterior_pregate_config: /mnt/nas_home/Bio_Nav_Data/experiments/runs/v6r5_module1_v2b_validation_20260826T133516Z/derived_v310_read_only/posterior_pregate_v2/posterior_region_pregate_config_v1.json
+  posterior_pregate_config_sha256: 72d5ba175b97ae12d55881d0f7ad73e025b5971d23bae9857c6da76fc532d1da
+  startup_initialpose:
+    S0: {source: runner, seed_kind: broad_initialpose,
+         expected_total_count: 1, expected_supervisor_count: 0}
+    S1: {source: supervisor, seed_kind: cognitive_prior,
+         expected_total_count: 1, expected_supervisor_count: 1}
+
 arms:
   S0: {phase: D, supervisor_mode: shadow, recovery: none}
   S1: {phase: D, supervisor_mode: startup, recovery: none}
