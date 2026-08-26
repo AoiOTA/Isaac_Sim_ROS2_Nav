@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 
 import pytest
@@ -34,6 +35,65 @@ def _run(*args: str) -> subprocess.CompletedProcess[str]:
         text=True,
         env=_domain_clean_env(),
     )
+
+
+def _fake_runtime_overlay(tmp_path: Path, *, has_candidate: bool = True):
+    project = tmp_path / "module3"
+    scripts = project / "scripts"
+    (scripts / "lib").mkdir(parents=True)
+    shutil.copy2(WRAPPER, scripts / WRAPPER.name)
+    (scripts / "lib/common.sh").write_text(
+        "#!/usr/bin/env bash\n"
+        "source_ros() { source \"$BIO_NAV_INTEGRATION_SETUP\"; }\n",
+        encoding="utf-8",
+    )
+
+    integration = tmp_path / "integration"
+    manifest = (
+        integration
+        / "ros2_ws/src/bio_nav_ros_bridge/config/kujiale_0026_run4_read_only_shadow_candidate.json"
+    )
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("{}\n", encoding="utf-8")
+    prefix = integration / "install_current"
+    for package in ("bio_nav_interfaces", "bio_nav_ros_bridge"):
+        (prefix / package).mkdir(parents=True)
+    setup = prefix / "setup.bash"
+    setup.write_text(
+        f"export FAKE_INTEGRATION_PREFIX={shlex.quote(str(prefix))}\n"
+        f"export FAKE_HAS_MODE_CANDIDATE={'1' if has_candidate else '0'}\n"
+        "export OVERLAY_SOURCE_MARKER=current_run4\n",
+        encoding="utf-8",
+    )
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    ros2 = fake_bin / "ros2"
+    ros2.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [[ \"${1:-}\" == pkg && \"${2:-}\" == prefix ]]; then\n"
+        "  printf '%s/%s\\n' \"$FAKE_INTEGRATION_PREFIX\" \"$3\"\n"
+        "  exit 0\n"
+        "fi\n"
+        "printf '%s|%s|%s|%s|%s\\n' \"$ROS_DOMAIN_ID\" "
+        "\"$ISAAC_NAV_EXPECTED_DOMAIN_ID\" "
+        "\"$BIO_NAV_RUN4_SHADOW_DOMAIN_ID\" "
+        "\"$OVERLAY_SOURCE_MARKER\" \"$*\"\n",
+        encoding="utf-8",
+    )
+    ros2.chmod(0o755)
+    python = fake_bin / "python3"
+    python.write_text(
+        "#!/usr/bin/env bash\n"
+        "[[ \"$*\" == *CognitivePoseModeCandidate* ]] || exit 3\n"
+        "[[ \"${FAKE_HAS_MODE_CANDIDATE:-0}\" == 1 ]] || exit 1\n",
+        encoding="utf-8",
+    )
+    python.chmod(0o755)
+
+    env = _domain_clean_env()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    return scripts / WRAPPER.name, integration, setup, env
 
 
 def test_plan_freezes_run4_identity_and_shadow_only_policy():
@@ -86,41 +146,12 @@ def test_server_and_bridge_dry_run_pass_the_same_candidate_manifest(tmp_path):
 
 
 def test_bridge_uses_selected_domain_for_common_and_ros2(tmp_path):
-    project = tmp_path / "module3"
-    scripts = project / "scripts"
-    (scripts / "lib").mkdir(parents=True)
-    shutil.copy2(WRAPPER, scripts / WRAPPER.name)
-    (scripts / "lib/common.sh").write_text(
-        "#!/usr/bin/env bash\nsource_ros() { :; }\n",
-        encoding="utf-8",
-    )
-
-    integration = tmp_path / "integration"
-    manifest = (
-        integration
-        / "ros2_ws/src/bio_nav_ros_bridge/config/kujiale_0026_run4_read_only_shadow_candidate.json"
-    )
-    manifest.parent.mkdir(parents=True)
-    manifest.write_text("{}\n", encoding="utf-8")
-
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    ros2 = fake_bin / "ros2"
-    ros2.write_text(
-        "#!/usr/bin/env bash\n"
-        "printf '%s|%s|%s|%s\\n' \"$ROS_DOMAIN_ID\" "
-        "\"$ISAAC_NAV_EXPECTED_DOMAIN_ID\" "
-        "\"$BIO_NAV_RUN4_SHADOW_DOMAIN_ID\" \"$*\"\n",
-        encoding="utf-8",
-    )
-    ros2.chmod(0o755)
-
-    env = _domain_clean_env()
-    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    wrapper, integration, setup, env = _fake_runtime_overlay(tmp_path)
+    env["BIO_NAV_INTEGRATION_SETUP"] = str(setup)
     result = subprocess.run(
         [
             "bash",
-            str(scripts / WRAPPER.name),
+            str(wrapper),
             "--domain",
             "151",
             "--integration-root",
@@ -134,10 +165,55 @@ def test_bridge_uses_selected_domain_for_common_and_ros2(tmp_path):
         env=env,
     )
 
-    assert result.stdout.startswith("151|151|151|launch bio_nav_ros_bridge ")
+    assert result.stdout.startswith(
+        "151|151|151|current_run4|launch bio_nav_ros_bridge "
+    )
     assert "startup_profile:=estimated_shadow" in result.stdout
     assert "localization_supervisor_mode:=shadow" in result.stdout
     assert "extra_bridge_arg:=value" in result.stdout
+
+
+def test_stale_overlay_missing_mode_candidate_fails_before_bridge(tmp_path):
+    wrapper, integration, setup, env = _fake_runtime_overlay(
+        tmp_path, has_candidate=False
+    )
+    result = subprocess.run(
+        [
+            "bash",
+            str(wrapper),
+            "--integration-root",
+            str(integration),
+            "--integration-setup",
+            str(setup),
+            "bridge",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode == 2
+    assert "does not provide CognitivePoseModeCandidate" in result.stderr
+    assert "launch bio_nav_ros_bridge" not in result.stdout
+
+
+def test_live_component_requires_explicit_integration_setup(tmp_path):
+    wrapper, integration, _, env = _fake_runtime_overlay(tmp_path)
+    result = subprocess.run(
+        [
+            "bash",
+            str(wrapper),
+            "--integration-root",
+            str(integration),
+            "bridge",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode == 2
+    assert "BIO_NAV_INTEGRATION_SETUP or --integration-setup is required" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -218,3 +294,6 @@ def test_wrapper_has_valid_bash_syntax_and_no_active_arm_entrypoint():
     assert "run_isaac.sh" not in source
     assert "run_ros.sh" not in source
     assert "goal runner" in source
+    assert source.count("preflight_integration_overlay") == 4
+    assert "from bio_nav_interfaces.msg import CognitivePoseModeCandidate" in source
+    assert 'ros2 pkg prefix "${package}"' in source

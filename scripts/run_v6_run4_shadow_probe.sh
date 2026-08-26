@@ -16,6 +16,7 @@ Options:
   --domain ID              ROS domain in [0,232]
   --duration SEC           bounded recorder duration (default: 20)
   --integration-root PATH  Integration checkout containing the Run4 manifest
+  --integration-setup PATH explicit current Integration setup.bash/local_setup.bash
   --module2-root PATH      Module2 checkout used by the candidate server
   --dry-run                print the exact command without executing it
 
@@ -30,6 +31,7 @@ run_root="${BIO_NAV_RUN4_SHADOW_RUN_ROOT:-/mnt/nas_home/Bio_Nav_Data/experiments
 domain_id="${BIO_NAV_RUN4_SHADOW_DOMAIN_ID:-152}"
 duration_s="${BIO_NAV_RUN4_SHADOW_DURATION_S:-20}"
 integration_root="${BIO_NAV_INTEGRATION_ROOT:-/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration}"
+integration_setup="${BIO_NAV_INTEGRATION_SETUP:-}"
 module2_root="${BIO_NAV_MODULE2_V310_ROOT:-/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module2}"
 dry_run=false
 
@@ -53,6 +55,11 @@ while (($# > 0)); do
     --integration-root)
       (($# >= 2)) || { usage >&2; exit 2; }
       integration_root="$2"
+      shift 2
+      ;;
+    --integration-setup)
+      (($# >= 2)) || { usage >&2; exit 2; }
+      integration_setup="$2"
       shift 2
       ;;
     --module2-root)
@@ -132,6 +139,40 @@ require_live_file() {
   }
 }
 
+preflight_integration_overlay() {
+  [[ -n "${integration_setup}" ]] || {
+    echo "BIO_NAV_INTEGRATION_SETUP or --integration-setup is required" >&2
+    exit 2
+  }
+  require_live_file "${integration_setup}"
+
+  export BIO_NAV_INTEGRATION_SETUP="${integration_setup}"
+  # shellcheck source=lib/common.sh
+  source "${script_dir}/lib/common.sh"
+  source_ros --require-integration-underlay
+
+  local expected_root package prefix prefix_real
+  expected_root="$(readlink -f "${integration_root}")"
+  for package in bio_nav_interfaces bio_nav_ros_bridge; do
+    prefix="$(ros2 pkg prefix "${package}" 2>/dev/null || true)"
+    [[ -n "${prefix}" ]] || {
+      echo "${package} is unavailable after sourcing ${integration_setup}" >&2
+      exit 2
+    }
+    prefix_real="$(readlink -f "${prefix}")"
+    [[ "${prefix_real}" == "${expected_root}"/* ]] || {
+      echo "${package} resolved outside ${expected_root}: ${prefix_real}" >&2
+      exit 2
+    }
+  done
+
+  if ! "${BIO_NAV_RUN4_SHADOW_PYTHON:-python3}" -c \
+      'from bio_nav_interfaces.msg import CognitivePoseModeCandidate' 2>/dev/null; then
+    echo "bio_nav_interfaces from ${integration_setup} does not provide CognitivePoseModeCandidate" >&2
+    exit 2
+  fi
+}
+
 server_command=(
   "${server_entry}"
   --candidate-manifest "${candidate_manifest}"
@@ -170,6 +211,7 @@ case "${component}" in
     cat <<EOF
 status=T2_FAIL_KEEP_SHADOW_ONLY
 qualification=NOT_QUALIFIED
+integration_setup=${integration_setup:-REQUIRED}
 probe_config=${probe_config}
 candidate_manifest=${candidate_manifest}
 expected_manifest_status=${expected_manifest_status}
@@ -195,6 +237,7 @@ EOF
     require_live_file "${candidate_manifest}"
     require_live_file "${server_entry}"
     if [[ "${dry_run}" == false ]]; then
+      preflight_integration_overlay
       mkdir -p -m 700 "$(dirname -- "${socket_path}")"
     fi
     export BIO_NAV_MODULE2_V310_ROOT="${module2_root}"
@@ -203,17 +246,13 @@ EOF
   bridge)
     require_live_file "${candidate_manifest}"
     if [[ "${dry_run}" == false ]]; then
-      # shellcheck source=lib/common.sh
-      source "${script_dir}/lib/common.sh"
-      source_ros --require-integration-underlay
+      preflight_integration_overlay
     fi
     run_command "${bridge_command[@]}" "$@"
     ;;
   record)
     if [[ "${dry_run}" == false ]]; then
-      # shellcheck source=lib/common.sh
-      source "${script_dir}/lib/common.sh"
-      source_ros --require-integration-underlay
+      preflight_integration_overlay
       mkdir -p "${run_root}/rosbag"
       [[ ! -e "${bag_path}" ]] || {
         echo "refusing to overwrite ${bag_path}" >&2
