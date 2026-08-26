@@ -20,6 +20,7 @@ SCHEMA_VERSION = "bio_nav_v6_single_dynamic_low_obstacle_v1"
 DYNAMIC_STATE_TOPIC = "/experiment/obstacles/state"
 ARM_MODES = {"M1": "M1", "M3": "M3", "M2-fallback": "M2"}
 VISIBLE_ACTOR_STATES = {"moving", "dwell", "clearing", "parked", "safety_yield"}
+REMOVED_ACTOR_STATES = {"retired", "guard_aborted"}
 FORBIDDEN_ACTOR_STATES = {"safety_yield", "guard_aborted"}
 
 
@@ -466,13 +467,15 @@ def old_position_clearance(
         ]
         actor_row = max(actor_rows, key=lambda row: int(row["stamp_ns"])) \
             if actor_rows else None
-        actor_intersects = (
-            actor_row is None
-            or actor_row.get("state") not in VISIBLE_ACTOR_STATES
-            or _aabb_intersects_old_position(
+        actor_state = actor_row.get("state") if actor_row is not None else None
+        if actor_state in REMOVED_ACTOR_STATES:
+            actor_intersects = False
+        elif actor_state in VISIBLE_ACTOR_STATES:
+            actor_intersects = _aabb_intersects_old_position(
                 actor_row["position"], actor_row["size"], start, size
             )
-        )
+        else:
+            actor_intersects = True
         candidate_intersects = any(
             _candidate_intersects_old_position(candidate, start, size)
             for candidate in candidates

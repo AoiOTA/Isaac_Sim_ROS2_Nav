@@ -314,6 +314,91 @@ def test_local_old_aabb_outside_window_passes_with_current_no_cells_status():
     assert evaluate_evidence(load_experiment(CONFIG), "M3", evidence)["verdict"] == "PASS"
 
 
+def _terminal_clearance(state="retired", *, status_sequence=8, active_cells=0):
+    timeline = [
+        {"stamp_ns": 1_000_000_000, "state": "moving",
+         "position": [-0.90, -0.35, 0.08], "size": [0.30, 0.30, 0.16]},
+        {"stamp_ns": 1_500_000_000, "state": state,
+         "position": [-1.25, -0.35, 0.08], "size": [0.30, 0.30, 0.16]},
+    ]
+    records = [
+        _typed_source(2_000_000_000, 8, []),
+        _layer_status(
+            "global", 2_100_000_000, status_sequence,
+            active_cells=active_cells,
+        ),
+        _layer_status(
+            "local", 2_100_000_000, status_sequence,
+            active_cells=active_cells,
+        ),
+    ]
+    return old_position_clearance(
+        records, timeline,
+        {"start": [-1.25, -0.35, 0.08], "size": [0.30, 0.30, 0.16]},
+        10,
+    )
+
+
+def test_retired_actor_empty_source_and_current_zero_consumers_passes():
+    result = _terminal_clearance()
+
+    assert result["source"]["candidate_count"] == 0
+    assert result["source"]["actor_intersects_old_aabb"] is False
+    assert result["source"]["geometry_cleared"] is True
+    assert result["consumers"]["global"]["private_layer_cleared"] is True
+    assert result["consumers"]["local"]["private_layer_cleared"] is True
+    evidence = _evidence("M3")
+    evidence["old_position_clearance"] = result
+    assert evaluate_evidence(load_experiment(CONFIG), "M3", evidence)["verdict"] == "PASS"
+
+
+def test_guard_aborted_is_also_schema_defined_collision_off_geometry():
+    result = _terminal_clearance("guard_aborted")
+
+    assert result["source"]["actor_intersects_old_aabb"] is False
+    assert result["source"]["geometry_cleared"] is True
+
+
+@pytest.mark.parametrize(
+    ("status_sequence", "active_cells", "reason"),
+    [
+        (7, 0, "global_old_position_consumer_status_stale_or_older"),
+        (8, 1, "global_old_position_private_cells_remain"),
+    ],
+)
+def test_retired_actor_still_requires_current_zero_consumers(
+    status_sequence, active_cells, reason,
+):
+    evidence = _evidence("M3")
+    evidence["old_position_clearance"] = _terminal_clearance(
+        status_sequence=status_sequence, active_cells=active_cells
+    )
+
+    result = evaluate_evidence(load_experiment(CONFIG), "M3", evidence)
+    assert result["verdict"] == "FAIL"
+    assert reason in result["reasons"]
+
+
+@pytest.mark.parametrize("state", [None, "", "future_unknown_state"])
+def test_missing_or_unknown_actor_state_remains_fail_closed(state):
+    evidence = _evidence("M3")
+    evidence["old_position_clearance"] = _terminal_clearance(state)
+
+    result = evaluate_evidence(load_experiment(CONFIG), "M3", evidence)
+    assert result["verdict"] == "FAIL"
+    assert "old_source_actor_geometry_intersects_old_aabb" in result["reasons"]
+
+
+@pytest.mark.parametrize("state", ["moving", "parked"])
+def test_last_visible_actor_pose_at_old_aabb_fails(state):
+    evidence = _evidence("M3")
+    evidence["old_position_clearance"] = _terminal_clearance(state)
+
+    result = evaluate_evidence(load_experiment(CONFIG), "M3", evidence)
+    assert result["verdict"] == "FAIL"
+    assert "old_source_actor_geometry_intersects_old_aabb" in result["reasons"]
+
+
 @pytest.mark.parametrize("arm_label", ["M1", "M3", "M2-fallback"])
 def test_focused_fake_evidence_passes_each_supported_arm(arm_label):
     experiment = load_experiment(CONFIG)
