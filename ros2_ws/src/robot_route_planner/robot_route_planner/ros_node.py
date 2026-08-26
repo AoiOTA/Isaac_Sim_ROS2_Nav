@@ -232,17 +232,6 @@ class RouteInputGeneration:
 
 
 @dataclass(frozen=True)
-class CognitiveConstraintsGeneration:
-    """Static map/GVG identity independent of route actuator intent."""
-
-    gate_generation: int | None
-    reset_generation: int
-    graph_generation: int
-    graph_id: str
-    graph_revision: int
-
-
-@dataclass(frozen=True)
 class GraphSwitchGeneration:
     switch_generation: int
     route_request_id: int | None
@@ -654,10 +643,9 @@ class RouteCoordinator:
         self.latest_pose_stamp_ns: int | None = None
         self.latest_global_costmap: CostmapSnapshot | None = None
         self.live_map_version: str | None = None
-        # Latest /map grid received before the completion-owned GVG reassert;
-        # consumed once that static identity is safe to publish.
+        # Latest /map grid received while the reset barrier held; replayed
+        # once when the barrier opens.
         self._deferred_occupancy_map = None
-        self._last_cognitive_constraints_publication = None
         self.cognitive_constraints_cache = CognitiveConstraintsCache()
         self.cognitive_constraints_override_file = str(
             node.get_parameter("cognitive_constraints_override_file").value
@@ -932,66 +920,6 @@ class RouteCoordinator:
         return bool(
             not self._reset_barrier_is_held()
             and generation == self._route_input_generation_locked()
-        )
-
-    def _completed_reset_constraints_generation_locked(self) -> int | None:
-        """Return the sole HOLD generation allowed to publish static constraints."""
-
-        if not self._reset_barrier_is_held():
-            return None
-        status = getattr(self, "reset_status_snapshot", None)
-        intent = getattr(self, "reset_intent_generation", None)
-        completed = getattr(self, "reset_event_completed_generation", None)
-        graph = getattr(self, "graph", None)
-        desired = getattr(self, "desired_graph", None)
-        gvg = getattr(self, "gvg_graph", None)
-        if status is None or graph is None or desired is None or gvg is None:
-            return None
-        generation = int(status.generation)
-        gvg_identity = self._graph_identity(gvg)
-        return generation if bool(
-            getattr(self, "reset_status_authority_seen", False)
-            and bool(status.held)
-            and status.reason in {"hold", "reset_complete"}
-            and getattr(self, "reset_status_generation", None) == generation
-            and intent == generation
-            and completed == generation
-            and bool(getattr(self, "reset_ready_pending", False))
-            and bool(getattr(self, "graph_coherent", False))
-            and not bool(getattr(self, "graph_reassert_required", False))
-            and getattr(self, "graph_transaction_generation", None) is None
-            and getattr(self, "graph_retry_key", None) is None
-            and getattr(self, "graph_retry_due_steady_s", None) is None
-            # Reset clears region selection and its tick remains fenced. Only
-            # the global-static/fixed-scene contract has no pose dependency.
-            and getattr(self, "region_selector", None) is None
-            and self._graph_identity(graph) == gvg_identity
-            and self._graph_identity(desired) == gvg_identity
-        ) else None
-
-    def _cognitive_constraints_generation_locked(
-        self,
-    ) -> CognitiveConstraintsGeneration:
-        status = getattr(self, "reset_status_snapshot", None)
-        graph = self.graph
-        return CognitiveConstraintsGeneration(
-            None if status is None else int(status.generation),
-            int(getattr(self, "reset_generation", 0)),
-            int(getattr(self, "graph_generation", 0)),
-            str(graph.graph_id),
-            int(graph.revision),
-        )
-
-    def _cognitive_constraints_generation_is_current_locked(
-        self, generation: CognitiveConstraintsGeneration
-    ) -> bool:
-        if generation != self._cognitive_constraints_generation_locked():
-            return False
-        if not self._reset_barrier_is_held():
-            return True
-        return (
-            self._completed_reset_constraints_generation_locked()
-            == generation.gate_generation
         )
 
     def _reset_reassert_is_current_locked(
@@ -2130,12 +2058,9 @@ class RouteCoordinator:
         if complete:
             self._publish_reset_completion(completion_generation)
         if complete and not self._reset_barrier_is_held():
-            # Gate-less deployments have no completion-owned HOLD/reassert
-            # snapshot; retain their fresh-reset static republish behavior.
-            if getattr(self, "reset_status_authority_seen", False):
-                self._refresh_constraints_after_barrier_open()
-            else:
-                self._publish_cognitive_constraints()
+            # Gate-less open: the same post-HOLD constraint refresh as the
+            # gate status release path.
+            self._refresh_constraints_after_barrier_open()
         if failure is not None:
             self.node.get_logger().error(f"reset event held fail-closed: {failure}")
 
@@ -2769,22 +2694,14 @@ class RouteCoordinator:
             self._try_deferred_structural_rebuild()
             return
         with self._route_output_lock():
-            refresh_completed_reset_constraints = False
             with self._route_state_lock():
                 if not self._route_input_is_current_locked(output_generation):
                     if commit_was_reset_reassert:
                         # The reassert committed while HOLD still fences
-                        # route outputs. Its coherent GVG identity may publish
-                        # one completion-owned static constraint snapshot.
+                        # outputs; the release of this generation publishes
+                        # the single READY for the reset cycle.
                         self.reset_ready_pending = True
-                        refresh_completed_reset_constraints = True
-                    route_output_current = False
-                else:
-                    route_output_current = True
-            if not route_output_current:
-                if refresh_completed_reset_constraints:
-                    self._refresh_constraints_after_completed_reset()
-                return
+                    return
             if fallback and pending_outcome is not None:
                 previous_feedback, validated_edge_id, candidate_edge_id = (
                     pending_outcome
@@ -2985,15 +2902,12 @@ class RouteCoordinator:
         """Bind cognitive constraints to the exact live ROS map bytes."""
 
         with self._route_state_lock():
-            if (
-                self._reset_barrier_is_held()
-                and self._completed_reset_constraints_generation_locked() is None
-            ):
-                # Active reset may still expose the old cognitive graph. Keep
-                # only the latest grid until completion owns a coherent GVG.
+            if self._reset_barrier_is_held():
+                # The map cannot be bound while HOLD fences outputs; defer
+                # the latest grid and replay the binding at barrier open.
                 self._deferred_occupancy_map = message
                 return
-            input_generation = self._cognitive_constraints_generation_locked()
+            input_generation = self._route_input_generation_locked()
             structural_map = self.map
         accepted = False
         failure = None
@@ -3030,9 +2944,7 @@ class RouteCoordinator:
             failure = exc
         with self._route_state_lock():
             if (
-                not self._cognitive_constraints_generation_is_current_locked(
-                    input_generation
-                )
+                not self._route_input_is_current_locked(input_generation)
                 or self.map is not structural_map
             ):
                 return
@@ -3044,47 +2956,39 @@ class RouteCoordinator:
                 self.live_map_version = None
                 self.cognitive_constraints_cache.invalidate()
         if accepted:
-            self._publish_cognitive_constraints(expected_input=input_generation)
+            self._publish_cognitive_constraints_if_input_current(input_generation)
         else:
             self.node.get_logger().warning(
                 f"cognitive map rejected: {failure}"
             )
 
-    def _refresh_constraints_after_completed_reset(self) -> None:
-        """Publish one completion-owned GVG snapshot while HOLD remains closed."""
+    def _refresh_constraints_after_barrier_open(self) -> None:
+        """Feed the constraint chain when the reset barrier opens.
 
+        A latched /map delivered during HOLD is deferred instead of dropped;
+        replay its binding (which publishes on accept).  Without a deferred
+        grid, re-publish the constraints for the already-bound map.
+        """
         with self._route_state_lock():
-            if self._completed_reset_constraints_generation_locked() is None:
-                return
             deferred = getattr(self, "_deferred_occupancy_map", None)
             self._deferred_occupancy_map = None
-            generation = self._cognitive_constraints_generation_locked()
         if deferred is not None:
             self._on_occupancy_map(deferred)
         else:
-            self._publish_cognitive_constraints(expected_input=generation)
-
-    def _refresh_constraints_after_barrier_open(self) -> None:
-        """Consume only a map newer than the completed-HOLD snapshot."""
-
-        with self._route_state_lock():
-            deferred = getattr(self, "_deferred_occupancy_map", None)
-            self._deferred_occupancy_map = None
-        if deferred is not None:
-            self._on_occupancy_map(deferred)
+            self._publish_cognitive_constraints()
 
     def _publish_cognitive_constraints(
-        self, *, expected_input: CognitiveConstraintsGeneration | None = None
+        self, *, expected_input: RouteInputGeneration | None = None
     ) -> None:
         with self._route_state_lock():
+            if self._reset_barrier_is_held():
+                return
             input_generation = (
-                self._cognitive_constraints_generation_locked()
+                self._route_input_generation_locked()
                 if expected_input is None
                 else expected_input
             )
-            if not self._cognitive_constraints_generation_is_current_locked(
-                input_generation
-            ):
+            if not self._route_input_is_current_locked(input_generation):
                 return
             live_map_version = getattr(self, "live_map_version", None)
             selector = getattr(self, "region_selector", None)
@@ -3100,19 +3004,6 @@ class RouteCoordinator:
                 graph_identity[1],
                 None if region is None else region.region_id,
             )
-            publication_key = (
-                input_generation.gate_generation,
-                input_generation.reset_generation,
-                live_map_version,
-                graph_identity[0],
-                graph_identity[1],
-                None if region is None else region.region_id,
-            )
-            if (
-                getattr(self, "_last_cognitive_constraints_publication", None)
-                == publication_key
-            ):
-                return
             value = self.cognitive_constraints_cache.values.get(cache_key)
             cache_miss = value is None
         transform = (
@@ -3142,16 +3033,11 @@ class RouteCoordinator:
                     else self.region_selector.current
                 )
                 if (
-                    not self._cognitive_constraints_generation_is_current_locked(
-                        input_generation
-                    )
+                    not self._route_input_is_current_locked(input_generation)
                     or self.map is not structural_map
                     or self._graph_identity(self.graph) != graph_identity
                     or self.live_map_version != live_map_version
                     or current_region != region
-                    or getattr(
-                        self, "_last_cognitive_constraints_publication", None
-                    ) == publication_key
                 ):
                     return
                 if cache_miss:
@@ -3182,8 +3068,6 @@ class RouteCoordinator:
             message.stable_duration_s = value.stable_duration_s
             message.persistent_confirmed = value.persistent_confirmed
             self.cognitive_constraints_pub.publish(message)
-            with self._route_state_lock():
-                self._last_cognitive_constraints_publication = publication_key
 
     def _publish_cognitive_cache_parameters(self) -> None:
         from rclpy.parameter import Parameter
