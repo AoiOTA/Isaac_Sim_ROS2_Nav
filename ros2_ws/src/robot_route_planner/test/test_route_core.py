@@ -716,6 +716,183 @@ def _two_by_two_map_and_grid():
     return coordinator_map, grid
 
 
+def _completed_hold_constraints_coordinator():
+    coordinator = _reset_route_coordinator(active=False)
+    coordinator.map, grid = _two_by_two_map_and_grid()
+    coordinator.live_map_version = None
+    coordinator.region_selector = None
+    publications = []
+    coordinator._publish_cognitive_constraints = lambda **kwargs: (
+        publications.append(kwargs.get('expected_input'))
+    )
+
+    coordinator._on_reset_stop_gate_status(_gate_status(2, True, 'hold'))
+    coordinator._on_occupancy_map(grid)
+    coordinator._on_reset_event(None)
+
+    # Model the successful completion-owned GVG reassert commit. Route
+    # outputs remain fenced until the later activation release.
+    coordinator.graph = coordinator.gvg_graph
+    coordinator.desired_graph = coordinator.gvg_graph
+    coordinator.graph_coherent = True
+    coordinator.graph_reassert_required = False
+    coordinator.graph_transaction_generation = None
+    coordinator.graph_retry_key = None
+    coordinator.graph_retry_due_steady_s = None
+    coordinator.reset_ready_pending = True
+    return coordinator, grid, publications
+
+
+def test_active_reset_hold_defers_map_and_keeps_all_route_outputs_zero() -> None:
+    coordinator = _reset_route_coordinator(active=False)
+    coordinator.map, grid = _two_by_two_map_and_grid()
+    coordinator.live_map_version = None
+    constraints_publications = []
+    coordinator._publish_cognitive_constraints = lambda **_kwargs: (
+        constraints_publications.append('constraints')
+    )
+
+    coordinator._on_reset_stop_gate_status(_gate_status(2, True, 'hold'))
+    coordinator._on_occupancy_map(grid)
+
+    assert coordinator.reset_hold_barrier is True
+    assert coordinator.live_map_version is None
+    assert coordinator._deferred_occupancy_map is grid
+    assert constraints_publications == []
+    assert coordinator.goal_complete_pub.messages == []
+    assert coordinator.goal_result_pub.messages == []
+    assert coordinator.context_pub.messages == []
+    assert coordinator.progress_pub.messages == []
+    assert coordinator.lookahead_pub.messages == []
+    assert coordinator.goal_update_pub.messages == []
+    assert coordinator.route_pub.messages == []
+
+
+def test_phase_d_pair3_completed_hold_publishes_gvg_constraints_before_release_once() -> None:
+    coordinator, _grid, publications = _completed_hold_constraints_coordinator()
+
+    # Empty may own completion before the latched status advances from HOLD.
+    assert coordinator.reset_status_snapshot.reason == 'hold'
+    coordinator._refresh_constraints_after_completed_reset()
+
+    assert coordinator.live_map_version is not None
+    assert len(publications) == 1
+    generation = publications[0]
+    assert generation.gate_generation == 2
+    assert generation.reset_generation == coordinator.reset_generation == 1
+    assert (generation.graph_id, generation.graph_revision) == ('physical', 4)
+    assert coordinator.goal_complete_pub.messages == []
+    assert coordinator.goal_result_pub.messages == []
+    assert coordinator.context_pub.messages == []
+    assert coordinator.progress_pub.messages == []
+    assert coordinator.lookahead_pub.messages == []
+    assert coordinator.goal_update_pub.messages == []
+    assert coordinator.route_pub.messages == []
+
+    coordinator._on_reset_stop_gate_status(
+        _gate_status(2, True, 'reset_complete', eligible=2))
+    released = _gate_status(2, False, 'released:activation_gate')
+    coordinator._on_reset_stop_gate_status(released)
+    coordinator._on_reset_stop_gate_status(released)
+
+    assert coordinator.reset_hold_barrier is False
+    assert len(publications) == 1
+
+
+def test_completed_hold_constraints_fail_closed_without_global_static_tile() -> None:
+    coordinator, grid, publications = _completed_hold_constraints_coordinator()
+    coordinator.region_selector = SimpleNamespace(current=None)
+
+    coordinator._refresh_constraints_after_completed_reset()
+
+    assert publications == []
+    assert coordinator.live_map_version is None
+    assert coordinator._deferred_occupancy_map is grid
+
+
+def test_successful_completion_owned_gvg_reassert_refreshes_constraints_in_hold() -> None:
+    coordinator = _reset_route_coordinator(active=False)
+    coordinator.region_selector = None
+    coordinator._on_reset_stop_gate_status(_gate_status(2, True, 'hold'))
+    coordinator._on_reset_event(None)
+    coordinator.gvg_support = SimpleNamespace(geojson={'features': []})
+    coordinator.desired_support = coordinator.gvg_support
+
+    expected_input = coordinator._route_input_generation_locked()
+    desired_key = coordinator._graph_retry_key_locked()
+    switch_context = (
+        'simulation reset requires Route Server GVG',
+        True,
+        None,
+        None,
+        None,
+        2,
+        expected_input,
+        coordinator.reset_generation,
+        desired_key,
+    )
+    generation = SimpleNamespace(
+        reset_generation=coordinator.reset_generation,
+        desired_generation=coordinator.desired_graph_generation,
+        base_graph_generation=coordinator.graph_generation,
+        route_request_id=None,
+    )
+    response = SimpleNamespace(success=True)
+    future = SimpleNamespace(result=lambda: response)
+    coordinator.graph_transaction_generation = generation
+    coordinator.graph_transaction_future = future
+    coordinator.graph_transaction_deadline_steady_s = 1.0
+    coordinator.graph_transaction_kind = 'switch'
+    coordinator.graph_transaction_switch_context = switch_context
+    coordinator.cognitive_graph_switch_pending = True
+    coordinator.cognitive_graph_feedback_pending = None
+    refreshes = []
+    coordinator._refresh_constraints_after_completed_reset = lambda: (
+        refreshes.append('constraints')
+    )
+
+    coordinator._finish_cognitive_graph_switch(
+        future,
+        coordinator.gvg_graph,
+        coordinator.gvg_support,
+        'simulation reset requires Route Server GVG',
+        True,
+        generation=generation,
+        switch_context=switch_context,
+    )
+
+    assert coordinator.reset_hold_barrier is True
+    assert coordinator.graph_coherent is True
+    assert coordinator.graph_reassert_required is False
+    assert coordinator.reset_ready_pending is True
+    assert refreshes == ['constraints']
+    assert coordinator.structural_statuses == []
+
+
+def test_pre_reset_map_worker_cannot_commit_into_new_reset_generation(
+    monkeypatch,
+) -> None:
+    coordinator = _reset_route_coordinator(active=False)
+    coordinator.map, grid = _two_by_two_map_and_grid()
+    coordinator.live_map_version = None
+    publications = []
+    coordinator._publish_cognitive_constraints = lambda **_kwargs: (
+        publications.append('constraints')
+    )
+
+    def cross_reset_generation(**_kwargs):
+        coordinator.reset_generation = 1
+        coordinator.graph_generation += 1
+        return 'stale-map-version'
+
+    monkeypatch.setattr(
+        ros_node_module, 'occupancy_grid_version', cross_reset_generation)
+    coordinator._on_occupancy_map(grid)
+
+    assert coordinator.live_map_version is None
+    assert publications == []
+
+
 def test_fixed_scene_constraints_publish_canonical_map_id_for_shadow_payload() -> None:
     repo = Path(__file__).resolve().parents[4]
     override = (
@@ -739,16 +916,32 @@ def test_fixed_scene_constraints_publish_canonical_map_id_for_shadow_payload() -
             self.to_state = 0
 
     coordinator = RouteCoordinator.__new__(RouteCoordinator)
-    coordinator.reset_hold_barrier = False
-    coordinator.reset_generation = 0
+    coordinator.reset_hold_barrier = True
+    coordinator.reset_generation = 1
     coordinator.request_id = 0
     coordinator.graph_generation = 0
+    coordinator.reset_status_authority_seen = True
+    coordinator.reset_status_generation = 2
+    coordinator.reset_status_snapshot = parse_reset_stop_gate_status(
+        '{"eligible_generation":null,"generation":2,"held":true,'
+        '"reason":"hold"}'
+    )
+    coordinator.reset_intent_generation = 2
+    coordinator.reset_event_completed_generation = 2
+    coordinator.reset_ready_pending = True
     coordinator.live_map_version = "occupancy-sha"
     coordinator.region_selector = None
     coordinator.map = occupancy
     coordinator.graph = SimpleNamespace(
         graph_id="v6_kujiale_isaacgen_v1:gvg_v1", revision=1
     )
+    coordinator.gvg_graph = coordinator.graph
+    coordinator.desired_graph = coordinator.graph
+    coordinator.graph_coherent = True
+    coordinator.graph_reassert_required = False
+    coordinator.graph_transaction_generation = None
+    coordinator.graph_retry_key = None
+    coordinator.graph_retry_due_steady_s = None
     coordinator.defaults = {
         "footprint": {
             "polygon_m": [
@@ -771,6 +964,7 @@ def test_fixed_scene_constraints_publish_canonical_map_id_for_shadow_payload() -
     coordinator.cognitive_constraints_pub = _CapturePublisher()
     coordinator._publish_cognitive_cache_parameters = lambda: None
 
+    coordinator._publish_cognitive_constraints()
     coordinator._publish_cognitive_constraints()
 
     assert len(coordinator.cognitive_constraints_pub.messages) == 1
@@ -813,7 +1007,7 @@ def test_release_replays_map_binding_deferred_during_hold() -> None:
     coordinator.map, grid = _two_by_two_map_and_grid()
     coordinator.live_map_version = None
     constraints_publications = []
-    coordinator._publish_cognitive_constraints = lambda: (
+    coordinator._publish_cognitive_constraints = lambda **_kwargs: (
         constraints_publications.append('constraints')
     )
 
@@ -832,10 +1026,10 @@ def test_release_replays_map_binding_deferred_during_hold() -> None:
     assert constraints_publications == ['constraints']
 
 
-def test_release_re_publishes_constraints_fenced_during_hold() -> None:
+def test_release_without_newer_deferred_map_does_not_duplicate_constraints() -> None:
     coordinator = _reset_route_coordinator(active=False)
     constraints_publications = []
-    coordinator._publish_cognitive_constraints = lambda: (
+    coordinator._publish_cognitive_constraints = lambda **_kwargs: (
         constraints_publications.append('constraints')
     )
 
@@ -847,18 +1041,18 @@ def test_release_re_publishes_constraints_fenced_during_hold() -> None:
     coordinator._on_reset_stop_gate_status(
         _gate_status(2, False, 'released:activation_gate'))
     assert coordinator.reset_hold_barrier is False
-    assert constraints_publications == ['constraints']
+    assert constraints_publications == []
 
     # An exact duplicate release stays idempotent.
     coordinator._on_reset_stop_gate_status(
         coordinator.reset_status_snapshot)
-    assert constraints_publications == ['constraints']
+    assert constraints_publications == []
 
 
-def test_startup_released_baseline_also_publishes_constraints() -> None:
+def test_startup_released_baseline_does_not_duplicate_latched_constraints() -> None:
     coordinator = _startup_reset_route_coordinator()
     constraints_publications = []
-    coordinator._publish_cognitive_constraints = lambda: (
+    coordinator._publish_cognitive_constraints = lambda **_kwargs: (
         constraints_publications.append('constraints')
     )
 
@@ -866,13 +1060,13 @@ def test_startup_released_baseline_also_publishes_constraints() -> None:
         _gate_status(7, False, 'released:activation_gate'))
 
     assert coordinator.reset_hold_barrier is False
-    assert constraints_publications == ['constraints']
+    assert constraints_publications == []
 
 
 def test_gateless_reset_event_open_also_publishes_constraints() -> None:
     coordinator = _reset_route_coordinator(active=False)
     constraints_publications = []
-    coordinator._publish_cognitive_constraints = lambda: (
+    coordinator._publish_cognitive_constraints = lambda **_kwargs: (
         constraints_publications.append('constraints')
     )
 
