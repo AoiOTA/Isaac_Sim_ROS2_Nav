@@ -4,6 +4,7 @@ import pytest
 from robot_bringup.mode_contract import cognitive_nav2_parameters
 from robot_bringup.mode_contract import posegraph_prefix
 from robot_bringup.mode_contract import resolve_ekf_profile
+from robot_bringup.mode_contract import resolve_route_prior_enabled
 from robot_bringup.mode_contract import validate_cognitive_graph_mode
 from robot_bringup.mode_contract import validate_cognitive_profile
 from robot_bringup.mode_contract import validate_mode
@@ -83,6 +84,17 @@ def test_graph_mode_is_an_independent_validated_experiment_axis():
         assert validate_cognitive_graph_mode(mode.upper()) == mode
     with pytest.raises(ValueError, match='cognitive_graph_mode'):
         validate_cognitive_graph_mode('M3')
+
+
+def test_route_prior_auto_preserves_legacy_module2_coupling():
+    assert resolve_route_prior_enabled('auto', True) is True
+    assert resolve_route_prior_enabled('AUTO', 'false') is False
+    assert resolve_route_prior_enabled('true', False) is True
+    assert resolve_route_prior_enabled('false', True) is False
+    with pytest.raises(ValueError, match='route_prior_enabled'):
+        resolve_route_prior_enabled('shadow', True)
+    with pytest.raises(ValueError, match='module2_enabled'):
+        resolve_route_prior_enabled('auto', 'sometimes')
 
 
 def test_final_cognitive_overlay_replaces_the_later_a21_critic_list():

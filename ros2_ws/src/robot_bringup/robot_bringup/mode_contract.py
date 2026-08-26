@@ -30,6 +30,7 @@ NAV2_PROFILES = frozenset({
     'bio_nav_rgbd_risk_static_opt_in'})
 COGNITIVE_PROFILES = frozenset({'M0', 'M1', 'M2', 'M3'})
 COGNITIVE_GRAPH_MODES = frozenset({'gvg', 'shadow', 'hybrid', 'primary'})
+ROUTE_PRIOR_MODES = frozenset({'auto', 'true', 'false'})
 EKF_PROFILES = frozenset({
     'wheel_imu', 'wheel_imu_lidar', 'module1_wheel_imu'})
 _COGNITIVE_PROFILE_CONTRACT = {
@@ -134,6 +135,19 @@ def validate_cognitive_graph_mode(value):
     mode = value.strip().lower()
     _require_choice('cognitive_graph_mode', mode, COGNITIVE_GRAPH_MODES)
     return mode
+
+
+def resolve_route_prior_enabled(value, module2_enabled):
+    """Resolve the independent edge-prior gate with legacy-safe ``auto``."""
+    mode = str(value).strip().lower()
+    _require_choice('route_prior_enabled', mode, ROUTE_PRIOR_MODES)
+    if isinstance(module2_enabled, bool):
+        legacy_enabled = module2_enabled
+    else:
+        normalized = str(module2_enabled).strip().lower()
+        _require_choice('module2_enabled', normalized, {'true', 'false'})
+        legacy_enabled = normalized == 'true'
+    return legacy_enabled if mode == 'auto' else mode == 'true'
 
 
 def resolve_ekf_profile(

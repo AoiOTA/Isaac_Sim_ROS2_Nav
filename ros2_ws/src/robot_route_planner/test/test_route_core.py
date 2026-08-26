@@ -209,6 +209,30 @@ def test_legacy_gvg_prior_timeout_remains_unchanged() -> None:
     assert coordinator.pending_deadline_ns == 1_250_000_000
 
 
+def test_route_prior_gate_is_independent_from_module2_obstacle_enablement() -> None:
+    coordinator = _prior_wait_coordinator(mode='shadow')
+    coordinator.module2_enabled = True
+    coordinator.route_prior_enabled = False
+    coordinator._clear_pending_prior_request()
+
+    assert coordinator._route_prior_is_enabled() is False
+    coordinator._on_priors(_edge_prior_message(
+        request_id=9, stamp_ns=1_000_000_000))
+    assert coordinator.prepared == []
+    assert coordinator.latest_priors == {}
+
+    coordinator.route_prior_enabled = True
+    assert coordinator._route_prior_is_enabled() is True
+
+
+def test_route_prior_gate_defaults_to_legacy_module2_behavior() -> None:
+    coordinator = RouteCoordinator.__new__(RouteCoordinator)
+    coordinator.module2_enabled = True
+    assert coordinator._route_prior_is_enabled() is True
+    coordinator.module2_enabled = False
+    assert coordinator._route_prior_is_enabled() is False
+
+
 def test_prior_from_old_refresh_generation_is_rejected() -> None:
     replans = []
     coordinator = RouteCoordinator.__new__(RouteCoordinator)

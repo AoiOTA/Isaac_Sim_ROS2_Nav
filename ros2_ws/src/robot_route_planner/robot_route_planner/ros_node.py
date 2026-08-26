@@ -468,6 +468,7 @@ class RouteCoordinator:
             ("dynamic_edges_service", "/route_server/DynamicEdgesScorer/adjust_edges"),
             ("set_route_graph_service", "/route_server/set_route_graph"),
             ("cognitive_graph_mode", "gvg"),
+            ("route_prior_enabled", True),
             ("cognitive_graph_topic", "/bio_nav/module2/cognitive_place_graph"),
             ("cognitive_graph_reset_epoch", 0),
             ("cognitive_graph_session_id", ""),
@@ -509,6 +510,9 @@ class RouteCoordinator:
             raise ValueError(
                 "cognitive_graph_mode must be gvg, shadow, hybrid, or primary"
             )
+        self.route_prior_enabled = bool(
+            node.get_parameter("route_prior_enabled").value
+        )
         if self.module2_response_timeout_s < 0.0:
             raise ValueError("module2_response_timeout_s must be non-negative")
         if self.module2_prior_ttl_s <= 0.0:
@@ -2764,15 +2768,21 @@ class RouteCoordinator:
                 or not self._desired_graph_is_coherent_locked()
             ):
                 return
-            module2_enabled = bool(self.module2_enabled)
-            if module2_enabled:
+            route_prior_enabled = self._route_prior_is_enabled()
+            if route_prior_enabled:
                 self._arm_prior_request(int(self._now().nanoseconds))
             else:
                 self._clear_pending_prior_request()
             input_generation = self._route_input_generation_locked()
         self._publish_route_context_if_input_current(input_generation)
-        if not module2_enabled:
+        if not route_prior_enabled:
             self._prepare_route({})
+
+    def _route_prior_is_enabled(self) -> bool:
+        """Keep legacy objects coupled to module2 unless explicitly gated."""
+        return bool(self.module2_enabled) and bool(
+            getattr(self, "route_prior_enabled", True)
+        )
 
     def _fallback_to_gvg_once(
         self,
@@ -3178,7 +3188,8 @@ class RouteCoordinator:
                 "route goal waiting for coherent Route Server graph",
             )
             return
-        if self.module2_enabled:
+        route_prior_enabled = self._route_prior_is_enabled()
+        if route_prior_enabled:
             now_ns = int(self._now().nanoseconds)
             with self._route_state_lock():
                 if not self._route_input_is_current_locked(input_generation):
@@ -3190,7 +3201,7 @@ class RouteCoordinator:
                     return
                 self._clear_pending_prior_request()
         self._publish_route_context_if_input_current(input_generation)
-        if not self.module2_enabled:
+        if not route_prior_enabled:
             self._prepare_route({})
 
     def _arm_prior_request(self, now_ns: int) -> None:
@@ -4090,7 +4101,7 @@ class RouteCoordinator:
                         expired = True
                 pending_goal = self.pending_goal is not None
                 refresh = bool(
-                    self.module2_enabled
+                    self._route_prior_is_enabled()
                     and pending_goal
                     and now_ns - self.last_context_publish_ns
                     >= refresh_period_ns

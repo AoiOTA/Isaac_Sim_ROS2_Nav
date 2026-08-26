@@ -18,6 +18,7 @@ from robot_bringup.interactive_policy import resolve_interactive_selection
 from robot_bringup.interactive_policy import teleop_terminal_command
 from robot_bringup.mode_contract import cognitive_nav2_parameters
 from robot_bringup.mode_contract import resolve_ekf_profile
+from robot_bringup.mode_contract import resolve_route_prior_enabled
 from robot_bringup.mode_contract import validate_cognitive_graph_mode
 from robot_bringup.mode_contract import validate_cognitive_profile
 from robot_bringup.mode_contract import validate_mode
@@ -241,6 +242,14 @@ def _launch_setup(context):
     ) if nav2_profile == 'v6_low_obstacle_isolation' else (
         LaunchConfiguration('module2_enabled').perform(context)
     )
+    try:
+        route_prior_enabled = resolve_route_prior_enabled(
+            LaunchConfiguration('route_prior_enabled').perform(context),
+            module2_enabled,
+        )
+    except ValueError as exc:
+        raise RuntimeError(f'invalid route_prior_enabled: {exc}') from exc
+    route_prior_enabled_value = 'true' if route_prior_enabled else 'false'
     requested_nav2_overlay = LaunchConfiguration(
         'nav2_profile_params_file').perform(context).strip()
     nav2_profile_params_file = Path(requested_nav2_overlay).expanduser() \
@@ -281,6 +290,7 @@ def _launch_setup(context):
         f'cognitive_profile={cognitive_profile.name}, '
         f'module2_enabled={module2_enabled}, '
         f'cognitive_graph_mode={cognitive_graph_mode}, '
+        f'route_prior_enabled={route_prior_enabled_value}, '
         f'controller_frequency='
         f'{nav2_controller_profile.controller_frequency:g}Hz, '
         f'model_dt={nav2_controller_profile.model_dt:g}s, '
@@ -481,6 +491,7 @@ def _launch_setup(context):
                 'module2_prior_ttl_s': LaunchConfiguration(
                     'module2_prior_ttl_s').perform(context),
                 'cognitive_graph_mode': cognitive_graph_mode,
+                'route_prior_enabled': route_prior_enabled_value,
                 'cognitive_constraints_override_file': LaunchConfiguration(
                     'cognitive_constraints_override_file').perform(context),
                 'voxel_grid_topic': (
@@ -692,6 +703,11 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'cognitive_graph_mode', default_value='gvg',
             description='gvg, shadow, hybrid, or primary'),
+        DeclareLaunchArgument(
+            'route_prior_enabled', default_value='auto',
+            description=(
+                'auto preserves legacy module2_enabled coupling; true or '
+                'false independently controls route edge-prior consumption')),
         DeclareLaunchArgument(
             'cognitive_constraints_override_file', default_value='',
             description=(

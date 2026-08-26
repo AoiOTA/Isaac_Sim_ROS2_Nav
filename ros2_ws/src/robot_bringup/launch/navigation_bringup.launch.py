@@ -57,6 +57,8 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'cognitive_graph_mode', default_value='gvg'),
         DeclareLaunchArgument(
+            'route_prior_enabled', default_value='auto'),
+        DeclareLaunchArgument(
             'cognitive_constraints_override_file', default_value=''),
         DeclareLaunchArgument(
             'activation_startup_timeout', default_value='120.0'),
@@ -127,6 +129,8 @@ def generate_launch_description():
                     'module2_prior_ttl_s'),
                 'cognitive_graph_mode': LaunchConfiguration(
                     'cognitive_graph_mode'),
+                'route_prior_enabled': LaunchConfiguration(
+                    'route_prior_enabled'),
                 'cognitive_constraints_override_file': LaunchConfiguration(
                     'cognitive_constraints_override_file'),
                 'activation_startup_timeout': LaunchConfiguration(

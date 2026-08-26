@@ -228,6 +228,7 @@ def generate_launch_description():
         'module2_response_timeout_s')
     module2_prior_ttl_s = LaunchConfiguration('module2_prior_ttl_s')
     cognitive_graph_mode = LaunchConfiguration('cognitive_graph_mode')
+    route_prior_enabled = LaunchConfiguration('route_prior_enabled')
     region_config_file = LaunchConfiguration('region_config_file')
     cognitive_constraints_override_file = LaunchConfiguration(
         'cognitive_constraints_override_file')
@@ -268,6 +269,9 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'cognitive_graph_mode', default_value='gvg',
             description='gvg, shadow, hybrid, or primary'),
+        DeclareLaunchArgument(
+            'route_prior_enabled', default_value='true',
+            description='resolved boolean edge-prior consumption gate'),
         DeclareLaunchArgument('region_config_file', default_value=''),
         DeclareLaunchArgument(
             'cognitive_constraints_override_file', default_value=''),
@@ -399,6 +403,7 @@ def generate_launch_description():
                 'module2_response_timeout_s': module2_response_timeout_s,
                 'module2_prior_ttl_s': module2_prior_ttl_s,
                 'cognitive_graph_mode': cognitive_graph_mode,
+                'route_prior_enabled': route_prior_enabled,
                 'region_config_file': region_config_file,
                 'cognitive_constraints_override_file': (
                     cognitive_constraints_override_file),
