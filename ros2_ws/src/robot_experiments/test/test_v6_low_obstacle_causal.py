@@ -2768,12 +2768,14 @@ def _start_fake_phase_f_stack(
     scripts = project / "scripts"
     (scripts / "lib").mkdir(parents=True)
     shutil.copy2(root / "scripts/run_v6_low_obstacle_phase_f_stack.sh", scripts)
+    shutil.copy2(root / "scripts/lib/v6_dynamic_startup.sh", scripts / "lib")
     (scripts / "lib/common.sh").write_text(
         """#!/usr/bin/env bash
 export PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 require_directory() { [[ -d "$1" ]]; }
 require_file() { [[ -f "$1" ]]; }
 source_ros() { :; }
+validate_v6_dynamic_integration_overlay() { :; }
 """,
         encoding="utf-8",
     )
@@ -3105,12 +3107,14 @@ def test_phase_f_stack_trap_cleans_its_nested_new_process_group(tmp_path):
     scripts = project / "scripts"
     (scripts / "lib").mkdir(parents=True)
     shutil.copy2(root / "scripts/run_v6_low_obstacle_phase_f_stack.sh", scripts)
+    shutil.copy2(root / "scripts/lib/v6_dynamic_startup.sh", scripts / "lib")
     (scripts / "lib/common.sh").write_text(
         """#!/usr/bin/env bash
 export PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 require_directory() { [[ -d "$1" ]]; }
 require_file() { [[ -f "$1" ]]; }
 source_ros() { :; }
+validate_v6_dynamic_integration_overlay() { :; }
 """,
         encoding="utf-8",
     )
