@@ -1054,6 +1054,7 @@ def test_phase_f_mixed_argv_uses_occupancy_map_without_posegraph(tmp_path, arm):
         "localization_map_contract:=occupancy_only",
         "localization_owner:=amcl",
         f"spawn_poses_file:={project}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml",
+        "spawn_pose_name:=long_route_start_g1",
         f"map_file:={project}/data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml",
         f"route_graph_file:={project}/ros2_ws/src/robot_route_planner/config/v6_kujiale_isaacgen_v1_gvg_v1.geojson",
         "interactive:=false",

@@ -64,6 +64,13 @@ run_ros_profile() {
     shift
   fi
   reject_phase_f_substrate_override "$@"
+  if [[ "${substrate_odometry_mode}" == "mixed" ]]; then
+    local argument
+    for argument in "$@"; do
+      [[ "${argument}" != spawn_pose_name:=* ]] || die \
+        "Phase F fixes the Phase-B G1 spawn; rejected override: ${argument}"
+    done
+  fi
   [[ "${cognitive_profile}" =~ ^M[0-3]$ ]] || die \
     "V6 cognitive profile must be M0, M1, M2, or M3; got: ${cognitive_profile}"
   if [[ "${odometry_defaults}" == "rf2o-shadow" ]]; then
@@ -85,6 +92,7 @@ run_ros_profile() {
       localization_map_contract:=occupancy_only
       localization_owner:=amcl
       "spawn_poses_file:=${PROJECT_ROOT}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml"
+      spawn_pose_name:=long_route_start_g1
       "map_file:=${PROJECT_ROOT}/data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml"
       "route_graph_file:=${PROJECT_ROOT}/ros2_ws/src/robot_route_planner/config/v6_kujiale_isaacgen_v1_gvg_v1.geojson"
     )

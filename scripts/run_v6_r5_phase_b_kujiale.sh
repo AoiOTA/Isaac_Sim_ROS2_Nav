@@ -11,7 +11,8 @@ usage: run_v6_r5_phase_b_kujiale.sh [--run-root PATH] [--domain ID]
 
 Run the components in separate terminals in this order:
   1. ros
-  2. isaac (waits for /wheel_odometry/reset and /set_pose before starting)
+  2. isaac (waits for /wheel_odometry/reset before starting; Isaac then
+     bootstraps /clock and requires /set_pose in its bounded startup reset)
   3. module1-shadow
   4. bridge
   5. record
@@ -101,7 +102,11 @@ wait_for_ros_reset_services() {
   timeout_sec="${BIO_NAV_PHASE_B_ROS_READY_TIMEOUT_SEC:-120}"
   [[ "${timeout_sec}" =~ ^[1-9][0-9]*$ ]] \
     || die "BIO_NAV_PHASE_B_ROS_READY_TIMEOUT_SEC must be a positive integer"
-  required_services=(/wheel_odometry/reset /set_pose)
+  # The mixed EKF waits for Isaac simulation time before advertising
+  # /set_pose.  Pre-Isaac readiness therefore stops at the wheel reset
+  # service; Isaac's bootstrap-clock startup reset performs the bounded,
+  # required discovery of both wheel and EKF reset services.
+  required_services=(/wheel_odometry/reset)
   deadline=$((SECONDS + timeout_sec))
   while true; do
     missing=()
@@ -110,7 +115,7 @@ wait_for_ros_reset_services() {
       [[ -n "${service_type}" ]] || missing+=("${service}")
     done
     if ((${#missing[@]} == 0)); then
-      log_info "Phase B ROS reset services are ready; starting Isaac"
+      log_info "Phase B pre-Isaac ROS reset service is ready; starting Isaac"
       return 0
     fi
     ((SECONDS < deadline)) || die \
