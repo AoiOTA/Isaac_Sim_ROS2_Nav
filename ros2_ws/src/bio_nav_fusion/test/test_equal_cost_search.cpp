@@ -1096,6 +1096,69 @@ TEST(CognitiveRiskCritic, duplicate_and_overlapping_candidates_are_count_invaria
     single_score);
 }
 
+TEST(CognitiveRiskCritic, repeated_identical_poses_do_not_increase_obstacle_score)
+{
+  using Critic = bio_nav_fusion::CognitiveRiskCritic;
+  const std::array<double, 5> no_direction{};
+  const Critic::ObstacleSample obstacle{0.0, 0.0, 0.2, 0.7};
+  const std::vector<std::array<double, 3>> twenty_poses(
+    20U, std::array<double, 3>{0.0, 0.0, 0.0});
+  const std::vector<std::array<double, 3>> forty_poses(
+    40U, std::array<double, 3>{0.0, 0.0, 0.0});
+  const auto score_twenty = Critic::trajectoryScore(
+    twenty_poses, {obstacle}, no_direction, 0.0, 0.0, 0.0,
+    4.0, 0.0, 0.0, 0.0);
+  const auto score_forty = Critic::trajectoryScore(
+    forty_poses, {obstacle}, no_direction, 0.0, 0.0, 0.0,
+    4.0, 0.0, 0.0, 0.0);
+  EXPECT_NEAR(score_twenty, score_forty, 1.0e-12);
+  EXPECT_NEAR(score_twenty, 5.6, 1.0e-12);
+}
+
+TEST(CognitiveRiskCritic, obstacle_score_is_stable_across_horizon_discretization)
+{
+  using Critic = bio_nav_fusion::CognitiveRiskCritic;
+  const std::array<double, 5> no_direction{};
+  const Critic::ObstacleSample obstacle{1.0, 0.0, 0.2, 1.0};
+  const auto sample_path = [](std::size_t samples, double y) {
+      std::vector<std::array<double, 3>> trajectory;
+      trajectory.reserve(samples);
+      for (std::size_t index = 0; index < samples; ++index) {
+        const double x = (static_cast<double>(index) + 0.5) * 2.0 /
+          static_cast<double>(samples);
+        trajectory.push_back({x, y, 0.0});
+      }
+      return trajectory;
+    };
+  const auto score_twenty = Critic::trajectoryScore(
+    sample_path(20U, 0.5), {obstacle}, no_direction, 0.0, 0.0, 0.0,
+    4.0, 0.0, 0.0, 0.0);
+  const auto score_forty = Critic::trajectoryScore(
+    sample_path(40U, 0.5), {obstacle}, no_direction, 0.0, 0.0, 0.0,
+    4.0, 0.0, 0.0, 0.0);
+  EXPECT_NEAR(score_twenty, score_forty, 0.01);
+}
+
+TEST(CognitiveRiskCritic, far_near_and_collision_obstacle_scores_are_ordered)
+{
+  using Critic = bio_nav_fusion::CognitiveRiskCritic;
+  const std::array<double, 5> no_direction{};
+  const Critic::ObstacleSample obstacle{0.0, 0.0, 0.2, 1.0};
+  const auto score_at = [&](double y) {
+      const std::vector<std::array<double, 3>> trajectory{
+        {0.0, y, 0.0}, {0.0, y, 0.0}};
+      return Critic::trajectoryScore(
+        trajectory, {obstacle}, no_direction, 0.0, 0.0, 0.0,
+        4.0, 0.0, 0.0, 0.0);
+    };
+  const auto far_score = score_at(2.0);
+  const auto near_score = score_at(0.5);
+  const auto collision_score = score_at(0.0);
+  EXPECT_LT(far_score, near_score);
+  EXPECT_LT(near_score, collision_score);
+  EXPECT_DOUBLE_EQ(collision_score, 8.0);
+}
+
 TEST(CognitiveRiskCritic, nonoverlapping_candidates_apply_at_their_own_time_steps)
 {
   using Critic = bio_nav_fusion::CognitiveRiskCritic;
@@ -1115,10 +1178,10 @@ TEST(CognitiveRiskCritic, nonoverlapping_candidates_apply_at_their_own_time_step
     1.0, 0.0, 0.0, 0.0);
   EXPECT_GT(both, first_only);
   EXPECT_GT(both, second_only);
-  EXPECT_DOUBLE_EQ(both, 4.0);
+  EXPECT_DOUBLE_EQ(both, 2.0);
 }
 
-TEST(CognitiveRiskCritic, max_per_step_score_is_finite_and_respects_obstacle_weight)
+TEST(CognitiveRiskCritic, max_per_step_mean_score_is_finite_and_respects_obstacle_weight)
 {
   using Critic = bio_nav_fusion::CognitiveRiskCritic;
   const std::vector<std::array<double, 3>> trajectory{{0.0, 0.0, 0.0}};
@@ -1879,7 +1942,7 @@ TEST(CognitiveRiskCritic, applied_status_tracks_real_positive_component_deltas)
   EXPECT_NE(obstacle_status.fallback_reason.find("obstacle_applied=true"), std::string::npos);
   EXPECT_NE(obstacle_status.fallback_reason.find("obstacle_count=1"), std::string::npos);
   EXPECT_NE(
-    obstacle_status.fallback_reason.find("aggregation=max_per_step"),
+    obstacle_status.fallback_reason.find("aggregation=max_per_step_mean_horizon"),
     std::string::npos);
   const std::string maximum_key = "maximum_obstacle_cost_delta=";
   const auto maximum_start = obstacle_status.fallback_reason.find(maximum_key);

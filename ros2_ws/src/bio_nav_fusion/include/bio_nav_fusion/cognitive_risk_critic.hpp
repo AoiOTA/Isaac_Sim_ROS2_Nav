@@ -49,6 +49,8 @@ public:
   void initialize() override;
   void score(mppi::CriticData & data) override;
 
+  // Obstacle risk is the mean over the trajectory of each pose's maximum
+  // obstacle contribution, so it is insensitive to horizon discretization.
   static double trajectoryScore(
     const std::vector<std::array<double, 3>> & trajectory,
     const std::vector<ObstacleSample> & obstacles,

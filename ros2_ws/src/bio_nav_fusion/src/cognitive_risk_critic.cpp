@@ -462,6 +462,7 @@ double CognitiveRiskCritic::trajectoryScore(
     }
     obstacle_cost += step_obstacle_cost;
   }
+  obstacle_cost /= static_cast<double>(trajectory.size());
   double travelled_heading = trajectory.back()[2];
   if (trajectory.size() >= 2) {
     travelled_heading = std::atan2(
@@ -707,7 +708,7 @@ void CognitiveRiskCritic::publishStatus(
          << std::setprecision(std::numeric_limits<double>::max_digits10)
          << finite_maximum_obstacle_cost_delta
          << ";obstacle_count=" << accepted_obstacles->obstacles.size()
-         << ";aggregation=max_per_step";
+         << ";aggregation=max_per_step_mean_horizon";
   status.fallback_reason = detail.str();
   status.maximum_cost_increase = static_cast<uint8_t>(std::min(
       finite_maximum_obstacle_cost_delta,
