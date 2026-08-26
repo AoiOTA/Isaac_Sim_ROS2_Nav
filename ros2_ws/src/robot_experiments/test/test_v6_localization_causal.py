@@ -2,10 +2,12 @@ import json
 import os
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 import yaml
 
+import robot_experiments.v6_localization_causal as localization_causal
 from robot_experiments.v6_localization_causal import (
     ALLOWED_EVENTS,
     ARMS,
@@ -173,6 +175,78 @@ def test_s0_s1_argv_share_run4_server_manifest_and_keep_seed_modes(tmp_path):
         assert f"localization_candidate_manifest:={manifest}" in bridge
     assert "localization_supervisor_mode:=shadow" in outputs[("S0", "bridge")].stdout
     assert "localization_supervisor_mode:=startup" in outputs[("S1", "bridge")].stdout
+
+
+def test_s0_s1_ros_waits_for_later_seed_without_changing_seed_authority(tmp_path):
+    for arm in ("S0", "S1"):
+        result = _run_wrapper(tmp_path, arm, "ros")
+        assert result.returncode == 0, result.stderr
+        assert "initial_pose_source:=rviz" in result.stdout
+        assert "activation_startup_policy:=wait_for_seed" in result.stdout
+
+
+@pytest.mark.parametrize(("arm", "expected_seed_count"), (("S0", 1), ("S1", 0)))
+def test_phase_d_runner_publishes_only_the_s0_broad_seed_once(
+    monkeypatch, arm, expected_seed_count
+):
+    adapter = LocalizationCausalNode.__new__(LocalizationCausalNode)
+    adapter.config = load_config(CONFIG)
+    adapter.arm = arm
+    adapter.episode = SimpleNamespace(
+        seed=1,
+        dynamic_case_id="none",
+        variant_id="baseline",
+        reset_pose_name="long_route_start_g1",
+    )
+    stops = []
+    adapter.guard = SimpleNamespace(
+        state="READY",
+        reset_events=1,
+        localization_ready=True,
+        nav2_active=True,
+        tf_active=True,
+        goal_ready=True,
+        arm_reset=lambda _facts: None,
+        record_reset_call=lambda: None,
+        record_reset_response=lambda _success: None,
+        record_reset_receipt_generation=lambda _generation: None,
+    )
+    adapter.guard.stop = lambda reason: stops.append(reason)
+    adapter.facts = object()
+    adapter._types = {"Trigger": SimpleNamespace(Request=lambda: object())}
+    response = SimpleNamespace(success=True, message="unused by focused fake")
+    future = SimpleNamespace(done=lambda: True, result=lambda: response)
+    adapter.reset_client = SimpleNamespace(call_async=lambda _request: future)
+    adapter._amcl_count = 0
+    adapter._initialpose_count = 0
+    adapter._assert_ground_truth_firewall = lambda: None
+    adapter._pre_reset_ready = lambda: True
+    adapter._readiness_blockers = lambda: ""
+    adapter._set_episode_parameters = lambda _timeout: None
+    adapter._emit_episode_start = lambda: None
+    adapter._event = lambda *_args, **_kwargs: None
+    adapter._check_post_reset_odom = lambda: None
+    adapter._wait_nav2_and_tf_ready = lambda _timeout: None
+    adapter._spin_until = lambda predicate, _timeout: bool(predicate())
+    adapter._amcl_recovered = lambda _baseline: True
+    published = []
+    adapter._publish_seed = lambda pose, kind: published.append((pose, kind))
+    monkeypatch.setattr(
+        localization_causal,
+        "parse_reset_receipt",
+        lambda *_args, **_kwargs: {"generation": 1},
+    )
+
+    assert adapter._reset_and_localize(
+        readiness_timeout_sec=1.0,
+        reset_timeout_sec=1.0,
+    )
+    assert len(published) == expected_seed_count
+    if arm == "S0":
+        assert published == [(adapter.config.broad_seed, "broad_initialpose")]
+    else:
+        assert published == []
+    assert stops == []
 
 
 def test_r0_r1_argv_keep_old_path_without_run4_candidate(tmp_path):

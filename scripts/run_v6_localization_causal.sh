@@ -143,9 +143,17 @@ case "${component}" in
     ;;
   ros)
     # Disable the Phase B automatic initial-pose publisher. The selected arm
-    # must be the only startup seed authority.
-    run_command "${phase_b_entry}" --run-root "${run_root}" --domain "${domain_id}" \
-      ros initial_pose_source:=rviz "$@"
+    # must be the only startup seed authority.  Phase D starts ROS before its
+    # runner/supervisor seed exists, so keep the activation gate alive until
+    # that later seed arrives instead of failing at the startup timeout.
+    if [[ "${arm}" =~ ^S[01]$ ]]; then
+      run_command "${phase_b_entry}" --run-root "${run_root}" --domain "${domain_id}" \
+        ros initial_pose_source:=rviz \
+        activation_startup_policy:=wait_for_seed "$@"
+    else
+      run_command "${phase_b_entry}" --run-root "${run_root}" --domain "${domain_id}" \
+        ros initial_pose_source:=rviz "$@"
+    fi
     ;;
   module1)
     if [[ "${arm}" =~ ^S[01]$ ]]; then
