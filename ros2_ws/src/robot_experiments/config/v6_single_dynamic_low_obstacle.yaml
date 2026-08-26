@@ -40,9 +40,8 @@ criteria:
   depth_min_obstacle_points: 3
   minimum_actor_position_span_m: 0.60
   minimum_candidate_position_span_m: 0.20
-  # At the ~1 Hz published costmaps, require the vacated cell to disappear by
-  # the second observed publication instead of imposing a sub-period timeout.
-  old_position_clear_max_costmap_samples: 2
+  # Combined master cost at the old AABB is diagnostic only; cognitive
+  # clearance is attributed to source geometry and per-consumer layer status.
   old_position_cost_max: 10
   reverse_speed_limit_mps: -0.05
   spin_linear_speed_max_mps: 0.03

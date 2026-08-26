@@ -8,7 +8,6 @@ import json
 import math
 import os
 from pathlib import Path
-import statistics
 import sys
 from typing import Any, Mapping, Sequence
 
@@ -162,10 +161,6 @@ def load_experiment(path: str | Path) -> DynamicLowObstacleExperiment:
     ):
         if float(criteria.get(key, 0.0)) <= 0.0:
             raise DynamicLowObstacleError(f"criteria.{key} must be positive")
-    if int(criteria.get("old_position_clear_max_costmap_samples", 0)) <= 0:
-        raise DynamicLowObstacleError(
-            "criteria.old_position_clear_max_costmap_samples must be positive"
-        )
     actor = {
         "id": actual["id"],
         "center": list(actual["start"][:2]),
@@ -390,6 +385,35 @@ def _costmap_max(message: Any, center: Sequence[float], size: Sequence[float]) -
     return max(values) if values else None
 
 
+def _aabb_intersects_old_position(
+    center: Sequence[float], size: Sequence[float],
+    old_center: Sequence[float], old_size: Sequence[float],
+) -> bool:
+    return all(
+        abs(float(center[axis]) - float(old_center[axis]))
+        < 0.5 * (float(size[axis]) + float(old_size[axis]))
+        for axis in (0, 1)
+    )
+
+
+def _candidate_intersects_old_position(
+    candidate: Mapping[str, Any], old_center: Sequence[float],
+    old_size: Sequence[float],
+) -> bool:
+    radius = float(candidate["radius_m"])
+    dx = max(
+        abs(float(candidate["x"]) - float(old_center[0]))
+        - 0.5 * float(old_size[0]),
+        0.0,
+    )
+    dy = max(
+        abs(float(candidate["y"]) - float(old_center[1]))
+        - 0.5 * float(old_size[1]),
+        0.0,
+    )
+    return math.hypot(dx, dy) < radius
+
+
 def old_position_clearance(
     records: Sequence[causal.RecordedMessage],
     timeline: Sequence[Mapping[str, Any]],
@@ -403,11 +427,70 @@ def old_position_clearance(
         if row["state"] in VISIBLE_ACTOR_STATES
         and math.dist(row["position"][:2], start[:2]) >= float(size[0])
     ), None)
-    result: dict[str, Any] = {"vacated_stamp_ns": None, "consumers": {}}
+    result: dict[str, Any] = {
+        "vacated_stamp_ns": None,
+        "source": {"present": False, "geometry_cleared": False},
+        "consumers": {},
+    }
     if vacated is None:
         return result
     vacated_stamp = int(vacated["stamp_ns"])
     result["vacated_stamp_ns"] = vacated_stamp
+
+    typed_rows: list[tuple[int, int, Any, list[dict[str, Any]]]] = []
+    for record in records:
+        if record.topic != "/bio_nav/module2/cognitive_obstacles":
+            continue
+        stamp = causal._message_stamp_ns(record)
+        if stamp < vacated_stamp:
+            continue
+        raw_obstacles = causal._field(record.message, "obstacles")
+        try:
+            sequence = int(causal._field(record.message, "sequence"))
+            raw_count = len(raw_obstacles)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        candidates = causal._typed_obstacles(record.message)
+        if raw_count and len(candidates) != raw_count:
+            continue
+        typed_rows.append((stamp, sequence, record.message, candidates))
+
+    source_stamp: int | None = None
+    source_sequence: int | None = None
+    if typed_rows:
+        source_stamp, source_sequence, _, candidates = max(
+            typed_rows, key=lambda row: (row[0], row[1])
+        )
+        actor_rows = [
+            row for row in timeline if int(row["stamp_ns"]) <= source_stamp
+        ]
+        actor_row = max(actor_rows, key=lambda row: int(row["stamp_ns"])) \
+            if actor_rows else None
+        actor_intersects = (
+            actor_row is None
+            or actor_row.get("state") not in VISIBLE_ACTOR_STATES
+            or _aabb_intersects_old_position(
+                actor_row["position"], actor_row["size"], start, size
+            )
+        )
+        candidate_intersects = any(
+            _candidate_intersects_old_position(candidate, start, size)
+            for candidate in candidates
+        )
+        result["source"] = {
+            "present": True,
+            "stamp_ns": source_stamp,
+            "sequence": source_sequence,
+            "candidate_count": len(candidates),
+            "actor_intersects_old_aabb": actor_intersects,
+            "candidate_intersects_old_aabb": candidate_intersects,
+            "geometry_cleared": not actor_intersects and not candidate_intersects,
+        }
+
+    status_records = [
+        record for record in records
+        if record.topic == "/bio_nav/cognitive_obstacle_layer/status"
+    ]
     for topic, name in (
         ("/global_costmap/costmap", "global"),
         ("/local_costmap/costmap", "local"),
@@ -424,30 +507,68 @@ def old_position_clearance(
         after = [
             (stamp, value) for stamp, value in valid_rows if stamp >= vacated_stamp
         ]
-        clear = next((
-            (index, stamp) for index, (stamp, value) in enumerate(after, start=1)
-            if value <= maximum_cost
-        ), None)
-        clear_sample_index, clear_stamp = clear if clear is not None else (None, None)
-        periods = [
-            (right[0] - left[0]) * 1.0e-9
-            for left, right in zip(valid_rows, valid_rows[1:])
-            if right[0] > left[0]
+        scoped_status = [
+            record for record in status_records
+            if name in str(causal._field(record.message, "consumer", "")).lower()
         ]
+        status = max(
+            scoped_status, key=lambda record: causal._message_stamp_ns(record)
+        ) if scoped_status else None
+        status_stamp = causal._message_stamp_ns(status) if status is not None else None
+        try:
+            status_sequence = int(causal._field(status.message, "source_sequence")) \
+                if status is not None else None
+        except (TypeError, ValueError, OverflowError):
+            status_sequence = None
+        status_current = bool(
+            status_stamp is not None and source_stamp is not None
+            and status_stamp >= source_stamp
+            and status_sequence is not None and source_sequence is not None
+            and status_sequence >= source_sequence
+        )
+        active_cells = causal._field(status.message, "active_cell_count") \
+            if status is not None else None
+        raised_cells = causal._field(status.message, "raised_cell_count") \
+            if status is not None else None
+        maximum_private_cost = causal._field(status.message, "maximum_cost") \
+            if status is not None else None
+        maximum_cost_increase = causal._field(
+            status.message, "maximum_cost_increase"
+        ) if status is not None else None
+        reason = str(causal._field(status.message, "fallback_reason", "")) \
+            if status is not None else ""
+        try:
+            active_zero = int(active_cells) == 0
+            reported_zero = (
+                int(raised_cells) == 0
+                and int(maximum_private_cost) == 0
+                and int(maximum_cost_increase) == 0
+            )
+        except (TypeError, ValueError, OverflowError):
+            active_zero = reported_zero = False
+        private_layer_cleared = bool(
+            status_current and active_zero
+            and (reported_zero or "no_costmap_cells" in reason)
+        )
         result["consumers"][name] = {
             "occupied_before_vacated": any(
                 value is not None and value > maximum_cost for value in before
             ),
-            "observed_update_period_sec": (
-                statistics.median(periods) if periods else None
+            "combined_master_old_aabb_max_before": max(before, default=None),
+            "combined_master_old_aabb_max_after": max(
+                (value for _, value in after), default=None
             ),
             "post_vacated_sample_count": len(after),
-            "clear_sample_index": clear_sample_index,
-            "clear_stamp_ns": clear_stamp,
-            "clear_latency_sec": (
-                (clear_stamp - vacated_stamp) * 1.0e-9
-                if clear_stamp is not None else None
-            ),
+            "status_present": status is not None,
+            "status_stamp_ns": status_stamp,
+            "status_source_sequence": status_sequence,
+            "status_current_or_newer": status_current,
+            "active_cell_count": active_cells,
+            "raised_cell_count": raised_cells,
+            "maximum_private_cost": maximum_private_cost,
+            "maximum_cost_increase": maximum_cost_increase,
+            "fallback_reason": reason,
+            "private_layer_cleared": private_layer_cleared,
         }
     return result
 
@@ -653,22 +774,28 @@ def evaluate_evidence(
         clearance = _mapping(
             evidence.get("old_position_clearance"), "old_position_clearance"
         )
+        source = _mapping(clearance.get("source"), "old_position_clearance.source")
+        if source.get("present") is not True:
+            reasons.append("old_position_clear_source_missing")
+        elif source.get("geometry_cleared") is not True:
+            if source.get("actor_intersects_old_aabb") is True:
+                reasons.append("old_source_actor_geometry_intersects_old_aabb")
+            if source.get("candidate_intersects_old_aabb") is True:
+                reasons.append("old_source_candidate_geometry_intersects_old_aabb")
+            if (
+                source.get("actor_intersects_old_aabb") is not True
+                and source.get("candidate_intersects_old_aabb") is not True
+            ):
+                reasons.append("old_source_geometry_clearance_unconfirmed")
         consumers = _mapping(clearance.get("consumers"), "old_position_clearance.consumers")
-        sample_limit = int(
-            experiment.criteria["old_position_clear_max_costmap_samples"]
-        )
         for name in ("global", "local"):
             row = _mapping(consumers.get(name), f"old_position_clearance.{name}")
-            clear_sample_index = row.get("clear_sample_index")
-            if row.get("occupied_before_vacated") is not True:
-                reasons.append(f"{name}_old_position_never_observed_occupied")
-            elif (
-                clear_sample_index is None
-                or int(clear_sample_index) > sample_limit
-            ):
-                reasons.append(
-                    f"{name}_old_position_not_cleared_within_costmap_samples"
-                )
+            if row.get("status_present") is not True:
+                reasons.append(f"{name}_old_position_consumer_status_missing")
+            elif row.get("status_current_or_newer") is not True:
+                reasons.append(f"{name}_old_position_consumer_status_stale_or_older")
+            elif row.get("private_layer_cleared") is not True:
+                reasons.append(f"{name}_old_position_private_cells_remain")
 
     action = _mapping(evidence.get("action"), "action")
     if action.get("terminal_zero_confirmed") is not True:
