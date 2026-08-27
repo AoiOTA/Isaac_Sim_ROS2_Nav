@@ -211,6 +211,71 @@ def test_primary_wait_accepts_2p8s_prior_and_identity_zero_falls_back() -> None:
     message.priors = []
     zero._on_priors(message)
     assert zero.prepared == [{}]
+    assert zero.pending_deadline_ns == 5_000_000_000
+
+
+def test_request7_zero_then_late_healthy_prior_reuses_pending_window() -> None:
+    coordinator = _prior_wait_coordinator()
+    coordinator.request_id = 7
+    coordinator._arm_prior_request(coordinator._now_ns)
+
+    coordinator._now_ns = 1_600_000_000
+    zero = _edge_prior_message(request_id=7, stamp_ns=1_600_000_000)
+    zero.priors = []
+    coordinator._on_priors(zero)
+
+    assert coordinator.pending_deadline_ns == 5_000_000_000
+    assert coordinator.pending_prior_request_id == 7
+    assert coordinator.pending_prior_geometry_prepared is True
+    assert coordinator.prepared == [{}]
+
+    coordinator._now_ns = 4_100_000_000
+    coordinator._on_priors(_edge_prior_message(
+        request_id=7, stamp_ns=4_100_000_000))
+
+    assert coordinator.pending_deadline_ns is None
+    assert coordinator.pending_prior_geometry_prepared is False
+    assert coordinator.latest_priors == {7: (1.0, 0.8)}
+    assert coordinator.prepared == [{}, {7: (1.0, 0.8)}]
+
+
+def test_repeated_zero_prior_prepares_geometry_once_until_expiry() -> None:
+    coordinator = _prior_wait_coordinator()
+
+    for now_ns in (1_600_000_000, 2_100_000_000, 3_100_000_000):
+        coordinator._now_ns = now_ns
+        zero = _edge_prior_message(request_id=9, stamp_ns=now_ns)
+        zero.priors = []
+        coordinator._on_priors(zero)
+
+    assert coordinator.pending_deadline_ns == 5_000_000_000
+    assert coordinator.prepared == [{}]
+
+    coordinator._now_ns = 5_000_000_000
+    coordinator._check_prior_timeout()
+
+    assert coordinator.pending_deadline_ns is None
+    assert coordinator.pending_prior_geometry_prepared is False
+    assert coordinator.prepared == [{}]
+
+
+def test_new_context_and_clear_reset_geometry_prepare_latch() -> None:
+    coordinator = _prior_wait_coordinator()
+    coordinator._now_ns = 1_600_000_000
+    zero = _edge_prior_message(request_id=9, stamp_ns=1_600_000_000)
+    zero.priors = []
+    coordinator._on_priors(zero)
+    assert coordinator.pending_prior_geometry_prepared is True
+
+    coordinator.request_id = 10
+    coordinator._now_ns = 2_000_000_000
+    coordinator._arm_prior_request(coordinator._now_ns)
+    assert coordinator.pending_prior_request_id == 10
+    assert coordinator.pending_prior_geometry_prepared is False
+
+    coordinator.pending_prior_geometry_prepared = True
+    coordinator._clear_pending_prior_request()
+    assert coordinator.pending_prior_geometry_prepared is False
 
 
 def test_primary_timeout_and_late_prior_are_generation_safe() -> None:
@@ -732,6 +797,7 @@ def _reset_route_coordinator(*, active=True, handle=None):
     coordinator.pending_prior_graph_revision = 4
     coordinator.pending_prior_started_ns = 1
     coordinator.pending_prior_model_id = 'model'
+    coordinator.pending_prior_geometry_prepared = True
     coordinator.latest_priors = {1: (1.0, 0.5)}
     coordinator.latest_priors_stamp_ns = 1
     coordinator.latest_prior_model_id = 'model'
@@ -1521,6 +1587,7 @@ def test_active_reset_retires_state_cancels_once_and_publishes_one_terminal() ->
     assert coordinator.navigation_goal_targets_final is False
     assert coordinator.navigation_failed is False
     assert coordinator.pending_deadline_ns is None
+    assert coordinator.pending_prior_geometry_prepared is False
     assert coordinator.latest_priors == {}
     assert coordinator.pending_reroute_outcome is None
     assert coordinator.runtime.edges == {}

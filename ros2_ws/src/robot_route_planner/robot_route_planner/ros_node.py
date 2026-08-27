@@ -661,6 +661,7 @@ class RouteCoordinator:
         self.pending_prior_graph_revision: int | None = None
         self.pending_prior_started_ns: int | None = None
         self.pending_prior_model_id: str | None = None
+        self.pending_prior_geometry_prepared = False
         self.request_id = 0
         self.last_context_publish_ns = 0
         self.latest_priors: dict[int, tuple[float, float]] = {}
@@ -3323,6 +3324,7 @@ class RouteCoordinator:
         self.pending_prior_graph_revision = self.graph.revision
         self.pending_prior_started_ns = now_ns
         self.pending_prior_model_id = self.latest_prior_model_id
+        self.pending_prior_geometry_prepared = False
 
     def _clear_pending_prior_request(self) -> None:
         self.pending_deadline_ns = None
@@ -3331,6 +3333,7 @@ class RouteCoordinator:
         self.pending_prior_graph_revision = None
         self.pending_prior_started_ns = None
         self.pending_prior_model_id = None
+        self.pending_prior_geometry_prepared = False
 
     def _clear_latest_priors(self) -> None:
         self.latest_priors = {}
@@ -3520,7 +3523,6 @@ class RouteCoordinator:
                 or current_pending_identity != pending_identity
             ):
                 return
-            self._clear_pending_prior_request()
             retained_priors = (
                 dict(self.latest_priors)
                 if self._accepted_prior_is_current_locked()
@@ -3539,11 +3541,13 @@ class RouteCoordinator:
                 retained_priors = {}
             if self.latest_priors and not retained_priors:
                 self._clear_latest_priors()
+            accepted_priors = None
+            prepare_geometry = False
             if model_rollover and usable:
                 self._clear_latest_priors()
-                accepted_priors = {}
+                prepare_geometry = True
             elif invalid_edges or not usable or not priors:
-                accepted_priors = None if retained_priors else {}
+                prepare_geometry = not retained_priors
             else:
                 self.latest_priors = priors
                 self.latest_priors_stamp_ns = stamp_ns
@@ -3558,6 +3562,12 @@ class RouteCoordinator:
                     else getattr(self, "cognitive_graph_identity", None)
                 )
                 accepted_priors = priors
+                self._clear_pending_prior_request()
+            if prepare_geometry and not bool(getattr(
+                self, "pending_prior_geometry_prepared", False
+            )):
+                self.pending_prior_geometry_prepared = True
+                accepted_priors = {}
         if invalid_edges:
             self.node.get_logger().warning(
                 "Module2 prior contains duplicate or nonexistent graph edges; ignored"
@@ -3598,6 +3608,9 @@ class RouteCoordinator:
                 or now_ns < self.pending_deadline_ns
             ):
                 return
+            geometry_prepared = bool(getattr(
+                self, "pending_prior_geometry_prepared", False
+            ))
             self._clear_pending_prior_request()
             retained_priors = self._accepted_prior_is_current_locked()
             if self.latest_priors and not retained_priors:
@@ -3606,6 +3619,12 @@ class RouteCoordinator:
             self.node.get_logger().info(
                 "Module2 edge prior refresh timed out; retaining accepted "
                 "route preference"
+            )
+            return
+        if geometry_prepared:
+            self.node.get_logger().info(
+                "Module2 edge prior timed out after geometry-only route was "
+                "already prepared"
             )
             return
         self.node.get_logger().info("Module2 edge prior timed out; using geometry-only route")
