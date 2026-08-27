@@ -367,6 +367,12 @@ if [[ "${route_prior_enabled}" == true ]]; then
     exit 2
   }
 fi
+module3_route_prior_deadline_args=()
+bridge_route_prior_deadline_args=()
+if [[ "${route_prior_enabled}" == true ]]; then
+  module3_route_prior_deadline_args=(module2_response_timeout_s:=5.0)
+  bridge_route_prior_deadline_args=(goal_prior_retry_window_s:=4.5)
+fi
 [[ "${run_dir}" == /* && "${socket_path}" == /* ]] || {
   echo "run-dir and socket must be absolute" >&2
   exit 2
@@ -388,13 +394,16 @@ if [[ "${dry_run}" == true ]]; then
   printf 'cognitive_profile=%s\n' "${arm}"
   printf 'active_effect_scope=%s\n' "${dry_scope}"
   printf 'cpg_navigation_writes=false\n'
-  printf 'module3: %q ros %q route_prior_enabled:=%s\n' \
+  printf 'module3: %q ros %q route_prior_enabled:=%s' \
     "${script_dir}/run_v6_kujiale_low_obstacles.sh" "${arm}" "${route_prior_enabled}"
+  printf ' %s' "${module3_route_prior_deadline_args[@]}"
+  printf '\n'
   if [[ "${arm}" != "M0" ]]; then
     printf 'bridge: ros2 launch bio_nav_ros_bridge v6_cognitive_navigation.launch.py startup_profile:=%q' \
       "${dry_profile}"
     printf ' cognitive_graph_mode:=gvg route_prior_enabled:=%s' \
       "${route_prior_enabled}"
+    printf ' %s' "${bridge_route_prior_deadline_args[@]}"
     printf ' socket_path:=%q use_sim_time:=true\n' "${socket_path}"
   fi
   exit 0
@@ -606,7 +615,11 @@ write_process_identity stack "${run_dir}" "$$" "${stack_pgid}"
 module3_localization_args=()
 module2_candidate_args=()
 bridge_localization_args=()
-bridge_route_args=(cognitive_graph_mode:=gvg "route_prior_enabled:=${route_prior_enabled}")
+bridge_route_args=(
+  cognitive_graph_mode:=gvg
+  "route_prior_enabled:=${route_prior_enabled}"
+  "${bridge_route_prior_deadline_args[@]}"
+)
 if [[ -n "${localization_supervisor_mode}" ]]; then
   module3_localization_args=(
     initial_pose_source:=rviz
@@ -621,7 +634,8 @@ fi
 
 exit_if_terminating
 setsid --wait -- "${script_dir}/run_v6_kujiale_low_obstacles.sh" ros "${arm}" \
-  "route_prior_enabled:=${route_prior_enabled}" "${module3_localization_args[@]}" \
+  "route_prior_enabled:=${route_prior_enabled}" \
+  "${module3_route_prior_deadline_args[@]}" "${module3_localization_args[@]}" \
   >"${run_dir}/module3_ros.log" 2>&1 &
 module3_pid="$!"
 register_child module3_ros "${module3_pid}"

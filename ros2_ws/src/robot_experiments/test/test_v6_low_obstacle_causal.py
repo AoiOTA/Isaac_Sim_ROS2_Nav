@@ -3210,6 +3210,8 @@ def test_final_route_prior_pilot_dry_run_defaults_off(tmp_path):
     assert "route_prior_enabled=false" in result.stdout
     assert "active_effect_scope=obstacle_only" in result.stdout
     assert "cognitive_graph_mode:=gvg route_prior_enabled:=false" in result.stdout
+    assert "module2_response_timeout_s" not in result.stdout
+    assert "goal_prior_retry_window_s" not in result.stdout
 
 
 def test_final_route_prior_pilot_forwards_gvg_prior_to_m3_and_bridge(tmp_path):
@@ -3218,7 +3220,10 @@ def test_final_route_prior_pilot_forwards_gvg_prior_to_m3_and_bridge(tmp_path):
     )
     try:
         assert fake.module3_argv.read_text(encoding="utf-8").splitlines() == [
-            "ros", "M3", "route_prior_enabled:=true"
+            "ros",
+            "M3",
+            "route_prior_enabled:=true",
+            "module2_response_timeout_s:=5.0",
         ]
         module2 = fake.module2_argv.read_text(encoding="utf-8").splitlines()
         assert module2[:4] == [
@@ -3231,6 +3236,7 @@ def test_final_route_prior_pilot_forwards_gvg_prior_to_m3_and_bridge(tmp_path):
         assert "startup_profile:=module2_causal_obstacle_active" in bridge
         assert "cognitive_graph_mode:=gvg" in bridge
         assert "route_prior_enabled:=true" in bridge
+        assert "goal_prior_retry_window_s:=4.5" in bridge
     finally:
         _stop_fake_phase_f_stack(fake)
 
@@ -3287,6 +3293,8 @@ def test_final_route_prior_pilot_rejects_recovery_and_has_explicit_dry_run(
     assert "active_effect_scope=obstacle_only" in dry_run.stdout
     assert "cpg_navigation_writes=false" in dry_run.stdout
     assert "cognitive_graph_mode:=gvg route_prior_enabled:=true" in dry_run.stdout
+    assert "module2_response_timeout_s:=5.0" in dry_run.stdout
+    assert "goal_prior_retry_window_s:=4.5" in dry_run.stdout
 
 
 @pytest.mark.parametrize(
