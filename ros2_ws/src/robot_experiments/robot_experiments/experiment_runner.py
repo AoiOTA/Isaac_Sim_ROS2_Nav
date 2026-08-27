@@ -557,6 +557,12 @@ class ExperimentRunner(Node):
             self.declare_parameter("record_bag", True).value,
             "record_bag",
         )
+        self._clear_slam_localization_buffer = _boolean_parameter(
+            self.declare_parameter(
+                "clear_slam_localization_buffer", True
+            ).value,
+            "clear_slam_localization_buffer",
+        )
         self._require_module2_planning_ready = _boolean_parameter(
             self.declare_parameter("require_module2_planning_ready", False).value,
             "require_module2_planning_ready",
@@ -882,8 +888,12 @@ class ExperimentRunner(Node):
             reliable,
         )
         self._reset_client = self.create_client(Trigger, self._reset_service_name)
-        self._localization_buffer_client = self.create_client(
-            Empty, "/slam_toolbox/clear_localization_buffer"
+        self._localization_buffer_client = (
+            self.create_client(
+                Empty, "/slam_toolbox/clear_localization_buffer"
+            )
+            if self._clear_slam_localization_buffer
+            else None
         )
         self._isaac_parameter_client = AsyncParameterClient(
             self,
@@ -1964,6 +1974,9 @@ class ExperimentRunner(Node):
                 raise RuntimeError(f"clearing {label} returned no response")
 
     def _clear_localization_buffer(self) -> None:
+        if not self._clear_slam_localization_buffer:
+            return
+        assert self._localization_buffer_client is not None
         if not self._localization_buffer_client.wait_for_service(
             timeout_sec=self._service_timeout_sec
         ):
@@ -3426,6 +3439,9 @@ class ExperimentRunner(Node):
             "robot_config_hash": self._robot_config_hash,
             "nav2_config_hash": self._nav2_config_hash,
             "nav2_profile": self._nav2_profile,
+            "clear_slam_localization_buffer": (
+                self._clear_slam_localization_buffer
+            ),
             # A launcher argument is not sufficient four-arm provenance;
             # persist the value consumed by the installed runner.
             "experiment_arm": self._experiment_arm or None,
