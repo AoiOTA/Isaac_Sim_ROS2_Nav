@@ -9,6 +9,7 @@ identity:
   goal: {id: G2, frame_id: map, x: 0.80, y: 4.80}
   timeout_sec: 180.0
   route_backend: gvg
+  route_prior_enabled: false
   graph_backend: gvg
   direct_rgbd_costmap_enabled: false
   module1_amcl_prior_enabled: false

@@ -10,9 +10,11 @@ from robot_experiments.v6_low_obstacle_causal import RecordedMessage
 from robot_experiments.v6_single_dynamic_low_obstacle import (
     DYNAMIC_STATE_TOPIC,
     DynamicLowObstacleError,
+    _causal_manifest,
     _actor_resolver,
     actor_timeline,
     build_plan,
+    cli,
     evaluate_evidence,
     load_experiment,
     old_position_clearance,
@@ -206,7 +208,9 @@ def test_plan_uses_one_dynamic_actor_m3_and_explicit_m2_fallback(tmp_path):
     assert str(experiment.identity["obstacle_config"]) in m3["commands"]["scene"]
     assert m3["commands"]["stack"][1] == "M3"
     assert experiment.identity["route_backend"] == "gvg"
+    assert experiment.identity["route_prior_enabled"] is False
     assert m3["route_backend"] == "gvg"
+    assert m3["route_prior_enabled"] is False
     assert m3["route_graph"].endswith("v6_kujiale_isaacgen_v1_gvg_v1.geojson")
     assert m3["isolation"]["route_prior_enabled"] is False
     assert "producer_stop" not in m3["commands"]
@@ -234,6 +238,69 @@ def test_loader_and_plan_reject_non_gvg_route_backend(tmp_path, monkeypatch):
     )
     with pytest.raises(DynamicLowObstacleError, match="identity.route_backend"):
         build_plan(invalid_experiment, "M3", tmp_path)
+
+
+@pytest.mark.parametrize("replacement", ["route_prior_enabled: true", ""])
+def test_loader_rejects_enabled_or_missing_route_prior(
+    tmp_path, monkeypatch, replacement
+):
+    invalid_config = tmp_path / CONFIG.name
+    replacement_line = f"  {replacement}\n" if replacement else ""
+    invalid_config.write_text(
+        CONFIG.read_text(encoding="utf-8").replace(
+            "  route_prior_enabled: false\n", replacement_line
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(causal.MODULE3_ROOT_ENV, str(ROOT))
+
+    with pytest.raises(DynamicLowObstacleError, match="identity.route_prior_enabled"):
+        load_experiment(invalid_config)
+
+
+@pytest.mark.parametrize("replacement", [True, None])
+def test_plan_and_causal_manifest_reject_tampered_route_prior(
+    tmp_path, replacement
+):
+    experiment = load_experiment(CONFIG)
+    identity = dict(experiment.identity)
+    if replacement is None:
+        identity.pop("route_prior_enabled")
+    else:
+        identity["route_prior_enabled"] = replacement
+    invalid_experiment = replace(experiment, identity=identity)
+
+    with pytest.raises(DynamicLowObstacleError, match="identity.route_prior_enabled"):
+        _causal_manifest(invalid_experiment, "M1")
+    with pytest.raises(DynamicLowObstacleError, match="identity.route_prior_enabled"):
+        build_plan(invalid_experiment, "M3", tmp_path)
+
+
+@pytest.mark.parametrize("arm_label", ["M1", "M3"])
+def test_dispatch_enters_phase_f_runtime_with_route_prior_disabled(
+    tmp_path, monkeypatch, arm_label
+):
+    captured = {}
+
+    def fake_dispatch(manifest, run, output_jsonl, **_kwargs):
+        captured["runtime"] = causal._phase_f_runtime(
+            manifest, run, dynamic_actors_enabled=True
+        )
+        captured["output_jsonl"] = output_jsonl
+        return {"state": "SUCCEEDED"}
+
+    monkeypatch.setattr(causal, "dispatch_episode", fake_dispatch)
+    output_jsonl = tmp_path / f"{arm_label}.jsonl"
+    result = cli([
+        "dispatch-episode", "--config", str(CONFIG), "--arm", arm_label,
+        "--output-jsonl", str(output_jsonl),
+    ])
+
+    assert result == 0
+    assert captured["output_jsonl"] == str(output_jsonl)
+    assert captured["runtime"]["route_backend"] == "gvg"
+    assert captured["runtime"]["route_prior_enabled"] is False
+    assert captured["runtime"]["cognitive_profile"] == arm_label
 
 
 def test_actor_timeline_tracks_armed_moving_parked_and_events():

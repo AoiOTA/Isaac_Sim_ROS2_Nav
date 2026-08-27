@@ -80,6 +80,7 @@ def load_experiment(path: str | Path) -> DynamicLowObstacleExperiment:
         "actor_id": "v6_dynamic_low_box_solo",
         "trigger_group": "G2",
         "route_backend": "gvg",
+        "route_prior_enabled": False,
         "direct_rgbd_costmap_enabled": False,
         "module1_amcl_prior_enabled": False,
         "cognitive_place_graph_enabled": False,
@@ -180,6 +181,7 @@ def load_experiment(path: str | Path) -> DynamicLowObstacleExperiment:
 def _causal_manifest(
     experiment: DynamicLowObstacleExperiment, arm_label: str
 ) -> tuple[causal.CausalManifest, causal.RunContract]:
+    _require_route_identity(experiment)
     if arm_label not in experiment.arm_modes:
         raise DynamicLowObstacleError(f"unsupported arm: {arm_label}")
     mode = experiment.arm_modes[arm_label]
@@ -217,13 +219,19 @@ def _causal_manifest(
     return manifest, run
 
 
+def _require_route_identity(experiment: DynamicLowObstacleExperiment) -> None:
+    if experiment.identity.get("route_backend") != "gvg":
+        raise DynamicLowObstacleError("identity.route_backend must be 'gvg'")
+    if experiment.identity.get("route_prior_enabled") is not False:
+        raise DynamicLowObstacleError("identity.route_prior_enabled must be False")
+
+
 def build_plan(
     experiment: DynamicLowObstacleExperiment,
     arm_label: str,
     output_root: str | Path,
 ) -> dict[str, Any]:
-    if experiment.identity.get("route_backend") != "gvg":
-        raise DynamicLowObstacleError("identity.route_backend must be 'gvg'")
+    _require_route_identity(experiment)
     manifest, run = _causal_manifest(experiment, arm_label)
     run_dir = Path(output_root).expanduser().resolve() / run.run_id
     socket_path = f"/tmp/bnv6dyn-{run.arm.lower()}-{os.getpid()}.sock"
@@ -258,6 +266,7 @@ def build_plan(
         "run_directory": str(run_dir),
         "module2_socket": socket_path,
         "route_backend": "gvg",
+        "route_prior_enabled": experiment.identity["route_prior_enabled"],
         "route_graph": str(experiment.identity["route_graph"]),
         "commands": commands,
         "dynamic_actor": dict(experiment.actor),
@@ -270,7 +279,7 @@ def build_plan(
             "direct_rgbd_costmap_enabled": False,
             "module1_amcl_prior_enabled": False,
             "cognitive_place_graph_enabled": False,
-            "route_prior_enabled": False,
+            "route_prior_enabled": experiment.identity["route_prior_enabled"],
             "producer_fault_injection": False,
         },
     }
