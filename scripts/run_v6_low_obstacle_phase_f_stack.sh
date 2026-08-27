@@ -7,6 +7,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 usage() {
   echo "usage: $0 M0|M1|M2|M3 --domain ID --run-dir PATH --socket PATH [--module2-root PATH]" >&2
   echo "       [--localization-supervisor-mode shadow|active --candidate-manifest PATH]" >&2
+  echo "       [--enable-route-prior] [--dry-run]" >&2
   echo "       BIO_NAV_MODULE2_V310_ROOT or --module2-root must name the canonical Module2 root" >&2
   echo "       $0 stop-producer --run-dir PATH --socket PATH" >&2
 }
@@ -318,6 +319,8 @@ domain_id="${BIO_NAV_PHASE_F_DOMAIN_ID:-150}"
 module2_root="${BIO_NAV_MODULE2_V310_ROOT:-}"
 localization_supervisor_mode=""
 candidate_manifest=""
+route_prior_enabled="false"
+dry_run=false
 integration_root="${BIO_NAV_INTEGRATION_ROOT:-/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration}"
 while (($#)); do
   case "$1" in
@@ -333,6 +336,8 @@ while (($#)); do
       candidate_manifest="${2:?--candidate-manifest requires a path}"
       shift 2
       ;;
+    --enable-route-prior) route_prior_enabled="true"; shift ;;
+    --dry-run) dry_run=true; shift ;;
     *) usage; echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -352,6 +357,16 @@ if [[ -n "${localization_supervisor_mode}" || -n "${candidate_manifest}" ]]; the
     exit 2
   }
 fi
+if [[ "${route_prior_enabled}" == true ]]; then
+  [[ "${arm}" == "M3" ]] || {
+    echo "route prior pilot requires the M3 obstacle arm" >&2
+    exit 2
+  }
+  [[ -z "${localization_supervisor_mode}" && -z "${candidate_manifest}" ]] || {
+    echo "route prior pilot is incompatible with W0/W1 localization recovery" >&2
+    exit 2
+  }
+fi
 [[ "${run_dir}" == /* && "${socket_path}" == /* ]] || {
   echo "run-dir and socket must be absolute" >&2
   exit 2
@@ -360,6 +375,30 @@ fi
   echo "domain must be an integer in [0,232]" >&2
   exit 2
 }
+if [[ "${dry_run}" == true ]]; then
+  dry_scope="none"
+  dry_profile="estimated_shadow"
+  if [[ "${arm}" =~ ^M[23]$ ]]; then
+    dry_scope="obstacle_only"
+    dry_profile="module2_causal_obstacle_active"
+  fi
+  printf 'arm=%s\n' "${arm}"
+  printf 'graph_mode=gvg\n'
+  printf 'route_prior_enabled=%s\n' "${route_prior_enabled}"
+  printf 'cognitive_profile=%s\n' "${arm}"
+  printf 'active_effect_scope=%s\n' "${dry_scope}"
+  printf 'cpg_navigation_writes=false\n'
+  printf 'module3: %q ros %q route_prior_enabled:=%s\n' \
+    "${script_dir}/run_v6_kujiale_low_obstacles.sh" "${arm}" "${route_prior_enabled}"
+  if [[ "${arm}" != "M0" ]]; then
+    printf 'bridge: ros2 launch bio_nav_ros_bridge v6_cognitive_navigation.launch.py startup_profile:=%q' \
+      "${dry_profile}"
+    printf ' cognitive_graph_mode:=gvg route_prior_enabled:=%s' \
+      "${route_prior_enabled}"
+    printf ' socket_path:=%q use_sim_time:=true\n' "${socket_path}"
+  fi
+  exit 0
+fi
 export ISAAC_NAV_EXPECTED_DOMAIN_ID="${domain_id}"
 export ROS_DOMAIN_ID="${domain_id}"
 # shellcheck source=lib/v6_dynamic_startup.sh
@@ -567,6 +606,7 @@ write_process_identity stack "${run_dir}" "$$" "${stack_pgid}"
 module3_localization_args=()
 module2_candidate_args=()
 bridge_localization_args=()
+bridge_route_args=(cognitive_graph_mode:=gvg "route_prior_enabled:=${route_prior_enabled}")
 if [[ -n "${localization_supervisor_mode}" ]]; then
   module3_localization_args=(
     initial_pose_source:=rviz
@@ -581,7 +621,7 @@ fi
 
 exit_if_terminating
 setsid --wait -- "${script_dir}/run_v6_kujiale_low_obstacles.sh" ros "${arm}" \
-  route_prior_enabled:=false "${module3_localization_args[@]}" \
+  "route_prior_enabled:=${route_prior_enabled}" "${module3_localization_args[@]}" \
   >"${run_dir}/module3_ros.log" 2>&1 &
 module3_pid="$!"
 register_child module3_ros "${module3_pid}"
@@ -618,6 +658,7 @@ if [[ "${arm}" != "M0" ]]; then
     startup_profile:="${startup_profile}" \
     socket_path:="${socket_path}" \
     use_sim_time:=true \
+    "${bridge_route_args[@]}" \
     "${bridge_localization_args[@]}" \
     >"${run_dir}/integration_bridge.log" 2>&1 &
   integration_bridge_pid="$!"

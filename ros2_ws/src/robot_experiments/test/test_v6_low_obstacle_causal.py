@@ -2970,6 +2970,7 @@ def _start_fake_phase_f_stack(
     arm: str = "M3",
     producer_ignores_term: bool = False,
     localization_supervisor_mode: str | None = None,
+    enable_route_prior: bool = False,
 ) -> SimpleNamespace:
     root = PACKAGE.parents[2]
     project = tmp_path / "project"
@@ -3136,6 +3137,8 @@ wait "$!"
                 str(candidate_manifest),
             ]
         )
+    if enable_route_prior:
+        command.append("--enable-route-prior")
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -3187,6 +3190,103 @@ def test_phase_f_stack_explicitly_disables_route_prior_for_module2_arms(
         ]
     finally:
         _stop_fake_phase_f_stack(fake)
+
+
+def test_final_route_prior_pilot_dry_run_defaults_off(tmp_path):
+    root = PACKAGE.parents[2]
+    result = subprocess.run(
+        [
+            str(root / "scripts/run_v6_low_obstacle_phase_f_stack.sh"),
+            "M3",
+            "--run-dir", str(tmp_path / "run"),
+            "--socket", str(tmp_path / "module2.sock"),
+            "--dry-run",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "graph_mode=gvg" in result.stdout
+    assert "route_prior_enabled=false" in result.stdout
+    assert "active_effect_scope=obstacle_only" in result.stdout
+    assert "cognitive_graph_mode:=gvg route_prior_enabled:=false" in result.stdout
+
+
+def test_final_route_prior_pilot_forwards_gvg_prior_to_m3_and_bridge(tmp_path):
+    fake = _start_fake_phase_f_stack(
+        tmp_path, arm="M3", enable_route_prior=True
+    )
+    try:
+        assert fake.module3_argv.read_text(encoding="utf-8").splitlines() == [
+            "ros", "M3", "route_prior_enabled:=true"
+        ]
+        module2 = fake.module2_argv.read_text(encoding="utf-8").splitlines()
+        assert module2[:4] == [
+            "--startup-profile",
+            "module2_causal_obstacle_active",
+            "--active-effect-scope",
+            "obstacle_only",
+        ]
+        bridge = fake.bridge_argv.read_text(encoding="utf-8").splitlines()
+        assert "startup_profile:=module2_causal_obstacle_active" in bridge
+        assert "cognitive_graph_mode:=gvg" in bridge
+        assert "route_prior_enabled:=true" in bridge
+    finally:
+        _stop_fake_phase_f_stack(fake)
+
+
+@pytest.mark.parametrize("arm", ["M0", "M1", "M2"])
+def test_final_route_prior_pilot_rejects_non_m3_arms(tmp_path, arm):
+    root = PACKAGE.parents[2]
+    result = subprocess.run(
+        [
+            str(root / "scripts/run_v6_low_obstacle_phase_f_stack.sh"),
+            arm,
+            "--run-dir", str(tmp_path / "run"),
+            "--socket", str(tmp_path / "module2.sock"),
+            "--enable-route-prior",
+            "--dry-run",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "requires the M3 obstacle arm" in result.stderr
+
+
+def test_final_route_prior_pilot_rejects_recovery_and_has_explicit_dry_run(
+    tmp_path,
+):
+    root = PACKAGE.parents[2]
+    stack = root / "scripts/run_v6_low_obstacle_phase_f_stack.sh"
+    common = [
+        str(stack), "M3",
+        "--run-dir", str(tmp_path / "run"),
+        "--socket", str(tmp_path / "module2.sock"),
+        "--enable-route-prior",
+    ]
+    recovery = subprocess.run(
+        [
+            *common,
+            "--localization-supervisor-mode", "active",
+            "--candidate-manifest", str(tmp_path / "candidate.json"),
+            "--dry-run",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert recovery.returncode == 2
+    assert "incompatible with W0/W1 localization recovery" in recovery.stderr
+
+    dry_run = subprocess.run(
+        [*common, "--dry-run"], capture_output=True, text=True, check=True
+    )
+    assert "graph_mode=gvg" in dry_run.stdout
+    assert "route_prior_enabled=true" in dry_run.stdout
+    assert "cognitive_profile=M3" in dry_run.stdout
+    assert "active_effect_scope=obstacle_only" in dry_run.stdout
+    assert "cpg_navigation_writes=false" in dry_run.stdout
+    assert "cognitive_graph_mode:=gvg route_prior_enabled:=true" in dry_run.stdout
 
 
 @pytest.mark.parametrize(

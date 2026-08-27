@@ -174,12 +174,7 @@ case "${component}" in
       /bio_nav/module2/cognitive_place_graph
       /bio_nav/module3/cognitive_graph_validation_ack
       /bio_nav/structural_graph_status
-      /bio_nav/module2/srdr_edge_diagnostics
-      /bio_nav/route_edge_costs
       /bio_nav/runtime_edge_states
-      /bio_nav/cognitive_obstacle_layer/status
-      /bio_nav/local_risk_layer/status
-      /bio_nav/cognitive_risk_critic/status
       /plan
       /optimal_trajectory
       /experiment/obstacles/state
