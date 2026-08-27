@@ -11,11 +11,13 @@ import time
 import pytest
 
 from robot_experiments.v6_phase_g_causal import (
+    GRAPH_ONLY_SCOPE,
     LOOP_ROUTE_IDS,
     PhaseGConfigError,
     build_timeline,
     causal_contrast_status,
     evaluate_group,
+    evaluate_graph_only_group,
     graph_kind,
     load_config,
     pareto_direction,
@@ -107,6 +109,81 @@ def _group(**overrides: dict) -> dict[str, dict]:
     return rows
 
 
+def _graph_only_result(
+    arm: str,
+    *,
+    path: float = 10.0,
+    duration: float = 100.0,
+    replans: int = 5,
+) -> dict:
+    row = _result(
+        arm,
+        path=path,
+        duration=duration,
+        replans=replans,
+    )
+    selected_graph_id = {
+        "G1": "map:gvg_v1",
+        "G2": "map:gvg_v1:hybrid:4",
+        "G3": "cpg-00112233445566778899aabb:primary",
+    }[arm]
+    row.update(
+        {
+            "qualification": "ENGINEERING_GRAPH_ONLY_RUN",
+            "formal_qualification": "NOT_QUALIFIED",
+            "verdict": "ENGINEERING_GRAPH_ONLY_RUN_COMPLETE",
+            "experiment_scope": GRAPH_ONLY_SCOPE,
+            "graph_only_no_box": True,
+            "box_obstacles_enabled": False,
+            "cognitive_profile": "M0",
+            "route_prior_enabled": False,
+            "obstacle_arm": "NONE",
+            "m3_safety_status": "DEFERRED",
+            "route_prior_status": "DEFERRED",
+            "graph_mode": {
+                "G1": "shadow",
+                "G2": "hybrid",
+                "G3": "primary",
+            }[arm],
+            "candidate_graphs": [],
+            "validation_acks": [],
+        }
+    )
+    row["pair_identity"].update(
+        {
+            "experiment_scope": GRAPH_ONLY_SCOPE,
+            "graph_only_no_box": True,
+        }
+    )
+    row["scoring"]["selected_graph_ids"] = [selected_graph_id]
+    candidate = {
+        "node_count": 2,
+        "edge_count": 1,
+        "all_edge_ids_nonempty": True,
+        "reset_epoch": 1,
+        "module2_healthy": True,
+        "observation_valid": True,
+        "trusted_write": True,
+        "rejection_mask": 0,
+        "graph_id": "cpg-00112233445566778899aabb",
+        "topology_revision": 4,
+        "value_sequence": 9,
+    }
+    row["candidate_graphs"] = [candidate]
+    if arm in {"G2", "G3"}:
+        row["validation_acks"] = [
+            {
+                "accepted": True,
+                "reset_epoch": 1,
+                "candidate_graph_id": candidate["graph_id"],
+                "candidate_topology_revision": 4,
+                "candidate_value_sequence": 9,
+                "validated_graph_id": selected_graph_id,
+            }
+        ]
+    return row
+
+
 def test_config_freezes_modes_route_loops_and_whole_group_fallback() -> None:
     config = load_config(CONFIG)
     assert [config.arms[name].graph_mode for name in config.arms] == [
@@ -148,6 +225,24 @@ def test_phase_g_manifest_repeats_full_house_route_without_new_reset() -> None:
     assert manifest.runtime["cognitive_place_graph_enabled"] is True
     assert manifest.runtime["low_obstacles_enabled"] is True
     assert manifest.runtime["cognitive_profile"] == "M3"
+
+
+def test_graph_only_manifest_is_no_box_m0_prior_off_without_changing_modes() -> None:
+    config = load_config(CONFIG)
+    manifest = phase_g_manifest(
+        config, "G3", "M3", graph_only_no_box=True
+    )
+    assert manifest.runtime["experiment_scope"] == GRAPH_ONLY_SCOPE
+    assert manifest.runtime["graph_only_no_box"] is True
+    assert manifest.runtime["box_obstacles_enabled"] is False
+    assert manifest.runtime["low_obstacles_enabled"] is False
+    assert manifest.runtime["cognitive_profile"] == "M0"
+    assert manifest.runtime["route_prior_enabled"] is False
+    assert manifest.runtime["cognitive_graph_mode"] == "primary"
+    assert manifest.runtime["m3_safety_status"] == "DEFERRED"
+    assert manifest.runtime["route_prior_status"] == "DEFERRED"
+    with pytest.raises(PhaseGConfigError, match="G1, G2, or G3"):
+        phase_g_manifest(config, "G0", "M3", graph_only_no_box=True)
 
 
 @pytest.mark.parametrize(
@@ -383,6 +478,75 @@ def test_mismatched_pair_seed_is_rejected() -> None:
         evaluate_group(rows)
 
 
+def test_graph_only_evaluator_uses_g1_control_and_can_select_primary() -> None:
+    rows = {
+        "G1": _graph_only_result("G1"),
+        "G2": _graph_only_result("G2", path=9.5, duration=99.0),
+        "G3": _graph_only_result(
+            "G3", path=9.0, duration=95.0, replans=4
+        ),
+    }
+    summary = evaluate_graph_only_group(rows)
+    assert summary["qualification"] == "ENGINEERING_GRAPH_ONLY_CAUSAL"
+    assert summary["formal_qualification"] == "NOT_QUALIFIED"
+    assert summary["verdict"] == "ENGINEERING_GRAPH_ONLY_PRIMARY_CANDIDATE"
+    assert summary["baseline_arm"] == "G1"
+    assert summary["shadow_control"] == {
+        "arm": "G1",
+        "eligible": True,
+        "selected_for_navigation": False,
+    }
+    assert summary["eligibility"] == {"G1": True, "G2": True, "G3": True}
+    assert set(summary["comparisons"]) == {"G2_vs_G1", "G3_vs_G1"}
+    assert summary["deferred"] == {
+        "m3_safety": "DEFERRED",
+        "route_prior": "DEFERRED",
+    }
+
+
+def test_graph_only_evaluator_rejects_mixed_scope_and_wrong_arm_set() -> None:
+    rows = {name: _graph_only_result(name) for name in ("G1", "G2", "G3")}
+    rows["G3"]["experiment_scope"] = "phase_g_full"
+    with pytest.raises(PhaseGConfigError, match="scope"):
+        evaluate_graph_only_group(rows)
+    rows = {name: _graph_only_result(name) for name in ("G1", "G2", "G3")}
+    rows["G0"] = _result("G0")
+    with pytest.raises(PhaseGConfigError, match="exactly"):
+        evaluate_graph_only_group(rows)
+
+    rows = {name: _graph_only_result(name) for name in ("G1", "G2", "G3")}
+    rows["G2"]["formal_qualification"] = "FORMAL_QUALIFICATION_PASS"
+    with pytest.raises(PhaseGConfigError, match="NOT_QUALIFIED"):
+        evaluate_graph_only_group(rows)
+
+    rows = {name: _graph_only_result(name) for name in ("G1", "G2", "G3")}
+    rows["G1"]["m3_safety_status"] = "IN_SCOPE"
+    with pytest.raises(PhaseGConfigError, match="defer Module3 safety"):
+        evaluate_graph_only_group(rows)
+
+
+def test_graph_only_requires_g1_gvg_and_g2_g3_mature_accepted_selection() -> None:
+    rows = {name: _graph_only_result(name) for name in ("G1", "G2", "G3")}
+    rows["G1"]["scoring"]["selected_graph_ids"] = [
+        "cpg-00112233445566778899aabb:primary"
+    ]
+    summary = evaluate_graph_only_group(rows)
+    assert summary["eligibility"]["G1"] is False
+    assert summary["verdict"] == "ENGINEERING_GRAPH_ONLY_GROUP_INCOMPLETE"
+
+    rows = {name: _graph_only_result(name) for name in ("G1", "G2", "G3")}
+    rows["G1"]["candidate_graphs"] = []
+    rows["G2"]["validation_acks"] = []
+    rows["G3"]["candidate_graphs"] = []
+    summary = evaluate_graph_only_group(rows)
+    assert summary["contrast_eligibility"] == {
+        "G1": False,
+        "G2": False,
+        "G3": False,
+    }
+    assert summary["verdict"] == "ENGINEERING_GRAPH_ONLY_GROUP_INCOMPLETE"
+
+
 def test_wrapper_cli_matches_stack_contract_and_mcap_reuse() -> None:
     source = WRAPPER.read_text(encoding="utf-8")
     for fragment in (
@@ -421,6 +585,26 @@ def test_isaac_dry_run_exposes_selected_phase_b_domain_and_argv(
         "--probe",
         "value with space",
     ]
+
+
+def test_graph_only_isaac_appends_no_dynamic_obstacles_as_last_argument(
+    tmp_path: Path,
+) -> None:
+    wrapper = _fake_phase_g_isaac_wrapper(tmp_path)
+    result = subprocess.run(
+        [
+            "bash", str(wrapper), "--dry-run", "--domain", "226",
+            "--arm", "G2", "--graph-only-no-box", "isaac",
+            "--probe", "value with space",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=_phase_g_domain_clean_env(),
+    )
+    argv = shlex.split(result.stdout)
+    assert argv[-1] == "--no-dynamic-obstacles"
+    assert argv[-3:-1] == ["--probe", "value with space"]
 
 
 def test_isaac_child_receives_all_selected_domain_variables(tmp_path: Path) -> None:

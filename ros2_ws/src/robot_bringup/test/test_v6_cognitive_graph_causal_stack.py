@@ -10,18 +10,27 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
 STACK = REPOSITORY_ROOT / "scripts/run_v6_cognitive_graph_causal_stack.sh"
 
 
-def _dry_run(tmp_path: Path, arm: str, *, obstacle_arm: str = "M3"):
+def _dry_run(
+    tmp_path: Path,
+    arm: str,
+    *,
+    obstacle_arm: str = "M3",
+    graph_only_no_box: bool = False,
+):
+    command = [
+        str(STACK),
+        "--arm", arm,
+        "--domain", "151",
+        "--run-dir", str(tmp_path / "run"),
+        "--socket", str(tmp_path / "module2.sock"),
+        "--module2-root", str(tmp_path / "module2"),
+        "--obstacle-arm", obstacle_arm,
+    ]
+    if graph_only_no_box:
+        command.append("--graph-only-no-box")
+    command.append("--dry-run")
     result = subprocess.run(
-        [
-            str(STACK),
-            "--arm", arm,
-            "--domain", "151",
-            "--run-dir", str(tmp_path / "run"),
-            "--socket", str(tmp_path / "module2.sock"),
-            "--module2-root", str(tmp_path / "module2"),
-            "--obstacle-arm", obstacle_arm,
-            "--dry-run",
-        ],
+        command,
         check=True,
         capture_output=True,
         text=True,
@@ -81,6 +90,49 @@ def test_obstacle_arm_is_held_m3_or_whole_group_m2_fallback(tmp_path):
     assert " primary M3 " not in m3
     assert " primary M2 " not in m2
     assert values["obstacle_arm"] == "M2"
+
+
+@pytest.mark.parametrize(
+    ("arm", "mode"),
+    (("G1", "shadow"), ("G2", "hybrid"), ("G3", "primary")),
+)
+def test_graph_only_no_box_keeps_graph_modes_but_disables_safety_and_prior(
+    tmp_path, arm, mode
+):
+    values, argv = _dry_run(
+        tmp_path, arm, graph_only_no_box=True
+    )
+    assert values["experiment_scope"] == "graph_only_no_box"
+    assert values["no_box"] == "true"
+    assert values["graph_mode"] == mode
+    assert values["cognitive_profile"] == "M0"
+    assert values["route_prior_enabled"] == "false"
+    assert values["integration_graph_mode"] == "shadow"
+    assert values["m3_safety_status"] == "DEFERRED"
+    assert values["route_prior_status"] == "DEFERRED"
+    assert "V6_COGNITIVE_PROFILE=M0" in argv
+    assert f" ros-d {mode} route_prior_enabled:=false" in argv
+    assert "--cognitive-graph-mode shadow" in argv
+    assert "cognitive_graph_mode:=shadow" in argv
+
+
+def test_graph_only_no_box_rejects_g0(tmp_path):
+    result = subprocess.run(
+        [
+            str(STACK),
+            "--arm", "G0",
+            "--domain", "151",
+            "--run-dir", str(tmp_path / "run"),
+            "--socket", str(tmp_path / "module2.sock"),
+            "--graph-only-no-box",
+            "--dry-run",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "requires G1, G2, or G3" in result.stderr
 
 
 def test_nondefault_domain_reaches_active_socket_check_without_readonly_error(

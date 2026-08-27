@@ -34,6 +34,8 @@ CONFIG_SCHEMA = "bio_nav_v6_phase_g_causal_v1"
 RESULT_SCHEMA = "bio_nav_v6_phase_g_result_v1"
 SUMMARY_SCHEMA = "bio_nav_v6_phase_g_summary_v1"
 ARMS = ("G0", "G1", "G2", "G3")
+GRAPH_ONLY_ARMS = ("G1", "G2", "G3")
+GRAPH_ONLY_SCOPE = "graph_only_no_box"
 GRAPH_MODE_BY_ARM = {
     "G0": "gvg",
     "G1": "shadow",
@@ -394,12 +396,20 @@ def _dynamic_metrics(config: PhaseGConfig, arm: str) -> dict[str, Any]:
 
 
 def phase_g_manifest(
-    config: PhaseGConfig, arm: str = "G0", obstacle_arm: str = "M3"
+    config: PhaseGConfig,
+    arm: str = "G0",
+    obstacle_arm: str = "M3",
+    *,
+    graph_only_no_box: bool = False,
 ) -> Manifest:
     if arm not in ARMS:
         raise PhaseGConfigError(f"unknown arm {arm}")
     if obstacle_arm not in OBSTACLE_ARMS:
         raise PhaseGConfigError(f"unknown obstacle arm {obstacle_arm}")
+    if graph_only_no_box and arm not in GRAPH_ONLY_ARMS:
+        raise PhaseGConfigError(
+            "graph-only-no-box requires arm G1, G2, or G3"
+        )
     base = load_phase_b_manifest(config.phase_b_manifest)
     if tuple(leg.goal_id for leg in base.mission_legs) != config.route_ids:
         raise PhaseGConfigError("Phase-B manifest full-house route mismatch")
@@ -419,6 +429,20 @@ def phase_g_manifest(
             "phase_g_three_loop_protocol": "warmup,warmup,scoring",
         }
     )
+    if graph_only_no_box:
+        runtime.update(
+            {
+                "experiment_scope": GRAPH_ONLY_SCOPE,
+                "graph_only_no_box": True,
+                "box_obstacles_enabled": False,
+                "low_obstacles_enabled": False,
+                "cognitive_profile": "M0",
+                "route_prior_enabled": False,
+                "obstacle_arm": "NONE",
+                "m3_safety_status": "DEFERRED",
+                "route_prior_status": "DEFERRED",
+            }
+        )
     return replace(base, runtime=runtime, mission_legs=repeated)
 
 
@@ -434,11 +458,16 @@ class PhaseGCausalNode(V6FormalNode):
         config: PhaseGConfig,
         arm: str,
         obstacle_arm: str,
+        graph_only_no_box: bool = False,
     ) -> None:
         if arm not in ARMS:
             raise PhaseGConfigError(f"unknown arm {arm}")
         if obstacle_arm not in OBSTACLE_ARMS:
             raise PhaseGConfigError(f"unknown obstacle arm {obstacle_arm}")
+        if graph_only_no_box and arm not in GRAPH_ONLY_ARMS:
+            raise PhaseGConfigError(
+                "graph-only-no-box requires arm G1, G2, or G3"
+            )
         super().__init__(
             manifest,
             episode,
@@ -459,6 +488,7 @@ class PhaseGCausalNode(V6FormalNode):
         self.config = config
         self.arm = arm
         self.obstacle_arm = obstacle_arm
+        self.graph_only_no_box = graph_only_no_box
         self.timeline = build_timeline(config.route_ids)
         self.graph_history: list[dict[str, Any]] = []
         self.graph_switch_history: list[dict[str, Any]] = []
@@ -847,20 +877,33 @@ class PhaseGCausalNode(V6FormalNode):
             scoring["completed"] and scoring["completed_leg_ids"] == list(LOOP_ROUTE_IDS)
         )
         invalid = bool(self._invalid_contrast_reasons)
+        graph_only = self.graph_only_no_box
         result = {
             "schema_version": RESULT_SCHEMA,
-            "qualification": "ENGINEERING_CAUSAL_RUN",
+            "qualification": (
+                "ENGINEERING_GRAPH_ONLY_RUN"
+                if graph_only
+                else "ENGINEERING_CAUSAL_RUN"
+            ),
             "formal_qualification": NOT_QUALIFIED,
             "verdict": (
-                "INVALID_NO_CAUSAL_CONTRAST"
+                "ENGINEERING_GRAPH_ONLY_INVALID_NO_CAUSAL_CONTRAST"
+                if graph_only and invalid
+                else "ENGINEERING_GRAPH_ONLY_RUN_COMPLETE"
+                if graph_only and route_success
+                else "ENGINEERING_GRAPH_ONLY_RUN_FAILED"
+                if graph_only
+                else "INVALID_NO_CAUSAL_CONTRAST"
                 if invalid
                 else "RUN_COMPLETE" if route_success else "RUN_FAILED"
             ),
             "arm": self.arm,
             "graph_mode": GRAPH_MODE_BY_ARM[self.arm],
             "expected_selected_kind": EXPECTED_SELECTED_KIND[self.arm],
-            "route_prior_enabled": ROUTE_PRIOR_BY_ARM[self.arm],
-            "obstacle_arm": self.obstacle_arm,
+            "route_prior_enabled": (
+                False if graph_only else ROUTE_PRIOR_BY_ARM[self.arm]
+            ),
+            "obstacle_arm": "NONE" if graph_only else self.obstacle_arm,
             "pair_identity": {
                 "scene_id": self.manifest.scene_id,
                 "seed": int(self.episode.seed),
@@ -895,6 +938,23 @@ class PhaseGCausalNode(V6FormalNode):
             "total_fallback_count": total_fallback_count,
             "dynamic_actor_metrics": _dynamic_metrics(self.config, self.arm),
         }
+        if graph_only:
+            result.update(
+                {
+                    "experiment_scope": GRAPH_ONLY_SCOPE,
+                    "graph_only_no_box": True,
+                    "box_obstacles_enabled": False,
+                    "cognitive_profile": "M0",
+                    "m3_safety_status": "DEFERRED",
+                    "route_prior_status": "DEFERRED",
+                }
+            )
+            result["pair_identity"].update(
+                {
+                    "experiment_scope": GRAPH_ONLY_SCOPE,
+                    "graph_only_no_box": True,
+                }
+            )
         append_evidence_jsonl(self.output_jsonl, "phase_g_result", **result)
         return result
 
@@ -916,7 +976,8 @@ def _read_result(path: str | Path) -> dict[str, Any]:
 def result_is_eligible(result: Mapping[str, Any]) -> bool:
     score = _mapping(result.get("scoring"), "result.scoring")
     return bool(
-        result.get("verdict") == "RUN_COMPLETE"
+        result.get("verdict")
+        in {"RUN_COMPLETE", "ENGINEERING_GRAPH_ONLY_RUN_COMPLETE"}
         and result.get("state") == "SUCCEEDED"
         and result.get("reset_calls") == 1
         and result.get("reset_events") == 1
@@ -927,6 +988,38 @@ def result_is_eligible(result: Mapping[str, Any]) -> bool:
         and score.get("collision") is False
         and score.get("terminal_zero_confirmed") is True
     )
+
+
+def graph_only_contrast_is_eligible(result: Mapping[str, Any]) -> bool:
+    arm = str(result.get("arm", ""))
+    if arm not in GRAPH_ONLY_ARMS:
+        return False
+    score = _mapping(result.get("scoring"), "result.scoring")
+    selected_graph_ids = score.get("selected_graph_ids")
+    if not isinstance(selected_graph_ids, Sequence) or isinstance(
+        selected_graph_ids, (str, bytes)
+    ) or not selected_graph_ids:
+        return False
+    selected = [str(value) for value in selected_graph_ids]
+    expected_kind = EXPECTED_SELECTED_KIND[arm]
+    if any(graph_kind(graph_id) != expected_kind for graph_id in selected):
+        return False
+    if arm == "G1":
+        return expected_kind == "gvg" and any(
+            candidate_is_current_trusted(
+                candidate,
+                reset_epoch=int(result.get("reset_events", -1)),
+            )
+            for candidate in result.get("candidate_graphs", ())
+        )
+    valid, _reasons = causal_contrast_status(
+        arm,
+        selected[-1],
+        result.get("candidate_graphs", ()),
+        result.get("validation_acks", ()),
+        reset_epoch=int(result.get("reset_events", -1)),
+    )
+    return valid
 
 
 def pareto_direction(
@@ -1076,6 +1169,126 @@ def evaluate_group(
     }
 
 
+def evaluate_graph_only_group(
+    results: Mapping[str, Mapping[str, Any]],
+    selection_thresholds: Mapping[str, float] | None = None,
+) -> dict[str, Any]:
+    if set(results) != set(GRAPH_ONLY_ARMS):
+        raise PhaseGConfigError(
+            f"graph-only results must contain exactly {GRAPH_ONLY_ARMS}"
+        )
+    for name in GRAPH_ONLY_ARMS:
+        row = results[name]
+        if row.get("schema_version") != RESULT_SCHEMA:
+            raise PhaseGConfigError(f"{name} result schema mismatch")
+        if row.get("arm") != name:
+            raise PhaseGConfigError(f"{name} result arm mismatch")
+        if row.get("qualification") != "ENGINEERING_GRAPH_ONLY_RUN":
+            raise PhaseGConfigError(
+                "graph-only results must use ENGINEERING_GRAPH_ONLY_RUN"
+            )
+        if row.get("formal_qualification") != NOT_QUALIFIED:
+            raise PhaseGConfigError(
+                "graph-only results must remain formally NOT_QUALIFIED"
+            )
+        if row.get("experiment_scope") != GRAPH_ONLY_SCOPE:
+            raise PhaseGConfigError(
+                "graph-only results must share graph_only_no_box scope"
+            )
+        if row.get("graph_only_no_box") is not True:
+            raise PhaseGConfigError("graph-only results must record no-box=true")
+        if row.get("box_obstacles_enabled") is not False:
+            raise PhaseGConfigError("graph-only results must keep boxes disabled")
+        if row.get("cognitive_profile") != "M0":
+            raise PhaseGConfigError("graph-only results must use Module3 profile M0")
+        if row.get("route_prior_enabled") is not False:
+            raise PhaseGConfigError("graph-only results must keep route prior off")
+        if row.get("obstacle_arm") != "NONE":
+            raise PhaseGConfigError("graph-only results must not use an obstacle arm")
+        if row.get("m3_safety_status") != "DEFERRED":
+            raise PhaseGConfigError("graph-only results must defer Module3 safety")
+        if row.get("route_prior_status") != "DEFERRED":
+            raise PhaseGConfigError("graph-only results must defer route prior")
+        if row.get("graph_mode") != GRAPH_MODE_BY_ARM[name]:
+            raise PhaseGConfigError(f"{name} graph mode mismatch")
+    pair_identities = {
+        json.dumps(results[name].get("pair_identity"), sort_keys=True)
+        for name in GRAPH_ONLY_ARMS
+    }
+    if len(pair_identities) != 1 or results["G1"].get("pair_identity") is None:
+        raise PhaseGConfigError(
+            "G1-G3 must share one scene/seed/scope/route/loop/reset pair identity"
+        )
+
+    route_eligibility = {
+        name: result_is_eligible(results[name]) for name in GRAPH_ONLY_ARMS
+    }
+    contrast_eligibility = {
+        name: graph_only_contrast_is_eligible(results[name])
+        for name in GRAPH_ONLY_ARMS
+    }
+    eligibility = {
+        name: route_eligibility[name] and contrast_eligibility[name]
+        for name in GRAPH_ONLY_ARMS
+    }
+    comparisons = {
+        "G3_vs_G1": pareto_direction(
+            results["G3"], results["G1"], selection_thresholds
+        ),
+        "G2_vs_G1": pareto_direction(
+            results["G2"], results["G1"], selection_thresholds
+        ),
+    }
+    selected = "GVG"
+    verdict = "ENGINEERING_GRAPH_ONLY_GVG_RETAINED"
+    if not all(eligibility.values()):
+        verdict = "ENGINEERING_GRAPH_ONLY_GROUP_INCOMPLETE"
+    elif comparisons["G3_vs_G1"]["net_benefit"]:
+        selected = "PRIMARY"
+        verdict = "ENGINEERING_GRAPH_ONLY_PRIMARY_CANDIDATE"
+    elif comparisons["G2_vs_G1"]["net_benefit"]:
+        selected = "HYBRID"
+        verdict = "ENGINEERING_GRAPH_ONLY_HYBRID_CANDIDATE"
+    elif any(
+        comparison["mixed_tradeoff"] for comparison in comparisons.values()
+    ):
+        verdict = "ENGINEERING_GRAPH_ONLY_AMBIGUOUS_KEEP_GVG"
+
+    return {
+        "schema_version": SUMMARY_SCHEMA,
+        "qualification": "ENGINEERING_GRAPH_ONLY_CAUSAL",
+        "formal_qualification": NOT_QUALIFIED,
+        "verdict": verdict,
+        "selected_graph_mode": selected,
+        "experiment_scope": GRAPH_ONLY_SCOPE,
+        "graph_only_no_box": True,
+        "box_obstacles_enabled": False,
+        "cognitive_profile": "M0",
+        "route_prior_enabled": False,
+        "pair_identity": dict(
+            _mapping(results["G1"]["pair_identity"], "pair_identity")
+        ),
+        "baseline_arm": "G1",
+        "eligibility": eligibility,
+        "route_eligibility": route_eligibility,
+        "contrast_eligibility": contrast_eligibility,
+        "comparisons": comparisons,
+        "shadow_control": {
+            "arm": "G1",
+            "eligible": eligibility["G1"],
+            "selected_for_navigation": False,
+        },
+        "deferred": {
+            "m3_safety": "DEFERRED",
+            "route_prior": "DEFERRED",
+        },
+        "raw_scoring": {
+            name: dict(_mapping(results[name].get("scoring"), f"{name}.scoring"))
+            for name in GRAPH_ONLY_ARMS
+        },
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("config", "plan", "run", "evaluate"))
@@ -1088,6 +1301,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--readiness-timeout-sec", type=float, default=120.0)
     parser.add_argument("--reset-timeout-sec", type=float, default=120.0)
     parser.add_argument("--navigation-timeout-sec", type=float, default=900.0)
+    parser.add_argument("--graph-only-no-box", action="store_true")
     return parser
 
 
@@ -1127,6 +1341,11 @@ def cli(argv: list[str] | None = None) -> int:
                         "default_obstacle_arm": config.default_obstacle_arm,
                         "fallback_obstacle_arm": config.fallback_obstacle_arm,
                         "selection_thresholds": dict(config.selection_thresholds),
+                        **(
+                            {"experiment_scope": GRAPH_ONLY_SCOPE}
+                            if args.graph_only_no_box
+                            else {}
+                        ),
                     },
                     sort_keys=True,
                 )
@@ -1136,13 +1355,31 @@ def cli(argv: list[str] | None = None) -> int:
             if args.arm is None:
                 raise PhaseGConfigError("plan requires --arm")
             arm = config.arms[args.arm]
+            if args.graph_only_no_box and args.arm not in GRAPH_ONLY_ARMS:
+                raise PhaseGConfigError(
+                    "graph-only-no-box requires arm G1, G2, or G3"
+                )
             print(
                 json.dumps(
                     {
                         "arm": args.arm,
                         "graph_mode": arm.graph_mode,
                         "expected_selected_kind": arm.expected_selected_kind,
-                        "route_prior_enabled": arm.route_prior_enabled,
+                        "route_prior_enabled": (
+                            False if args.graph_only_no_box else arm.route_prior_enabled
+                        ),
+                        **(
+                            {
+                                "experiment_scope": GRAPH_ONLY_SCOPE,
+                                "graph_only_no_box": True,
+                                "box_obstacles_enabled": False,
+                                "cognitive_profile": "M0",
+                                "m3_safety_status": "DEFERRED",
+                                "route_prior_status": "DEFERRED",
+                            }
+                            if args.graph_only_no_box
+                            else {}
+                        ),
                         "timeline": [vars(item) for item in build_timeline(config.route_ids)],
                         "reset_count": 1,
                         "no_reset_between_loops": True,
@@ -1153,7 +1390,11 @@ def cli(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "evaluate":
             rows = _parse_arm_results(args.arm_result)
-            summary = evaluate_group(rows, config.selection_thresholds)
+            summary = (
+                evaluate_graph_only_group(rows, config.selection_thresholds)
+                if args.graph_only_no_box
+                else evaluate_group(rows, config.selection_thresholds)
+            )
             encoded = json.dumps(summary, indent=2, sort_keys=True) + "\n"
             if args.output_json:
                 target = Path(args.output_json).expanduser().resolve()
@@ -1164,12 +1405,18 @@ def cli(argv: list[str] | None = None) -> int:
                 "M3_GROUP_INCOMPLETE_TRY_WHOLE_GROUP_M2",
                 "INVALID_INCOMPLETE_M2_GROUP",
                 "INVALID_NO_CAUSAL_CONTRAST",
+                "ENGINEERING_GRAPH_ONLY_GROUP_INCOMPLETE",
             } else 2
 
         if args.arm is None or args.output_jsonl is None:
             raise PhaseGConfigError("run requires --arm and --output-jsonl")
         obstacle_arm = args.obstacle_arm or config.default_obstacle_arm
-        manifest = phase_g_manifest(config, args.arm, obstacle_arm)
+        manifest = phase_g_manifest(
+            config,
+            args.arm,
+            obstacle_arm,
+            graph_only_no_box=args.graph_only_no_box,
+        )
         import rclpy
 
         rclpy.init(args=None)
@@ -1180,6 +1427,7 @@ def cli(argv: list[str] | None = None) -> int:
             config=config,
             arm=args.arm,
             obstacle_arm=obstacle_arm,
+            graph_only_no_box=args.graph_only_no_box,
         )
         try:
             result = node.run(
@@ -1188,7 +1436,10 @@ def cli(argv: list[str] | None = None) -> int:
                 navigation_timeout_sec=args.navigation_timeout_sec,
             )
             print(json.dumps(result, sort_keys=True))
-            return 0 if result["verdict"] == "RUN_COMPLETE" else 2
+            return 0 if result["verdict"] in {
+                "RUN_COMPLETE",
+                "ENGINEERING_GRAPH_ONLY_RUN_COMPLETE",
+            } else 2
         finally:
             node.destroy()
             rclpy.shutdown()
@@ -1207,12 +1458,16 @@ if __name__ == "__main__":
 
 __all__ = [
     "ARMS",
+    "GRAPH_ONLY_ARMS",
+    "GRAPH_ONLY_SCOPE",
     "LOOP_ROUTE_IDS",
     "PhaseGConfigError",
     "build_timeline",
     "candidate_is_mature",
     "causal_contrast_status",
     "evaluate_group",
+    "evaluate_graph_only_group",
+    "graph_only_contrast_is_eligible",
     "graph_kind",
     "load_config",
     "pareto_direction",

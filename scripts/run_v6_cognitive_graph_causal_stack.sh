@@ -11,11 +11,13 @@ usage() {
 usage: run_v6_cognitive_graph_causal_stack.sh --arm G0|G1|G2|G3 \
   --domain ID --run-dir PATH --socket PATH [--obstacle-arm M3|M2] \
   [--module2-root PATH] [--localization-supervisor-mode shadow|startup] \
-  [--dry-run]
+  [--graph-only-no-box] [--dry-run]
 
 G0: GVG + route prior off       G1: graph shadow + route prior off
 G2: graph hybrid + prior on     G3: graph primary + prior on
 The local-obstacle arm defaults to M3; M2 is the whole-group rollback.
+Graph-only-no-box accepts G1--G3, fixes Module3 to M0, keeps Module2 and the
+Integration transport in shadow, and disables route prior.
 EOF
 }
 
@@ -29,6 +31,7 @@ integration_root="${BIO_NAV_INTEGRATION_ROOT:-/home/lyb/Workspace/Bio_Nav/worktr
 candidate_manifest="${integration_root}/ros2_ws/src/bio_nav_ros_bridge/config/kujiale_0026_run4_read_only_shadow_candidate.json"
 localization_supervisor_mode="${BIO_NAV_PHASE_G_LOCALIZATION_SUPERVISOR_MODE:-shadow}"
 dry_run=false
+graph_only_no_box=false
 
 while (($#)); do
   case "$1" in
@@ -43,12 +46,17 @@ while (($#)); do
       shift 2
       ;;
     --dry-run) dry_run=true; shift ;;
+    --graph-only-no-box) graph_only_no_box=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage; echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
 [[ "${arm}" =~ ^G[0-3]$ ]] || { usage; exit 2; }
+if [[ "${graph_only_no_box}" == true && ! "${arm}" =~ ^(G1|G2|G3)$ ]]; then
+  echo "--graph-only-no-box requires G1, G2, or G3" >&2
+  exit 2
+fi
 [[ "${obstacle_arm}" =~ ^M[23]$ ]] || {
   echo "obstacle-arm must be M3 or M2" >&2
   exit 2
@@ -94,8 +102,22 @@ case "${arm}" in
     ;;
 esac
 
+integration_graph_mode="${graph_mode}"
+cognitive_profile="${obstacle_arm}"
+experiment_scope="phase_g_full"
+no_box="false"
+if [[ "${graph_only_no_box}" == true ]]; then
+  experiment_scope="graph_only_no_box"
+  no_box="true"
+  cognitive_profile="M0"
+  route_prior_enabled="false"
+  startup_profile="cognitive_graph_causal_shadow"
+  active_effect_scope="obstacle_and_graph"
+  integration_graph_mode="shadow"
+fi
+
 module3_command=(
-  env "V6_COGNITIVE_PROFILE=${obstacle_arm}"
+  env "V6_COGNITIVE_PROFILE=${cognitive_profile}"
   "${script_dir}/run_v6_kujiale_low_obstacles.sh"
 )
 if [[ "${graph_mode}" == "gvg" ]]; then
@@ -109,7 +131,7 @@ module2_command=(
   "${integration_root}/scripts/run_v6_module2_graph_causal_server.sh"
   --startup-profile "${startup_profile}"
   --active-effect-scope "${active_effect_scope}"
-  --cognitive-graph-mode "${graph_mode}"
+  --cognitive-graph-mode "${integration_graph_mode}"
 )
 module2_command+=(
   --socket "${socket_path}"
@@ -120,7 +142,7 @@ module2_command+=(
 bridge_command=(
   ros2 launch bio_nav_ros_bridge v6_cognitive_navigation.launch.py
   "startup_profile:=${startup_profile}"
-  "cognitive_graph_mode:=${graph_mode}"
+  "cognitive_graph_mode:=${integration_graph_mode}"
   "route_prior_enabled:=${route_prior_enabled}"
   "socket_path:=${socket_path}"
   "localization_candidate_manifest:=${candidate_manifest}"
@@ -136,6 +158,14 @@ if [[ "${dry_run}" == true ]]; then
   printf 'startup_profile=%s\n' "${startup_profile}"
   printf 'active_effect_scope=%s\n' "${active_effect_scope}"
   printf 'localization_supervisor_mode=%s\n' "${localization_supervisor_mode}"
+  if [[ "${graph_only_no_box}" == true ]]; then
+    printf 'experiment_scope=%s\n' "${experiment_scope}"
+    printf 'no_box=%s\n' "${no_box}"
+    printf 'cognitive_profile=%s\n' "${cognitive_profile}"
+    printf 'integration_graph_mode=%s\n' "${integration_graph_mode}"
+    printf 'm3_safety_status=DEFERRED\n'
+    printf 'route_prior_status=DEFERRED\n'
+  fi
   printf 'module3:'; printf ' %q' "${module3_command[@]}"; printf '\n'
   printf 'module2:'; printf ' %q' "${module2_command[@]}"; printf '\n'
   printf 'bridge:'; printf ' %q' "${bridge_command[@]}"; printf '\n'

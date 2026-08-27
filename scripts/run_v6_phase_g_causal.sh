@@ -13,6 +13,7 @@ usage() {
   cat >&2 <<'USAGE'
 usage: run_v6_phase_g_causal.sh [--run-root PATH] [--domain ID]
        [--arm G0|G1|G2|G3] [--obstacle-arm M3|M2] [--socket PATH] [--dry-run]
+       [--graph-only-no-box]
        config|plan|isaac|stack|record|runner|evaluate [arguments...]
 
 Per-arm live terminals: isaac, stack, record, runner.
@@ -20,6 +21,9 @@ The stack owns Module3 ROS, Module2 and Integration.  The runner performs one
 reset, two full-house warmup loops, then one full-house scoring loop without a
 reset between loops.  M3 is the default obstacle arm; M2 is a whole-group
 fallback and must never be mixed within one G0--G3 comparison.
+--graph-only-no-box runs only G1--G3 with no box, Module3 profile M0, and
+route prior disabled; it is engineering-only and does not qualify safety or
+route-prior behavior.
 USAGE
 }
 
@@ -29,6 +33,7 @@ arm="${BIO_NAV_PHASE_G_ARM:-}"
 obstacle_arm="${BIO_NAV_PHASE_G_OBSTACLE_ARM:-M3}"
 socket_path="${BIO_NAV_PHASE_G_SOCKET_PATH:-}"
 dry_run=false
+graph_only_no_box=false
 while (($# > 0)); do
   case "$1" in
     --run-root)
@@ -60,6 +65,10 @@ while (($# > 0)); do
       dry_run=true
       shift
       ;;
+    --graph-only-no-box)
+      graph_only_no_box=true
+      shift
+      ;;
     *) break ;;
   esac
 done
@@ -80,6 +89,12 @@ if [[ "${component}" =~ ^(plan|isaac|stack|record|runner)$ ]]; then
     echo "--arm G0|G1|G2|G3 is required for ${component}" >&2
     exit 2
   }
+fi
+if [[ "${graph_only_no_box}" == true \
+    && "${component}" =~ ^(plan|isaac|stack|record|runner)$ \
+    && ! "${arm}" =~ ^(G1|G2|G3)$ ]]; then
+  echo "--graph-only-no-box requires --arm G1|G2|G3 for ${component}" >&2
+  exit 2
 fi
 
 if [[ -z "${socket_path}" ]]; then
@@ -113,18 +128,24 @@ source_phase_g_ros() {
 case "${component}" in
   config)
     source_phase_g_ros
-    run_command ros2 run robot_experiments v6_phase_g_causal \
-      config --config "${BIO_NAV_PHASE_G_CONFIG:-$default_config}" "$@"
+    command=(ros2 run robot_experiments v6_phase_g_causal
+      config --config "${BIO_NAV_PHASE_G_CONFIG:-$default_config}")
+    [[ "${graph_only_no_box}" == true ]] && command+=(--graph-only-no-box)
+    run_command "${command[@]}" "$@"
     ;;
   plan)
     source_phase_g_ros
-    run_command ros2 run robot_experiments v6_phase_g_causal \
-      plan --config "${BIO_NAV_PHASE_G_CONFIG:-$default_config}" \
-      --arm "${arm}" "$@"
+    command=(ros2 run robot_experiments v6_phase_g_causal
+      plan --config "${BIO_NAV_PHASE_G_CONFIG:-$default_config}"
+      --arm "${arm}")
+    [[ "${graph_only_no_box}" == true ]] && command+=(--graph-only-no-box)
+    run_command "${command[@]}" "$@"
     ;;
   isaac)
-    run_command env BIO_NAV_PHASE_B_DOMAIN_ID="${domain_id}" \
-      "${isaac_entry}" isaac "$@"
+    command=(env BIO_NAV_PHASE_B_DOMAIN_ID="${domain_id}"
+      "${isaac_entry}" isaac "$@")
+    [[ "${graph_only_no_box}" == true ]] && command+=(--no-dynamic-obstacles)
+    run_command "${command[@]}"
     ;;
   stack)
     [[ -x "${stack_entry}" || "${dry_run}" == true ]] || {
@@ -132,9 +153,11 @@ case "${component}" in
       exit 2
     }
     mkdir -p "${run_root}/stack/${arm,,}"
-    run_command "${stack_entry}" --arm "${arm}" --domain "${domain_id}" \
-      --run-root "${run_root}/stack/${arm,,}" --socket "${socket_path}" \
-      --obstacle-arm "${obstacle_arm}" "$@"
+    command=("${stack_entry}" --arm "${arm}" --domain "${domain_id}"
+      --run-root "${run_root}/stack/${arm,,}" --socket "${socket_path}"
+      --obstacle-arm "${obstacle_arm}")
+    [[ "${graph_only_no_box}" == true ]] && command+=(--graph-only-no-box)
+    run_command "${command[@]}" "$@"
     ;;
   record)
     source_phase_g_ros
@@ -174,15 +197,19 @@ case "${component}" in
       echo "refusing to overwrite ${output}" >&2
       exit 2
     }
-    run_command ros2 run robot_experiments v6_phase_g_causal \
-      run --config "${BIO_NAV_PHASE_G_CONFIG:-$default_config}" \
-      --arm "${arm}" --obstacle-arm "${obstacle_arm}" \
-      --output-jsonl "${output}" "$@"
+    command=(ros2 run robot_experiments v6_phase_g_causal
+      run --config "${BIO_NAV_PHASE_G_CONFIG:-$default_config}"
+      --arm "${arm}" --obstacle-arm "${obstacle_arm}"
+      --output-jsonl "${output}")
+    [[ "${graph_only_no_box}" == true ]] && command+=(--graph-only-no-box)
+    run_command "${command[@]}" "$@"
     ;;
   evaluate)
     source_phase_g_ros
-    run_command ros2 run robot_experiments v6_phase_g_causal \
-      evaluate --config "${BIO_NAV_PHASE_G_CONFIG:-$default_config}" "$@"
+    command=(ros2 run robot_experiments v6_phase_g_causal
+      evaluate --config "${BIO_NAV_PHASE_G_CONFIG:-$default_config}")
+    [[ "${graph_only_no_box}" == true ]] && command+=(--graph-only-no-box)
+    run_command "${command[@]}" "$@"
     ;;
   *) usage; exit 2 ;;
 esac
