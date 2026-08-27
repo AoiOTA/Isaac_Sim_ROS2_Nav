@@ -654,6 +654,7 @@ class RouteCoordinator:
         self.latest_priors_request_id: int | None = None
         self.latest_priors_graph_id: str | None = None
         self.latest_priors_graph_revision: int | None = None
+        self.latest_priors_cognitive_identity: CognitiveGraphIdentity | None = None
         self.tracker: RouteTracker | None = None
         self.latest_pose_xy: tuple[float, float] | None = None
         self.latest_pose_frame_id: str | None = None
@@ -2084,6 +2085,7 @@ class RouteCoordinator:
             self.node.get_logger().error(f"reset event held fail-closed: {failure}")
 
     def _on_cognitive_graph(self, message) -> None:
+        retired_prior_for_identity = False
         with self._route_state_lock():
             if self._reset_barrier_is_held():
                 return
@@ -2253,6 +2255,12 @@ class RouteCoordinator:
             if cognitive_mode == "shadow":
                 if bind_identity:
                     self.cognitive_graph_identity = candidate.identity
+                    if (
+                        getattr(self, "latest_priors", {})
+                        and not self._accepted_prior_is_current_locked()
+                    ):
+                        self._clear_latest_priors()
+                        retired_prior_for_identity = True
                 self.cognitive_graph_last_sequence = candidate.source_sequence
                 feedback = replace(
                     feedback,
@@ -2260,6 +2268,12 @@ class RouteCoordinator:
                     validated_graph_revision=int(self.graph.revision),
                 )
         if cognitive_mode == "shadow":
+            if retired_prior_for_identity:
+                self.node.get_logger().warning(
+                    "Module2 edge prior cognitive identity retired; restoring "
+                    "geometry-only route"
+                )
+                self._prepare_route({})
             with self._route_output_lock():
                 with self._route_state_lock():
                     if (
@@ -3309,39 +3323,44 @@ class RouteCoordinator:
         self.latest_priors_request_id = None
         self.latest_priors_graph_id = None
         self.latest_priors_graph_revision = None
+        self.latest_priors_cognitive_identity = None
+
+    def _accepted_prior_is_current_locked(self) -> bool:
+        """Keep one accepted preference only within its route identity."""
+
+        if not self.latest_priors or not str(self.latest_prior_model_id or ''):
+            return False
+        accepted_identity = getattr(
+            self, "latest_priors_cognitive_identity", None
+        )
+        current_identity = getattr(self, "cognitive_graph_identity", None)
+        return bool(
+            getattr(self, "latest_priors_request_id", self.request_id)
+            == self.request_id
+            and getattr(
+                self, "latest_priors_graph_id", self.graph.graph_id
+            ) == self.graph.graph_id
+            and getattr(
+                self, "latest_priors_graph_revision", self.graph.revision
+            ) == self.graph.revision
+            and (
+                accepted_identity is None
+                or accepted_identity == current_identity
+            )
+        )
 
     def _priors_for_consumption(
         self, priors: dict[int, tuple[float, float]]
     ) -> dict[int, tuple[float, float]]:
-        """Recheck TTL and route identity at the exact DynamicEdges use site."""
+        """Recheck route identity at the exact DynamicEdges use site."""
 
         if not priors:
             return {}
-        now_ns = int(self._now().nanoseconds)
-        stamp_ns = self.latest_priors_stamp_ns
-        age_s = (
-            math.inf if stamp_ns is None else (now_ns - int(stamp_ns)) / 1.0e9
-        )
-        request_id = getattr(self, "latest_priors_request_id", self.request_id)
-        graph_id = getattr(
-            self, "latest_priors_graph_id", self.graph.graph_id
-        )
-        graph_revision = getattr(
-            self, "latest_priors_graph_revision", self.graph.revision
-        )
-        model_id = str(self.latest_prior_model_id or '')
-        if (
-            age_s < 0.0
-            or age_s > self.module2_prior_ttl_s
-            or request_id != self.request_id
-            or graph_id != self.graph.graph_id
-            or graph_revision != self.graph.revision
-            or not model_id
-        ):
+        if not self._accepted_prior_is_current_locked():
             if priors == self.latest_priors:
                 self._clear_latest_priors()
             self.node.get_logger().warning(
-                "Module2 edge prior expired or changed identity at consumption; "
+                "Module2 edge prior changed route identity at consumption; "
                 "using geometry-only route"
             )
             return {}
@@ -3394,6 +3413,10 @@ class RouteCoordinator:
                 self.pending_prior_model_id,
                 id(self.pending_goal),
             )
+            model_rollover = bool(
+                self.pending_prior_model_id is not None
+                and str(message.model_id) != self.pending_prior_model_id
+            )
             if (
                 self.pending_goal is None
                 or self.pending_deadline_ns is None
@@ -3406,10 +3429,6 @@ class RouteCoordinator:
                 or int(message.request_id) != self.request_id
                 or str(message.graph_id) != self.graph.graph_id
                 or int(message.graph_revision) != self.graph.revision
-                or (
-                    self.pending_prior_model_id is not None
-                    and str(message.model_id) != self.pending_prior_model_id
-                )
             ):
                 return
             edge_ids = {int(edge.id) for edge in self.graph.edges}
@@ -3468,9 +3487,18 @@ class RouteCoordinator:
             ):
                 return
             self._clear_pending_prior_request()
-            if invalid_edges or not usable:
+            retained_priors = (
+                dict(self.latest_priors)
+                if self._accepted_prior_is_current_locked()
+                else {}
+            )
+            if self.latest_priors and not retained_priors:
+                self._clear_latest_priors()
+            if model_rollover and usable:
                 self._clear_latest_priors()
                 accepted_priors = {}
+            elif invalid_edges or not usable or not priors:
+                accepted_priors = None if retained_priors else {}
             else:
                 self.latest_priors = priors
                 self.latest_priors_stamp_ns = stamp_ns
@@ -3478,16 +3506,30 @@ class RouteCoordinator:
                 self.latest_priors_request_id = int(message.request_id)
                 self.latest_priors_graph_id = str(message.graph_id)
                 self.latest_priors_graph_revision = int(message.graph_revision)
+                self.latest_priors_cognitive_identity = getattr(
+                    self, "cognitive_graph_identity", None
+                )
                 accepted_priors = priors
         if invalid_edges:
             self.node.get_logger().warning(
                 "Module2 prior contains duplicate or nonexistent graph edges; ignored"
             )
         elif not usable:
-            self.node.get_logger().warning(
-                f"Module2 edge prior rejected ({reason}); using geometry-only route"
+            suffix = (
+                "; retaining accepted route preference"
+                if retained_priors
+                else "; using geometry-only route"
             )
-        self._prepare_route(accepted_priors)
+            self.node.get_logger().warning(
+                f"Module2 edge prior rejected ({reason}){suffix}"
+            )
+        elif model_rollover:
+            self.node.get_logger().warning(
+                "Module2 edge prior model identity changed; retiring the "
+                "accepted route preference"
+            )
+        if accepted_priors is not None:
+            self._prepare_route(accepted_priors)
 
     def _check_prior_timeout(self) -> None:
         with self._route_state_lock():
@@ -3504,7 +3546,15 @@ class RouteCoordinator:
             ):
                 return
             self._clear_pending_prior_request()
-            self._clear_latest_priors()
+            retained_priors = self._accepted_prior_is_current_locked()
+            if self.latest_priors and not retained_priors:
+                self._clear_latest_priors()
+        if retained_priors:
+            self.node.get_logger().info(
+                "Module2 edge prior refresh timed out; retaining accepted "
+                "route preference"
+            )
+            return
         self.node.get_logger().info("Module2 edge prior timed out; using geometry-only route")
         with self._route_state_lock():
             if not self._route_input_is_current_locked(input_generation):
@@ -4159,7 +4209,7 @@ class RouteCoordinator:
             )
             * 1.0e9
         )
-        expired = False
+        retired = False
         refresh = False
         changed = False
         pending_goal = False
@@ -4168,11 +4218,12 @@ class RouteCoordinator:
             with self._route_state_lock():
                 if not self._route_input_is_current_locked(input_generation):
                     return
-                if self.latest_priors_stamp_ns is not None:
-                    age_s = (now_ns - self.latest_priors_stamp_ns) / 1.0e9
-                    if age_s < 0.0 or age_s > self.module2_prior_ttl_s:
-                        self._clear_latest_priors()
-                        expired = True
+                if (
+                    self.latest_priors
+                    and not self._accepted_prior_is_current_locked()
+                ):
+                    self._clear_latest_priors()
+                    retired = True
                 pending_goal = self.pending_goal is not None
                 refresh = bool(
                     self._route_prior_is_enabled()
@@ -4186,16 +4237,17 @@ class RouteCoordinator:
                 priors = dict(self.latest_priors)
             if changed:
                 self._publish_runtime_states()
-        if expired:
+        if retired:
             self.node.get_logger().warning(
-                "Module2 edge prior expired; restoring geometry-only route"
+                "Module2 edge prior route identity retired; restoring "
+                "geometry-only route"
             )
         if refresh:
             self._publish_route_context_if_input_current(input_generation)
-        if pending_goal and (expired or changed):
+        if pending_goal and (retired or changed):
             # UNKNOWN is a different Route Server view than BLOCKED: the edge
             # becomes traversable again with the adjustable unknown penalty.
-            self._prepare_route({} if expired else priors)
+            self._prepare_route({} if retired else priors)
 
     def _publish_runtime_states(self, *, graph=None) -> None:
         graph = self.graph if graph is None else graph

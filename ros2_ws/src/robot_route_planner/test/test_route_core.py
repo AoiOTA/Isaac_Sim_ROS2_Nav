@@ -85,7 +85,7 @@ def test_edge_prior_requires_fresh_health_model_and_finite_bounds() -> None:
         assert reason in detail
 
 
-def test_prior_timeout_and_ttl_restore_geometry_only_routing() -> None:
+def test_accepted_prior_survives_refresh_timeout_and_route_ttl() -> None:
     replans = []
     warnings = []
     coordinator = RouteCoordinator.__new__(RouteCoordinator)
@@ -125,23 +125,23 @@ def test_prior_timeout_and_ttl_restore_geometry_only_routing() -> None:
 
     coordinator._check_prior_timeout()
     assert coordinator.pending_deadline_ns is None
-    assert coordinator.latest_priors == {}
-    assert coordinator.latest_priors_stamp_ns is None
-    assert replans == [{}]
+    assert coordinator.latest_priors == {7: (1.0, 0.8)}
+    assert coordinator.latest_priors_stamp_ns == 1_000_000_000
+    assert replans == []
 
     coordinator._on_priors(_edge_prior_message(
         request_id=4, stamp_ns=3_000_000_000))
-    assert coordinator.latest_priors == {}
-    assert coordinator.latest_priors_stamp_ns is None
-    assert replans == [{}]
+    assert coordinator.latest_priors == {7: (1.0, 0.8)}
+    assert coordinator.latest_priors_stamp_ns == 1_000_000_000
+    assert replans == []
 
     coordinator.latest_priors = {7: (1.0, 0.8)}
     coordinator.latest_priors_stamp_ns = 1_000_000_000
     coordinator._runtime_tick()
-    assert coordinator.latest_priors == {}
-    assert coordinator.latest_priors_stamp_ns is None
-    assert replans == [{}, {}]
-    assert any('geometry-only' in message for message in warnings)
+    assert coordinator.latest_priors == {7: (1.0, 0.8)}
+    assert coordinator.latest_priors_stamp_ns == 1_000_000_000
+    assert replans == []
+    assert any('retaining accepted' in message for message in warnings)
 
 
 def _prior_wait_coordinator(*, mode='primary', timeout_s=0.25):
@@ -300,6 +300,93 @@ def test_matching_prior_for_new_request_is_accepted() -> None:
     assert replans == [{7: (1.0, 0.8)}]
 
 
+def test_unhealthy_and_zero_refresh_do_not_replace_accepted_prior() -> None:
+    coordinator = _prior_wait_coordinator(mode='gvg')
+    coordinator._now_ns = 1_100_000_000
+    coordinator._on_priors(_edge_prior_message(
+        request_id=9, stamp_ns=1_100_000_000))
+    accepted = {7: (1.0, 0.8)}
+    assert coordinator.latest_priors == accepted
+    assert coordinator.prepared == [accepted]
+
+    coordinator._now_ns = 2_000_000_000
+    coordinator._arm_prior_request(coordinator._now_ns)
+    unhealthy = _edge_prior_message(
+        request_id=9, stamp_ns=2_100_000_000)
+    unhealthy.healthy = False
+    coordinator._now_ns = 2_100_000_000
+    coordinator._on_priors(unhealthy)
+    assert coordinator.latest_priors == accepted
+    assert coordinator.prepared == [accepted]
+
+    coordinator._now_ns = 3_000_000_000
+    coordinator._arm_prior_request(coordinator._now_ns)
+    zero = _edge_prior_message(request_id=9, stamp_ns=3_100_000_000)
+    zero.priors = []
+    coordinator._now_ns = 3_100_000_000
+    coordinator._on_priors(zero)
+    assert coordinator.latest_priors == accepted
+    assert coordinator.prepared == [accepted]
+
+
+def test_validated_model_rollover_retires_but_does_not_accept_new_prior() -> None:
+    coordinator = _prior_wait_coordinator(mode='gvg')
+    coordinator._now_ns = 1_100_000_000
+    coordinator._on_priors(_edge_prior_message(
+        request_id=9, stamp_ns=1_100_000_000))
+
+    coordinator._now_ns = 2_000_000_000
+    coordinator._arm_prior_request(coordinator._now_ns)
+    coordinator._now_ns = 2_100_000_000
+    coordinator._on_priors(_edge_prior_message(
+        request_id=9,
+        stamp_ns=2_100_000_000,
+        model_id='srdr-v311',
+    ))
+
+    assert coordinator.latest_priors == {}
+    assert coordinator.latest_prior_model_id is None
+    assert coordinator.prepared == [{7: (1.0, 0.8)}, {}]
+
+
+def test_graph_and_session_rollover_retire_accepted_prior() -> None:
+    coordinator = _prior_wait_coordinator(mode='gvg')
+    coordinator.cognitive_graph_identity = CognitiveGraphIdentity(
+        3, 'session-a', 'map', 'tile', 2,
+        'test:gvg_v1', 3, 'srdr-v310',
+    )
+    coordinator._now_ns = 1_100_000_000
+    coordinator._on_priors(_edge_prior_message(
+        request_id=9, stamp_ns=1_100_000_000))
+    coordinator.graph.revision = 4
+
+    assert coordinator._priors_for_consumption(
+        coordinator.latest_priors
+    ) == {}
+    assert coordinator.latest_priors == {}
+
+    session = _prior_wait_coordinator(mode='gvg')
+    session.cognitive_graph_identity = CognitiveGraphIdentity(
+        3, 'session-a', 'map', 'tile', 2,
+        'test:gvg_v1', 3, 'srdr-v310',
+    )
+    session._now_ns = 1_100_000_000
+    session._on_priors(_edge_prior_message(
+        request_id=9, stamp_ns=1_100_000_000))
+    session.cognitive_graph_identity = CognitiveGraphIdentity(
+        3, 'session-b', 'map', 'tile', 2,
+        'test:gvg_v1', 3, 'srdr-v310',
+    )
+    session.module2_enabled = False
+    session.last_context_publish_ns = session._now_ns
+    session.runtime = SimpleNamespace(tick=lambda _now: False)
+    session.defaults['module2_edge_prior']['active_refresh_period_s'] = 5.0
+    session._runtime_tick()
+
+    assert session.latest_priors == {}
+    assert session.prepared == [{7: (1.0, 0.8)}, {}]
+
+
 def test_active_prior_refresh_arms_a_bounded_response_deadline() -> None:
     coordinator = RouteCoordinator.__new__(RouteCoordinator)
     coordinator.pending_goal = object()
@@ -342,7 +429,7 @@ def test_active_prior_refresh_arms_a_bounded_response_deadline() -> None:
     assert coordinator.pending_prior_started_ns == 6_000_000_000
 
 
-def test_stale_prior_is_removed_at_consumption_between_timer_ticks() -> None:
+def test_accepted_prior_remains_consumable_after_admission_ttl() -> None:
     warnings = []
     coordinator = RouteCoordinator.__new__(RouteCoordinator)
     coordinator.request_id = 5
@@ -361,9 +448,9 @@ def test_stale_prior_is_removed_at_consumption_between_timer_ticks() -> None:
 
     assert coordinator._priors_for_consumption(
         coordinator.latest_priors
-    ) == {}
-    assert coordinator.latest_priors == {}
-    assert any('geometry-only' in message for message in warnings)
+    ) == {7: (1.0, 0.8)}
+    assert coordinator.latest_priors == {7: (1.0, 0.8)}
+    assert warnings == []
 
 
 def test_old_dynamic_edges_callback_generation_is_discarded() -> None:
@@ -1618,6 +1705,7 @@ def test_new_goal_preemption_clears_old_tracker_before_context_and_can_restart()
     coordinator._on_goal(goal)
 
     assert handle.cancel_calls == 1
+    assert coordinator.latest_priors == {}
     assert observed == []
     assert coordinator.graph_reconciliations[-1] == (
         'new goal requires Route Server GVG')
