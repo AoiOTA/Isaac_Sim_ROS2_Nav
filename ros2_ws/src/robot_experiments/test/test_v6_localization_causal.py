@@ -129,6 +129,9 @@ def test_whole_house_onebox_variant_freezes_identity_seed_asset_and_actions():
         "size_m": [0.30, 0.30, 0.16],
     }
     assert variant.route == ("G2", "F2", "recover", "G3", "G4", "G5", "G1")
+    assert variant.fault_pose == localization_causal.SeedPose(
+        -2.20, -2.95, -42.0, 0.04, 0.030461742
+    )
     assert variant.runtime_identity == {
         "low_obstacles_enabled": True,
         "module2_navigation_write_enabled": True,
@@ -612,6 +615,18 @@ def test_phase_e_actions_put_only_f2_after_g2_then_continue_from_g3():
         assert sum(row["action"] == "fault" for row in actions) == 1
 
 
+def test_whole_house_recovery_rejects_wrong_small_covariance_until_anchor():
+    adapter = LocalizationCausalNode.__new__(LocalizationCausalNode)
+    adapter.config = load_config(CONFIG, variant=WHOLE_HOUSE_ONEBOX_VARIANT)
+    adapter._amcl_count = STARTUP_AMCL_POSES_REQUIRED + 3
+    adapter._last_amcl_covariance = (0.01, 0.01, 0.01)
+    adapter._fault_anchor_pose = (5.0, 0.0, 0.0)
+    adapter._last_amcl_pose = (-2.20, -2.95, -42.0)
+    assert not adapter._fault_recovered(3)
+    adapter._last_amcl_pose = (5.0, 0.0, 42.0)
+    assert adapter._fault_recovered(3)
+
+
 class _FakeAdapter:
     def __init__(self):
         self.actions = []
@@ -738,6 +753,8 @@ def test_r0_89m_fault_is_discriminative_with_late_or_missing_best_effort_cloud(
     fault = next(payload for event, payload in events if event == "fault_injected")
     assert fault["kind"] == "amcl_global_localization_particle_spread"
     assert fault["service"] == "/reinitialize_global_localization"
+    assert fault["service_request_count"] == 1
+    assert fault["fault_initialpose_count"] == 0
     assert fault["first_post_fault_particle_cloud_observed"] is cloud_after_pose
     assert fault["outcome"] == "FAULT_DISCRIMINATIVE"
     assert fault["amcl_jump_observed"] is True
@@ -746,6 +763,84 @@ def test_r0_89m_fault_is_discriminative_with_late_or_missing_best_effort_cloud(
     assert fault["amcl_disagreement_yaw_deg"] == pytest.approx(99.59)
     assert fault["seed_confirmation_position_threshold_m"] == 0.75
     assert fault["seed_confirmation_yaw_threshold_deg"] == 20.0
+
+
+def test_whole_house_fault_publishes_one_tagged_initialpose_and_no_service(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        localization_causal.V6FormalNode, "_initialpose", lambda *_args: None
+    )
+    adapter = LocalizationCausalNode.__new__(LocalizationCausalNode)
+    events, published, stops = [], [], []
+    pose_message = lambda: SimpleNamespace(
+        header=SimpleNamespace(frame_id="", stamp=None),
+        pose=SimpleNamespace(
+            pose=SimpleNamespace(
+                position=SimpleNamespace(x=0.0, y=0.0),
+                orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
+            ),
+            covariance=[0.0] * 36,
+        ),
+    )
+    now = SimpleNamespace(
+        nanoseconds=5_000_000_000,
+        to_msg=lambda: SimpleNamespace(sec=5, nanosec=0),
+    )
+    adapter.__dict__.update(
+        config=load_config(CONFIG, variant=WHOLE_HOUSE_ONEBOX_VARIANT),
+        arm="R0",
+        _types={"PoseWithCovarianceStamped": pose_message},
+        guard=SimpleNamespace(
+            state="LEG_SUCCEEDED", goal_publications=1,
+            completed_leg_ids=["G2"], stop=stops.append,
+        ),
+        _supervisor_initialpose_count=0,
+        _last_supervisor={
+            "state": "NORMAL", "reason": "amcl_healthy", "reset_attempts": "0"
+        },
+        _last_cmd_zero=True, _cmd_vel_sim_zero_since=0.0,
+        _fault_service_request_count=0, _fault_initialpose_count=0,
+        _initialpose_source_queue=localization_causal.deque(),
+        _initialpose_count=0, _prior_write_count=0,
+        _amcl_count=3, _particle_cloud_count=4,
+        _last_amcl_pose=(5.0, 5.0, 0.0),
+        _last_module1_odom_pose=(0.0, 0.0, 0.0),
+        _event=lambda event, **payload: events.append((event, payload)),
+        node=SimpleNamespace(get_clock=lambda: SimpleNamespace(now=lambda: now)),
+    )
+    adapter.initialpose_publisher = SimpleNamespace(
+        publish=lambda message: (published.append(message), adapter._initialpose(message))
+    )
+    spins = 0
+
+    def spin_until(predicate, _timeout):
+        nonlocal spins
+        spins += 1
+        if spins == 2:
+            adapter._amcl_count += 1
+            adapter._first_post_fault_amcl_covariance = (0.04, 0.04, 0.030461742)
+            adapter._first_post_fault_amcl_pose = (-2.20, -2.95, -42.0)
+        elif spins == 3:
+            adapter._particle_cloud_count += 1
+        return bool(predicate())
+
+    adapter._spin_until = spin_until
+    adapter._fault()
+    adapter._fault()
+
+    assert len(published) == 1
+    assert (adapter._fault_initialpose_count, adapter._fault_service_request_count) == (1, 0)
+    initialpose = next(payload for event, payload in events if event == "initialpose")
+    assert (initialpose["source"], initialpose["seed_kind"]) == (
+        "fault_injector",
+        "deterministic_fault",
+    )
+    fault = next(payload for event, payload in events if event == "fault_injected")
+    assert (fault["service"], fault["service_request_count"], fault["fault_initialpose_count"]) == (None, 0, 1)
+    assert fault["injected_pose_distance_m"] == pytest.approx(0.0)
+    assert fault["outcome"] == "FAULT_DISCRIMINATIVE"
+    assert stops == ["F2_fault_service_retry_forbidden"]
 
 
 def test_small_jump_is_invalid_and_yaw_disagreement_wraps():

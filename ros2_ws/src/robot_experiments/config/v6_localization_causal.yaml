@@ -80,6 +80,8 @@ variants:
       mode: stationary
       position_m: [-0.45, -0.35, 0.08]
       size_m: [0.30, 0.30, 0.16]
+    fault_pose: {x: -2.20, y: -2.95, yaw_deg: -42.0,
+                 xy_variance_m2: 0.04, yaw_variance_rad2: 0.030461742}
     route: [G2, F2, recover, G3, G4, G5, G1]
     runtime_identity:
       low_obstacles_enabled: true

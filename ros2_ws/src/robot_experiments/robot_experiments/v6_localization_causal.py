@@ -171,6 +171,7 @@ class RecoveryVariant:
     user_arm_aliases: Mapping[str, str]
     seed: int
     obstacle_asset: Mapping[str, Any]
+    fault_pose: SeedPose
     route: tuple[str, ...]
     runtime_identity: Mapping[str, Any]
 
@@ -441,6 +442,7 @@ def load_config(
         "user_arm_aliases",
         "seed",
         "obstacle_asset",
+        "fault_pose",
         "route",
         "runtime_identity",
     }:
@@ -470,6 +472,12 @@ def load_config(
     }
     if dict(obstacle_asset) != expected_obstacle_asset:
         raise LocalizationConfigError("whole-house one-box obstacle asset changed")
+    fault_pose = _seed_pose(
+        variant_row.get("fault_pose"),
+        f"{WHOLE_HOUSE_ONEBOX_VARIANT}.fault_pose",
+    )
+    if fault_pose != SeedPose(-2.20, -2.95, -42.0, 0.04, 0.030461742):
+        raise LocalizationConfigError("whole-house fault pose changed")
     variant_route = tuple(variant_row.get("route", ()))
     expected_variant_route = ("G2", "F2", "recover", "G3", "G4", "G5", "G1")
     if variant_route != expected_variant_route:
@@ -500,6 +508,7 @@ def load_config(
             user_arm_aliases=dict(aliases),
             seed=variant_seed,
             obstacle_asset=dict(obstacle_asset),
+            fault_pose=fault_pose,
             route=variant_route,
             runtime_identity=dict(runtime_identity),
         )
@@ -593,6 +602,13 @@ def build_plan(config: LocalizationConfig) -> dict[str, Any]:
             "variant": variant.name,
             "user_arm_aliases": dict(variant.user_arm_aliases),
             "obstacle_asset": dict(variant.obstacle_asset),
+            "fault_pose": {
+                "x": variant.fault_pose.x,
+                "y": variant.fault_pose.y,
+                "yaw_deg": variant.fault_pose.yaw_deg,
+                "xy_variance_m2": variant.fault_pose.xy_variance_m2,
+                "yaw_variance_rad2": variant.fault_pose.yaw_variance_rad2,
+            },
             "runtime_identity": dict(variant.runtime_identity),
             "route": list(variant.route),
             "single_round_arm_count": 2,
@@ -751,6 +767,7 @@ class LocalizationCausalNode(V6FormalNode):
         self._supervisor_initialpose_count = 0
         self._manual_rescue_count = 0
         self._fault_service_request_count = 0
+        self._fault_initialpose_count = 0
         self._nomotion_request_count = 0
         self._prior_write_count = 0
         self._amcl_count = 0
@@ -765,6 +782,7 @@ class LocalizationCausalNode(V6FormalNode):
         self._fault_amcl_baseline = 0
         self._fault_particle_baseline = 0
         self._fault_stamp_ns = 0
+        self._fault_anchor_pose: tuple[float, float, float] | None = None
         self._manual_request_stamp_ns = 0
         self._manual_request_diagnostic_floor: dict[str, int] = {}
         self._last_supervisor: dict[str, str] = {}
@@ -1111,7 +1129,9 @@ class LocalizationCausalNode(V6FormalNode):
         }
         self._event("module1_diagnostic", name="planning_prior", **values, values=values)
 
-    def _publish_seed(self, pose: SeedPose, seed_kind: str) -> None:
+    def _publish_seed(
+        self, pose: SeedPose, seed_kind: str, *, source: str = "runner"
+    ) -> None:
         Message = self._types["PoseWithCovarianceStamped"]
         message = Message()
         message.header.frame_id = "map"
@@ -1128,7 +1148,7 @@ class LocalizationCausalNode(V6FormalNode):
             int(message.header.stamp.sec) * 1_000_000_000
             + int(message.header.stamp.nanosec)
         )
-        self._initialpose_source_queue.append((stamp_ns, "runner", seed_kind))
+        self._initialpose_source_queue.append((stamp_ns, source, seed_kind))
         self.initialpose_publisher.publish(message)
 
     def _call_empty_service(self, client: Any, name: str, timeout_s: float) -> bool:
@@ -1169,6 +1189,17 @@ class LocalizationCausalNode(V6FormalNode):
             self._amcl_count >= baseline_count + STARTUP_AMCL_POSES_REQUIRED
             and self._covariance_recovered(covariance)
         )
+
+    def _fault_recovered(self, baseline_count: int) -> bool:
+        if not self._amcl_recovered(baseline_count):
+            return False
+        anchor = getattr(self, "_fault_anchor_pose", None)
+        if self.config.selected_variant is None or anchor is None:
+            return True
+        pose = self._last_amcl_pose
+        return pose is not None and math.hypot(
+            pose[0] - anchor[0], pose[1] - anchor[1]
+        ) <= SEED_CONFIRMATION_POSITION_THRESHOLD_M
 
     def _request_stationary_amcl_updates(
         self, baseline_count: int, timeout_s: float
@@ -1260,7 +1291,7 @@ class LocalizationCausalNode(V6FormalNode):
         )
 
     def _fault(self) -> None:
-        if self._fault_service_request_count:
+        if self._fault_service_request_count or getattr(self, "_fault_initialpose_count", 0):
             self.guard.stop("F2_fault_service_retry_forbidden")
             return
         if (
@@ -1309,21 +1340,30 @@ class LocalizationCausalNode(V6FormalNode):
 
         pre_amcl_map_pose = self._last_amcl_pose
         pre_module1_odom_pose = self._last_module1_odom_pose
-        self._fault_service_request_count = 1
-        if not self._call_empty_service(
-            self.reinitialize_global_localization_client,
-            self.config.fault_service,
-            min(10.0, self.config.recovery_timeout_s),
-        ):
-            return
-        # Fence observations after the successful service future. Particle
-        # cloud is best-effort corroboration; AMCL pose is the required sample.
+        whole_house = self.config.selected_variant is not None
+        if not whole_house:
+            self._fault_service_request_count = 1
+            if not self._call_empty_service(
+                self.reinitialize_global_localization_client,
+                self.config.fault_service,
+                min(10.0, self.config.recovery_timeout_s),
+            ):
+                return
         self._fault_stamp_ns = int(self.node.get_clock().now().nanoseconds)
         self._fault_amcl_baseline = self._amcl_count
         self._fault_particle_baseline = self._particle_cloud_count
         self._first_post_fault_amcl_covariance = None
         self._first_post_fault_amcl_pose = None
         self._fault_observation_active = True
+        if whole_house:
+            self._publish_seed(
+                self.config.selected_variant.fault_pose,
+                "deterministic_fault",
+                source="fault_injector",
+            )
+            self._fault_initialpose_count = 1
+        # Fence observations after the fault request. Particle cloud is
+        # corroboration; AMCL pose is the required sample.
         observed = self._spin_until(
             lambda: self._amcl_count > self._fault_amcl_baseline
             or self.guard.state == "STOP",
@@ -1358,25 +1398,46 @@ class LocalizationCausalNode(V6FormalNode):
             post_amcl_map_pose,
             predicted_map_pose,
         )
-        jump_observed = bool(
-            disagreement_position_m > SEED_CONFIRMATION_POSITION_THRESHOLD_M
-            or disagreement_yaw_deg > SEED_CONFIRMATION_YAW_THRESHOLD_DEG
-        )
+        injected_distance_m = None
+        if whole_house:
+            fault_pose = self.config.selected_variant.fault_pose
+            injected_distance_m = math.hypot(
+                post_amcl_map_pose[0] - fault_pose.x,
+                post_amcl_map_pose[1] - fault_pose.y,
+            )
+            jump_observed = bool(
+                injected_distance_m <= SEED_CONFIRMATION_POSITION_THRESHOLD_M
+                and disagreement_position_m > 5.0
+            )
+        else:
+            jump_observed = bool(
+                disagreement_position_m > SEED_CONFIRMATION_POSITION_THRESHOLD_M
+                or disagreement_yaw_deg > SEED_CONFIRMATION_YAW_THRESHOLD_DEG
+            )
+        self._fault_anchor_pose = predicted_map_pose
         lost_observed = (
             self._last_supervisor.get("state", "").upper() == "LOST"
         )
         fault_outcome = (
             "FAULT_DISCRIMINATIVE"
-            if jump_observed or lost_observed
+            if jump_observed or (lost_observed and not whole_house)
             else "INVALID_NOT_DISCRIMINATIVE"
         )
         self._event(
             "fault_injected",
             fault_id=self.config.fault_id,
             kind=self.config.fault_kind,
-            service=self.config.fault_service,
+            service=(None if whole_house else self.config.fault_service),
             service_request_count=self._fault_service_request_count,
-            service_response_observed=True,
+            service_response_observed=not whole_house,
+            fault_initialpose_count=getattr(self, "_fault_initialpose_count", 0),
+            fault_injection_pose=(
+                None if not whole_house else _pose_fields(
+                    (self.config.selected_variant.fault_pose.x,
+                     self.config.selected_variant.fault_pose.y,
+                     self.config.selected_variant.fault_pose.yaw_deg)
+                )
+            ),
             first_post_fault_particle_cloud_observed=(
                 self._particle_cloud_count > self._fault_particle_baseline
             ),
@@ -1392,6 +1453,7 @@ class LocalizationCausalNode(V6FormalNode):
             predicted_post_amcl_map_pose=_pose_fields(predicted_map_pose),
             amcl_disagreement_position_m=disagreement_position_m,
             amcl_disagreement_yaw_deg=disagreement_yaw_deg,
+            injected_pose_distance_m=injected_distance_m,
             seed_confirmation_position_threshold_m=(
                 SEED_CONFIRMATION_POSITION_THRESHOLD_M
             ),
@@ -1480,7 +1542,7 @@ class LocalizationCausalNode(V6FormalNode):
             return
 
         recovered = self._spin_until(
-            lambda: self._amcl_recovered(baseline)
+            lambda: self._fault_recovered(baseline)
             and (method != "supervisor_manual_rescue" or self._supervisor_recovered()),
             self.config.recovery_timeout_s,
         )
@@ -1671,6 +1733,7 @@ class LocalizationCausalNode(V6FormalNode):
             manual_rescue_count=self._manual_rescue_count,
             supervisor_initialpose_count=self._supervisor_initialpose_count,
             fault_service_request_count=self._fault_service_request_count,
+            fault_initialpose_count=getattr(self, "_fault_initialpose_count", 0),
             nomotion_request_count=self._nomotion_request_count,
             completed_leg_ids=result["completed_leg_ids"],
         )

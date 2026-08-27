@@ -701,7 +701,9 @@ def _fault_pose(row: Mapping[str, Any], name: str) -> tuple[float, float, float]
     )
 
 
-def _fault_discriminability(row: Mapping[str, Any]) -> dict[str, Any]:
+def _fault_discriminability(
+    row: Mapping[str, Any], *, whole_house: bool = False
+) -> dict[str, Any]:
     pre_amcl = _fault_pose(row, "pre_fault_amcl_map_pose")
     pre_module1 = _fault_pose(row, "pre_fault_module1_odom_pose")
     post_amcl = _fault_pose(row, "post_fault_amcl_map_pose")
@@ -745,9 +747,17 @@ def _fault_discriminability(row: Mapping[str, Any]) -> dict[str, Any]:
         or yaw_threshold_deg != SEED_CONFIRMATION_YAW_THRESHOLD_DEG
     ):
         raise EvaluationError("Phase E seed_confirmation thresholds changed")
-    jump_observed = bool(
-        position_m > position_threshold_m or yaw_deg > yaw_threshold_deg
-    )
+    injected_distance_m = None
+    if whole_house:
+        injected = _fault_pose(row, "fault_injection_pose")
+        injected_distance_m = math.hypot(
+            post_amcl[0] - injected[0], post_amcl[1] - injected[1]
+        )
+        jump_observed = bool(injected_distance_m <= 0.75 and position_m > 5.0)
+    else:
+        jump_observed = bool(
+            position_m > position_threshold_m or yaw_deg > yaw_threshold_deg
+        )
     if row.get("amcl_jump_observed") is not jump_observed:
         raise EvaluationError("Phase E AMCL jump classification changed")
     lost_observed = row.get("supervisor_lost_observed")
@@ -755,7 +765,7 @@ def _fault_discriminability(row: Mapping[str, Any]) -> dict[str, Any]:
         raise EvaluationError("Phase E supervisor LOST observation must be boolean")
     expected_outcome = (
         "FAULT_DISCRIMINATIVE"
-        if jump_observed or lost_observed
+        if jump_observed or (lost_observed and not whole_house)
         else "INVALID_NOT_DISCRIMINATIVE"
     )
     if row.get("outcome") != expected_outcome:
@@ -773,6 +783,7 @@ def _fault_discriminability(row: Mapping[str, Any]) -> dict[str, Any]:
         "seed_confirmation_yaw_threshold_deg": yaw_threshold_deg,
         "amcl_jump_observed": jump_observed,
         "supervisor_lost_observed": lost_observed,
+        "injected_pose_distance_m": injected_distance_m,
     }
 
 
@@ -950,18 +961,35 @@ def evaluate_phase_de_episode(
         if len(fault_rows) != 1:
             raise EvaluationError("Phase E requires exactly one fault event")
         fault_row = fault_rows[0]
-        if (
-            fault_row.get("fault_id") != "F2"
-            or fault_row.get("kind")
-            != "amcl_global_localization_particle_spread"
-            or fault_row.get("service")
-            != "/reinitialize_global_localization"
-            or fault_row.get("service_request_count") != 1
-            or fault_row.get("service_response_observed") is not True
-            or fault_row.get("first_post_fault_amcl_pose_observed") is not True
-        ):
+        whole_house = (
+            by_event["episode_start"][0].get("variant")
+            == "whole_house_onebox_recovery"
+        )
+        common_fault_contract = (
+            fault_row.get("fault_id") == "F2"
+            and fault_row.get("kind")
+            == "amcl_global_localization_particle_spread"
+            and fault_row.get("first_post_fault_amcl_pose_observed") is True
+        )
+        if whole_house:
+            valid_fault = common_fault_contract and (
+                fault_row.get("service") is None
+                and fault_row.get("service_request_count") == 0
+                and fault_row.get("service_response_observed") is False
+                and fault_row.get("fault_initialpose_count") == 1
+            )
+        else:
+            valid_fault = common_fault_contract and (
+                fault_row.get("service")
+                == "/reinitialize_global_localization"
+                and fault_row.get("service_request_count") == 1
+                and fault_row.get("service_response_observed") is True
+            )
+        if not valid_fault:
             raise EvaluationError("Phase E particle-spread fault contract changed")
-        fault_discriminability = _fault_discriminability(fault_row)
+        fault_discriminability = _fault_discriminability(
+            fault_row, whole_house=whole_house
+        )
         fault_outcome = str(fault_row.get("outcome", ""))
         if fault_outcome not in {
             "FAULT_DISCRIMINATIVE",
@@ -986,10 +1014,15 @@ def evaluate_phase_de_episode(
         unknown_count = sum(
             count
             for source, count in initialpose_sources.items()
-            if source not in {"runner", "supervisor"}
+            if source not in {"runner", "supervisor", "fault_injector"}
         )
-        if runner_count != 1 or unknown_count:
+        fault_initialpose_count = initialpose_sources.get("fault_injector", 0)
+        if runner_count != 1 or unknown_count or (
+            fault_initialpose_count != (1 if whole_house else 0)
+        ):
             raise EvaluationError("Phase E runner initialpose ownership changed")
+        if whole_house and fault_row.get("fault_initialpose_count") != fault_initialpose_count:
+            raise EvaluationError("whole-house fault initialpose count changed")
         if identity["arm"] == "R0":
             if supervisor_count != 0 or manual_requests:
                 raise EvaluationError("R0 cognitive write ownership changed")
@@ -1039,7 +1072,11 @@ def evaluate_phase_de_episode(
                 "invalid fault must stop before rescue and G3"
             )
         if (
-            episode_end.get("fault_service_request_count") != 1
+            episode_end.get("fault_service_request_count") != (0 if whole_house else 1)
+            or (
+                whole_house
+                and episode_end.get("fault_initialpose_count") != 1
+            )
             or episode_end.get("manual_rescue_count") != len(manual_requests)
             or episode_end.get("supervisor_initialpose_count")
             != supervisor_count
@@ -1183,6 +1220,15 @@ def evaluate_phase_de_episode(
         raise EvaluationError("localization_recovered precedes fault_injected")
 
     module1_rows = by_event["module1_diagnostic"]
+    request_counts = {
+        "fault_service": int(episode_end.get("fault_service_request_count", 0)),
+        "nomotion": int(episode_end.get("nomotion_request_count", 0)),
+        "manual": len(manual_requests),
+    }
+    if identity["phase"] == "E" and whole_house:
+        request_counts["fault_initialpose"] = int(
+            episode_end.get("fault_initialpose_count", 0)
+        )
     return {
         **identity,
         "fault": (
@@ -1235,9 +1281,7 @@ def evaluate_phase_de_episode(
             ],
         },
         "recovery_requests": {
-            "fault_service": int(episode_end.get("fault_service_request_count", 0)),
-            "nomotion": int(episode_end.get("nomotion_request_count", 0)),
-            "manual": len(manual_requests),
+            **request_counts,
         },
         "prior_write_count": len(by_event["prior_write"]),
         "supervisor_diagnostics": supervisor_rows,
