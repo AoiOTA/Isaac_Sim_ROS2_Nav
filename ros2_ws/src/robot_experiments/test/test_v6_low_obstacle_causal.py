@@ -2965,7 +2965,11 @@ def _phase_f_pid_is_running(pid: int) -> bool:
 
 
 def _start_fake_phase_f_stack(
-    tmp_path: Path, *, arm: str = "M3", producer_ignores_term: bool = False
+    tmp_path: Path,
+    *,
+    arm: str = "M3",
+    producer_ignores_term: bool = False,
+    localization_supervisor_mode: str | None = None,
 ) -> SimpleNamespace:
     root = PACKAGE.parents[2]
     project = tmp_path / "project"
@@ -3005,6 +3009,8 @@ done
     integration = tmp_path / "integration"
     integration_scripts = integration / "scripts"
     integration_scripts.mkdir(parents=True)
+    module2_argv = tmp_path / "module2.argv"
+    bridge_argv = tmp_path / "bridge.argv"
     socket_server = tmp_path / "socket_server.py"
     socket_server.write_text(
         """import os
@@ -3035,6 +3041,7 @@ while True:
         encoding="utf-8",
     )
     module2_launcher = """#!/usr/bin/env bash
+printf '%s\n' "$@" >"${FAKE_MODULE2_ARGV}"
 socket_path=""
 while (($#)); do
   case "$1" in
@@ -3055,6 +3062,7 @@ exec python3 "${FAKE_SOCKET_SERVER}" "${socket_path}"
     fake_bin.mkdir()
     (fake_bin / "ros2").write_text(
         """#!/usr/bin/env bash
+printf '%s\n' "$@" >"${FAKE_BRIDGE_ARGV}"
 log_signal() { printf '%s\n' "bridge:$1" >>"${FAKE_SIGNAL_LOG}"; }
 trap 'log_signal INT; exit 0' INT
 if [[ "${FAKE_PRODUCER_IGNORE_TERM:-0}" == 1 ]]; then
@@ -3094,6 +3102,8 @@ wait "$!"
     socket_path = tmp_path / "socket/module2.sock"
     runtime_dir = tmp_path / "runtime"
     signal_log = tmp_path / "signals.log"
+    candidate_manifest = tmp_path / "run4-candidate.json"
+    candidate_manifest.touch()
     env = os.environ.copy()
     env.update({
         "PATH": f"{fake_bin}:{env['PATH']}",
@@ -3101,6 +3111,8 @@ wait "$!"
         "BIO_NAV_MODULE2_V310_ROOT": str(module2),
         "FAKE_MODULE3_HEARTBEAT": str(heartbeat),
         "FAKE_MODULE3_ARGV": str(module3_argv),
+        "FAKE_MODULE2_ARGV": str(module2_argv),
+        "FAKE_BRIDGE_ARGV": str(bridge_argv),
         "FAKE_SIGNAL_LOG": str(signal_log),
         "FAKE_PRODUCER_IGNORE_TERM": "1" if producer_ignores_term else "0",
         "FAKE_SOCKET_SERVER": str(socket_server),
@@ -3110,12 +3122,22 @@ wait "$!"
         "BIO_NAV_PHASE_F_CLEANUP_TERM_CHECKS": "20",
         "BIO_NAV_PHASE_F_CLEANUP_QUIET_CHECKS": "2",
     })
+    command = [
+        str(scripts / "run_v6_low_obstacle_phase_f_stack.sh"),
+        arm, "--domain", "150", "--run-dir", str(run_dir),
+        "--socket", str(socket_path),
+    ]
+    if localization_supervisor_mode is not None:
+        command.extend(
+            [
+                "--localization-supervisor-mode",
+                localization_supervisor_mode,
+                "--candidate-manifest",
+                str(candidate_manifest),
+            ]
+        )
     process = subprocess.Popen(
-        [
-            str(scripts / "run_v6_low_obstacle_phase_f_stack.sh"),
-            arm, "--domain", "150", "--run-dir", str(run_dir),
-            "--socket", str(socket_path),
-        ],
+        command,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -3146,6 +3168,9 @@ wait "$!"
         runtime_dir=runtime_dir,
         heartbeat=heartbeat,
         module3_argv=module3_argv,
+        module2_argv=module2_argv,
+        bridge_argv=bridge_argv,
+        candidate_manifest=candidate_manifest,
         signal_log=signal_log,
         env=env,
     )
@@ -3160,6 +3185,41 @@ def test_phase_f_stack_explicitly_disables_route_prior_for_module2_arms(
         assert fake.module3_argv.read_text(encoding="utf-8").splitlines() == [
             "ros", arm, "route_prior_enabled:=false"
         ]
+    finally:
+        _stop_fake_phase_f_stack(fake)
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_mode"), (("shadow", "shadow"), ("active", "active"))
+)
+def test_phase_f_stack_localization_extension_forwards_exact_onebox_m3_argv(
+    tmp_path, mode, expected_mode
+):
+    fake = _start_fake_phase_f_stack(
+        tmp_path, arm="M3", localization_supervisor_mode=mode
+    )
+    try:
+        assert fake.module3_argv.read_text(encoding="utf-8").splitlines() == [
+            "ros",
+            "M3",
+            "route_prior_enabled:=false",
+            "initial_pose_source:=rviz",
+            "activation_startup_policy:=wait_for_seed",
+        ]
+        module2 = fake.module2_argv.read_text(encoding="utf-8").splitlines()
+        assert module2[:4] == [
+            "--startup-profile",
+            "module2_causal_obstacle_active",
+            "--active-effect-scope",
+            "obstacle_only",
+        ]
+        assert module2[module2.index("--candidate-manifest") + 1] == str(
+            fake.candidate_manifest
+        )
+        bridge = fake.bridge_argv.read_text(encoding="utf-8").splitlines()
+        assert "startup_profile:=module2_causal_obstacle_active" in bridge
+        assert f"localization_supervisor_mode:={expected_mode}" in bridge
+        assert f"localization_candidate_manifest:={fake.candidate_manifest}" in bridge
     finally:
         _stop_fake_phase_f_stack(fake)
 

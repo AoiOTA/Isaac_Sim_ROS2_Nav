@@ -69,3 +69,24 @@ recovery:
   timeout_s: 45.0
   max_xy_variance_m2: 0.25
   max_yaw_variance_rad2: 0.5
+
+variants:
+  whole_house_onebox_recovery:
+    user_arm_aliases: {W0: R0, W1: R1}
+    seed: 8601
+    obstacle_asset:
+      config: module3://isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen.yaml
+      id: v6_low_box_solo
+      mode: stationary
+      position_m: [-0.45, -0.35, 0.08]
+      size_m: [0.30, 0.30, 0.16]
+    route: [G2, F2, recover, G3, G4, G5, G1]
+    runtime_identity:
+      low_obstacles_enabled: true
+      module2_navigation_write_enabled: true
+      module2_active_effect_scope: obstacle_only
+      cognitive_place_graph_enabled: false
+      dynamic_actors_enabled: false
+      route_backend: gvg
+      route_prior_enabled: false
+      cognitive_profile: M3

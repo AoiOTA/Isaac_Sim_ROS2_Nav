@@ -57,6 +57,8 @@ RECOVERY_BY_ARM = {
     "R0": "amcl_no_cognitive_write",
     "R1": "supervisor_manual_rescue",
 }
+WHOLE_HOUSE_ONEBOX_VARIANT = "whole_house_onebox_recovery"
+WHOLE_HOUSE_USER_ARM_ALIASES = {"W0": "R0", "W1": "R1"}
 STARTUP_AMCL_POSES_REQUIRED = 3
 SEED_CONFIRMATION_POSITION_THRESHOLD_M = 0.75
 SEED_CONFIRMATION_YAW_THRESHOLD_DEG = 20.0
@@ -164,6 +166,16 @@ class SeedPose:
 
 
 @dataclass(frozen=True)
+class RecoveryVariant:
+    name: str
+    user_arm_aliases: Mapping[str, str]
+    seed: int
+    obstacle_asset: Mapping[str, Any]
+    route: tuple[str, ...]
+    runtime_identity: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
 class LocalizationConfig:
     path: Path
     phase_b_manifest: Path
@@ -179,6 +191,7 @@ class LocalizationConfig:
     recovery_timeout_s: float
     recovered_xy_variance_m2: float
     recovered_yaw_variance_rad2: float
+    selected_variant: RecoveryVariant | None
 
 
 def _seed_pose(raw: Any, name: str) -> SeedPose:
@@ -208,7 +221,9 @@ def _seed_pose(raw: Any, name: str) -> SeedPose:
     return result
 
 
-def load_config(path: str | Path) -> LocalizationConfig:
+def load_config(
+    path: str | Path, *, variant: str | None = None
+) -> LocalizationConfig:
     config_path = Path(path).expanduser().resolve()
     raw_value = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     raw = _mapping(raw_value, "config")
@@ -224,6 +239,7 @@ def load_config(path: str | Path) -> LocalizationConfig:
         "route",
         "fault",
         "recovery",
+        "variants",
     }
     if set(raw) != expected_keys:
         raise LocalizationConfigError(
@@ -412,6 +428,85 @@ def load_config(path: str | Path) -> LocalizationConfig:
     if min(recovery_timeout, max_xy, max_yaw) <= 0.0:
         raise LocalizationConfigError("recovery limits must be positive")
 
+    variants = _mapping(raw.get("variants"), "variants")
+    if set(variants) != {WHOLE_HOUSE_ONEBOX_VARIANT}:
+        raise LocalizationConfigError(
+            f"variants must define exactly {WHOLE_HOUSE_ONEBOX_VARIANT}"
+        )
+    variant_row = _mapping(
+        variants[WHOLE_HOUSE_ONEBOX_VARIANT],
+        f"variants.{WHOLE_HOUSE_ONEBOX_VARIANT}",
+    )
+    if set(variant_row) != {
+        "user_arm_aliases",
+        "seed",
+        "obstacle_asset",
+        "route",
+        "runtime_identity",
+    }:
+        raise LocalizationConfigError("whole-house one-box variant keys changed")
+    aliases = _mapping(
+        variant_row.get("user_arm_aliases"),
+        f"variants.{WHOLE_HOUSE_ONEBOX_VARIANT}.user_arm_aliases",
+    )
+    if dict(aliases) != WHOLE_HOUSE_USER_ARM_ALIASES:
+        raise LocalizationConfigError("whole-house aliases must map W0/R0 and W1/R1")
+    variant_seed = variant_row.get("seed")
+    if variant_seed != 8601:
+        raise LocalizationConfigError("whole-house one-box seed must be 8601")
+    obstacle_asset = _mapping(
+        variant_row.get("obstacle_asset"),
+        f"variants.{WHOLE_HOUSE_ONEBOX_VARIANT}.obstacle_asset",
+    )
+    expected_obstacle_asset = {
+        "config": (
+            "module3://isaac_sim/configs/experiments/"
+            "v6_kujiale_low_obstacles_frozen.yaml"
+        ),
+        "id": "v6_low_box_solo",
+        "mode": "stationary",
+        "position_m": [-0.45, -0.35, 0.08],
+        "size_m": [0.30, 0.30, 0.16],
+    }
+    if dict(obstacle_asset) != expected_obstacle_asset:
+        raise LocalizationConfigError("whole-house one-box obstacle asset changed")
+    variant_route = tuple(variant_row.get("route", ()))
+    expected_variant_route = ("G2", "F2", "recover", "G3", "G4", "G5", "G1")
+    if variant_route != expected_variant_route:
+        raise LocalizationConfigError(
+            "whole-house route must be G2,F2,recover,G3,G4,G5,G1"
+        )
+    runtime_identity = _mapping(
+        variant_row.get("runtime_identity"),
+        f"variants.{WHOLE_HOUSE_ONEBOX_VARIANT}.runtime_identity",
+    )
+    expected_runtime_identity = {
+        "low_obstacles_enabled": True,
+        "module2_navigation_write_enabled": True,
+        "module2_active_effect_scope": "obstacle_only",
+        "cognitive_place_graph_enabled": False,
+        "dynamic_actors_enabled": False,
+        "route_backend": "gvg",
+        "route_prior_enabled": False,
+        "cognitive_profile": "M3",
+    }
+    if dict(runtime_identity) != expected_runtime_identity:
+        raise LocalizationConfigError("whole-house runtime identity changed")
+    if variant not in (None, WHOLE_HOUSE_ONEBOX_VARIANT):
+        raise LocalizationConfigError(f"unsupported variant: {variant}")
+    selected_variant = (
+        RecoveryVariant(
+            name=WHOLE_HOUSE_ONEBOX_VARIANT,
+            user_arm_aliases=dict(aliases),
+            seed=variant_seed,
+            obstacle_asset=dict(obstacle_asset),
+            route=variant_route,
+            runtime_identity=dict(runtime_identity),
+        )
+        if variant == WHOLE_HOUSE_ONEBOX_VARIANT
+        else None
+    )
+
     return LocalizationConfig(
         path=config_path,
         phase_b_manifest=base_path,
@@ -427,6 +522,7 @@ def load_config(path: str | Path) -> LocalizationConfig:
         recovery_timeout_s=recovery_timeout,
         recovered_xy_variance_m2=max_xy,
         recovered_yaw_variance_rad2=max_yaw,
+        selected_variant=selected_variant,
     )
 
 
@@ -454,6 +550,55 @@ def route_actions(config: LocalizationConfig, arm: str) -> tuple[dict[str, Any],
 
 
 def build_plan(config: LocalizationConfig) -> dict[str, Any]:
+    if config.selected_variant is not None:
+        variant = config.selected_variant
+        rows = []
+        aliases_by_internal = {
+            internal: user for user, internal in variant.user_arm_aliases.items()
+        }
+        for arm in ("R0", "R1"):
+            rows.append(
+                {
+                    "run_id": f"v6-whole-house-onebox-{aliases_by_internal[arm].lower()}-{variant.seed}",
+                    "phase": "E",
+                    "user_arm": aliases_by_internal[arm],
+                    "arm": arm,
+                    "seed": variant.seed,
+                    "startup": "broad_initialpose",
+                    "supervisor_mode": SUPERVISOR_MODE_BY_ARM[arm],
+                    "recovery": RECOVERY_BY_ARM[arm],
+                    "run4_candidate_enabled": True,
+                    **(
+                        {"mode2_recovery": dict(PHASE_E_MODE2_RECOVERY)}
+                        if arm == "R1"
+                        else {}
+                    ),
+                    "expected_startup_initialpose": {
+                        "source": "runner",
+                        "seed_kind": "broad_initialpose",
+                        "expected_total_count": 1,
+                        "expected_supervisor_count": 0,
+                    },
+                    "actions": list(route_actions(config, arm)),
+                }
+            )
+        return {
+            "schema_version": CONFIG_SCHEMA,
+            "event_schema": EVENT_SCHEMA,
+            "qualification": QUALIFICATION,
+            "formal_qualification": NOT_QUALIFIED,
+            "ground_truth_policy": "passive_evaluator_only",
+            "phase_e_run4_candidate": dict(config.phase_e_run4_candidate),
+            "phase_e_run4_candidate_enabled": True,
+            "variant": variant.name,
+            "user_arm_aliases": dict(variant.user_arm_aliases),
+            "obstacle_asset": dict(variant.obstacle_asset),
+            "runtime_identity": dict(variant.runtime_identity),
+            "route": list(variant.route),
+            "single_round_arm_count": 2,
+            "runs": rows,
+        }
+
     rows = []
     for arm in ARMS:
         startup = "none" if arm == "S1" else "broad_initialpose"
@@ -746,6 +891,11 @@ class LocalizationCausalNode(V6FormalNode):
         )
 
     def _emit_episode_start(self) -> None:
+        variant_fields = (
+            {"variant": self.config.selected_variant.name}
+            if self.config.selected_variant is not None
+            else {}
+        )
         self._event(
             "episode_start",
             qualification=QUALIFICATION,
@@ -757,6 +907,7 @@ class LocalizationCausalNode(V6FormalNode):
             recovery=RECOVERY_BY_ARM[self.arm],
             passive_evaluator_only=True,
             runtime=dict(self.manifest.runtime),
+            **variant_fields,
         )
 
     def _write(self, event: str, **payload: Any) -> None:
@@ -1530,6 +1681,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("config", "plan", "run"))
     parser.add_argument("--config", required=True)
+    parser.add_argument("--variant", choices=(WHOLE_HOUSE_ONEBOX_VARIANT,))
     parser.add_argument("--arm", choices=ARMS)
     parser.add_argument("--run-id")
     parser.add_argument("--seed", type=int)
@@ -1543,7 +1695,7 @@ def build_parser() -> argparse.ArgumentParser:
 def cli(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        config = load_config(args.config)
+        config = load_config(args.config, variant=args.variant)
         if args.command == "config":
             output = {
                 "schema_version": CONFIG_SCHEMA,
@@ -1555,6 +1707,23 @@ def cli(argv: Sequence[str] | None = None) -> int:
                 "qualification": QUALIFICATION,
                 "formal_qualification": NOT_QUALIFIED,
             }
+            if config.selected_variant is not None:
+                output.update(
+                    {
+                        "variant": config.selected_variant.name,
+                        "user_arm_aliases": dict(
+                            config.selected_variant.user_arm_aliases
+                        ),
+                        "seed": config.selected_variant.seed,
+                        "obstacle_asset": dict(
+                            config.selected_variant.obstacle_asset
+                        ),
+                        "runtime_identity": dict(
+                            config.selected_variant.runtime_identity
+                        ),
+                        "route": list(config.selected_variant.route),
+                    }
+                )
             print(json.dumps(output, indent=2, sort_keys=True))
             return 0
         if args.command == "plan":
@@ -1563,7 +1732,16 @@ def cli(argv: Sequence[str] | None = None) -> int:
         if not args.arm or not args.output_jsonl:
             raise LocalizationConfigError("run requires --arm and --output-jsonl")
         arm = args.arm
-        seed = config.seeds[arm] if args.seed is None else args.seed
+        if config.selected_variant is not None and arm not in {"R0", "R1"}:
+            raise LocalizationConfigError(
+                "whole-house one-box variant supports only internal R0/R1"
+            )
+        configured_seed = (
+            config.selected_variant.seed
+            if config.selected_variant is not None
+            else config.seeds[arm]
+        )
+        seed = configured_seed if args.seed is None else args.seed
         if seed < 0:
             raise LocalizationConfigError("--seed must be non-negative")
         run_id = args.run_id or f"v6-phase-{PHASE_BY_ARM[arm].lower()}-{arm.lower()}-{seed}"
@@ -1582,7 +1760,13 @@ def cli(argv: Sequence[str] | None = None) -> int:
         ):
             if manifest.runtime.get(field) is not False:
                 raise LocalizationConfigError(f"Phase B {field} must remain off")
-        episode = replace(manifest.episodes[0], seed=seed)
+        episode_values: dict[str, Any] = {"seed": seed}
+        if config.selected_variant is not None:
+            runtime = dict(manifest.runtime)
+            runtime.update(config.selected_variant.runtime_identity)
+            manifest = replace(manifest, runtime=runtime)
+            episode_values["variant_id"] = config.selected_variant.name
+        episode = replace(manifest.episodes[0], **episode_values)
 
         import rclpy
 

@@ -20,6 +20,8 @@ from robot_experiments.v6_localization_causal import (
     SEED_CONFIRMATION_POSITION_THRESHOLD_M,
     SEED_CONFIRMATION_YAW_THRESHOLD_DEG,
     STARTUP_AMCL_POSES_REQUIRED,
+    WHOLE_HOUSE_ONEBOX_VARIANT,
+    WHOLE_HOUSE_USER_ARM_ALIASES,
     LocalizationCausalNode,
     LocalizationConfigError,
     _contains_ground_truth,
@@ -107,6 +109,73 @@ def test_plan_has_no_old_s3_r2_or_60_run_matrix():
             "expected_total_count": 1,
             "expected_supervisor_count": 0,
         }
+
+
+def test_whole_house_onebox_variant_freezes_identity_seed_asset_and_actions():
+    config = load_config(CONFIG, variant=WHOLE_HOUSE_ONEBOX_VARIANT)
+    variant = config.selected_variant
+    assert variant is not None
+    assert variant.user_arm_aliases == WHOLE_HOUSE_USER_ARM_ALIASES
+    assert variant.seed == 8601
+    assert variant.obstacle_asset == {
+        "config": (
+            "module3://isaac_sim/configs/experiments/"
+            "v6_kujiale_low_obstacles_frozen.yaml"
+        ),
+        "id": "v6_low_box_solo",
+        "mode": "stationary",
+        "position_m": [-0.45, -0.35, 0.08],
+        "size_m": [0.30, 0.30, 0.16],
+    }
+    assert variant.route == ("G2", "F2", "recover", "G3", "G4", "G5", "G1")
+    assert variant.runtime_identity == {
+        "low_obstacles_enabled": True,
+        "module2_navigation_write_enabled": True,
+        "module2_active_effect_scope": "obstacle_only",
+        "cognitive_place_graph_enabled": False,
+        "dynamic_actors_enabled": False,
+        "route_backend": "gvg",
+        "route_prior_enabled": False,
+        "cognitive_profile": "M3",
+    }
+
+    asset = yaml.safe_load(
+        (REPO / "isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen.yaml")
+        .read_text(encoding="utf-8")
+    )
+    assert asset["seed"] == 8601
+    assert asset["obstacles"] == [
+        {
+            "id": "v6_low_box_solo",
+            "mode": "stationary",
+            "trigger_group": None,
+            "size": [0.30, 0.30, 0.16],
+            "mass": 5.0,
+            "start": [-0.45, -0.35, 0.08],
+            "end": [-0.45, -0.35, 0.08],
+            "speed": 0.0,
+            "delay_sec": 0.0,
+            "jitter_sec": 0.0,
+            "post_motion": "hold",
+        }
+    ]
+
+    plan = build_plan(config)
+    assert plan["single_round_arm_count"] == 2
+    assert [(row["user_arm"], row["arm"], row["seed"]) for row in plan["runs"]] == [
+        ("W0", "R0", 8601),
+        ("W1", "R1", 8601),
+    ]
+    assert plan["runs"][0]["actions"] == list(route_actions(config, "R0"))
+    assert plan["runs"][1]["actions"] == list(route_actions(config, "R1"))
+    assert plan["runs"][0]["actions"][2] == {
+        "action": "recover",
+        "method": "amcl_no_cognitive_write",
+    }
+    assert plan["runs"][1]["actions"][2] == {
+        "action": "recover",
+        "method": "supervisor_manual_rescue",
+    }
 
 
 def test_config_rejects_non_startup_run4_candidate_status(tmp_path):
@@ -447,6 +516,40 @@ def test_r0_r1_share_run4_server_manifest_with_shadow_and_manual_active(tmp_path
         )
     assert "localization_supervisor_mode:=shadow" in outputs[("R0", "bridge")].stdout
     assert "localization_supervisor_mode:=active" in outputs[("R1", "bridge")].stdout
+
+
+def test_w0_w1_wrapper_maps_to_r0_r1_with_onebox_m3_argv(tmp_path):
+    outputs = {
+        (arm, component): _run_wrapper(tmp_path, arm, component)
+        for arm in ("W0", "W1")
+        for component in ("isaac", "ros", "module1", "bridge", "plan")
+    }
+    assert all(result.returncode == 0 for result in outputs.values())
+    for arm in ("W0", "W1"):
+        assert "run_v6_kujiale_low_obstacles.sh isaac" in outputs[(arm, "isaac")].stdout
+        ros = outputs[(arm, "ros")].stdout
+        assert "run_v6_kujiale_low_obstacles.sh ros M3" in ros
+        assert "route_prior_enabled:=false" in ros
+        assert "initial_pose_source:=rviz" in ros
+        assert "activation_startup_policy:=wait_for_seed" in ros
+        module1 = outputs[(arm, "module1")].stdout
+        assert "run_v6_module2_causal_obstacle_server.sh" in module1
+        assert "--startup-profile module2_causal_obstacle_active" in module1
+        assert "--active-effect-scope obstacle_only" in module1
+        assert "--candidate-manifest" in module1
+        assert "startup_profile:=module2_causal_obstacle_active" in outputs[
+            (arm, "bridge")
+        ].stdout
+        assert f"--variant {WHOLE_HOUSE_ONEBOX_VARIANT}" in outputs[
+            (arm, "plan")
+        ].stdout
+    assert "localization_supervisor_mode:=shadow" in outputs[("W0", "bridge")].stdout
+    assert "localization_supervisor_mode:=active" in outputs[("W1", "bridge")].stdout
+
+    default_r0 = _run_wrapper(tmp_path, "R0", "ros")
+    assert default_r0.returncode == 0
+    assert "run_v6_r5_phase_b_kujiale.sh" in default_r0.stdout
+    assert "run_v6_kujiale_low_obstacles.sh" not in default_r0.stdout
 
 
 def test_wrapper_fails_closed_when_run4_manifest_is_not_startup_allowed(tmp_path):

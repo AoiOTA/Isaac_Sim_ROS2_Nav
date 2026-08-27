@@ -6,6 +6,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
   echo "usage: $0 M0|M1|M2|M3 --domain ID --run-dir PATH --socket PATH [--module2-root PATH]" >&2
+  echo "       [--localization-supervisor-mode shadow|active --candidate-manifest PATH]" >&2
   echo "       BIO_NAV_MODULE2_V310_ROOT or --module2-root must name the canonical Module2 root" >&2
   echo "       $0 stop-producer --run-dir PATH --socket PATH" >&2
 }
@@ -315,6 +316,8 @@ run_dir=""
 socket_path=""
 domain_id="${BIO_NAV_PHASE_F_DOMAIN_ID:-150}"
 module2_root="${BIO_NAV_MODULE2_V310_ROOT:-}"
+localization_supervisor_mode=""
+candidate_manifest=""
 integration_root="${BIO_NAV_INTEGRATION_ROOT:-/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration}"
 while (($#)); do
   case "$1" in
@@ -322,10 +325,33 @@ while (($#)); do
     --socket) socket_path="${2:?--socket requires a path}"; shift 2 ;;
     --domain) domain_id="${2:?--domain requires an ID}"; shift 2 ;;
     --module2-root) module2_root="${2:?--module2-root requires a path}"; shift 2 ;;
+    --localization-supervisor-mode)
+      localization_supervisor_mode="${2:?--localization-supervisor-mode requires shadow or active}"
+      shift 2
+      ;;
+    --candidate-manifest)
+      candidate_manifest="${2:?--candidate-manifest requires a path}"
+      shift 2
+      ;;
     *) usage; echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 [[ -n "${run_dir}" && -n "${socket_path}" ]] || { usage; exit 2; }
+[[ -z "${localization_supervisor_mode}" \
+    || "${localization_supervisor_mode}" =~ ^(shadow|active)$ ]] || {
+  echo "localization supervisor mode must be shadow or active" >&2
+  exit 2
+}
+if [[ -n "${localization_supervisor_mode}" || -n "${candidate_manifest}" ]]; then
+  [[ -n "${localization_supervisor_mode}" && -n "${candidate_manifest}" ]] || {
+    echo "localization supervisor mode and candidate manifest must be supplied together" >&2
+    exit 2
+  }
+  [[ "${arm}" == "M3" ]] || {
+    echo "localization recovery extension requires the M3 obstacle arm" >&2
+    exit 2
+  }
+fi
 [[ "${run_dir}" == /* && "${socket_path}" == /* ]] || {
   echo "run-dir and socket must be absolute" >&2
   exit 2
@@ -351,6 +377,9 @@ require_directory "${module2_root}"
 module2_root="$(cd "${module2_root}" && pwd -P)"
 canonical_constraints_file="${module2_root}/configs/kujiale_0026_module1_visual_shadow_v310.yaml"
 require_file "${canonical_constraints_file}"
+if [[ -n "${candidate_manifest}" ]]; then
+  require_file "${candidate_manifest}"
+fi
 export BIO_NAV_MODULE2_V310_ROOT="${module2_root}"
 if [[ "${arm}" != "M0" ]]; then
   require_file "${integration_root}/scripts/run_module2_v310_server.sh"
@@ -535,9 +564,24 @@ stack_pgid="$(process_group_of_pid "$$")"
 }
 write_process_identity stack "${run_dir}" "$$" "${stack_pgid}"
 
+module3_localization_args=()
+module2_candidate_args=()
+bridge_localization_args=()
+if [[ -n "${localization_supervisor_mode}" ]]; then
+  module3_localization_args=(
+    initial_pose_source:=rviz
+    activation_startup_policy:=wait_for_seed
+  )
+  module2_candidate_args=(--candidate-manifest "${candidate_manifest}")
+  bridge_localization_args=(
+    "localization_supervisor_mode:=${localization_supervisor_mode}"
+    "localization_candidate_manifest:=${candidate_manifest}"
+  )
+fi
+
 exit_if_terminating
 setsid --wait -- "${script_dir}/run_v6_kujiale_low_obstacles.sh" ros "${arm}" \
-  route_prior_enabled:=false \
+  route_prior_enabled:=false "${module3_localization_args[@]}" \
   >"${run_dir}/module3_ros.log" 2>&1 &
 module3_pid="$!"
 register_child module3_ros "${module3_pid}"
@@ -549,6 +593,7 @@ if [[ "${arm}" != "M0" ]]; then
     setsid --wait -- "${integration_root}/scripts/run_module2_v310_server.sh" \
       --module2-root "${module2_root}" \
       --shadow-config configs/kujiale_0026_module1_visual_shadow_v310.yaml \
+      "${module2_candidate_args[@]}" \
       --socket "${socket_path}" \
       >"${run_dir}/module2_server.log" 2>&1 &
   else
@@ -559,6 +604,7 @@ if [[ "${arm}" != "M0" ]]; then
       --socket "${socket_path}" \
       --module2-root "${module2_root}" \
       --shadow-config configs/kujiale_0026_module1_visual_shadow_v310.yaml \
+      "${module2_candidate_args[@]}" \
       >"${run_dir}/module2_server.log" 2>&1 &
   fi
   module2_server_pid="$!"
@@ -572,6 +618,7 @@ if [[ "${arm}" != "M0" ]]; then
     startup_profile:="${startup_profile}" \
     socket_path:="${socket_path}" \
     use_sim_time:=true \
+    "${bridge_localization_args[@]}" \
     >"${run_dir}/integration_bridge.log" 2>&1 &
   integration_bridge_pid="$!"
   register_child integration_bridge "${integration_bridge_pid}"
