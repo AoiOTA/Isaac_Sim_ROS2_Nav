@@ -1,4 +1,5 @@
 import json
+import math
 import os
 from pathlib import Path
 import shlex
@@ -613,6 +614,8 @@ def test_phase_e_actions_put_only_f2_after_g2_then_continue_from_g3():
         assert actions[2] == {"action": "recover", "method": method}
         assert [row["leg_id"] for row in actions[3:]] == ["G3", "G4", "G5", "G1"]
         assert sum(row["action"] == "fault" for row in actions) == 1
+    variant_fault = route_actions(load_config(CONFIG, variant=WHOLE_HOUSE_ONEBOX_VARIANT), "R0")[1]
+    assert (variant_fault["kind"], variant_fault["service"]) == ("deterministic_initialpose", None)
 
 
 def test_whole_house_recovery_rejects_wrong_small_covariance_until_anchor():
@@ -830,6 +833,12 @@ def test_whole_house_fault_publishes_one_tagged_initialpose_and_no_service(
     adapter._fault()
 
     assert len(published) == 1
+    message = published[0]
+    yaw_deg = math.degrees(2.0 * math.atan2(message.pose.pose.orientation.z, message.pose.pose.orientation.w))
+    assert (
+        message.pose.pose.position.x, message.pose.pose.position.y, yaw_deg,
+        message.pose.covariance[0], message.pose.covariance[7], message.pose.covariance[35],
+    ) == pytest.approx((-2.20, -2.95, -42.0, 0.04, 0.04, 0.030461742))
     assert (adapter._fault_initialpose_count, adapter._fault_service_request_count) == (1, 0)
     initialpose = next(payload for event, payload in events if event == "initialpose")
     assert (initialpose["source"], initialpose["seed_kind"]) == (
@@ -837,7 +846,7 @@ def test_whole_house_fault_publishes_one_tagged_initialpose_and_no_service(
         "deterministic_fault",
     )
     fault = next(payload for event, payload in events if event == "fault_injected")
-    assert (fault["service"], fault["service_request_count"], fault["fault_initialpose_count"]) == (None, 0, 1)
+    assert (fault["kind"], fault["service"], fault["service_request_count"], fault["fault_initialpose_count"]) == ("deterministic_initialpose", None, 0, 1)
     assert fault["injected_pose_distance_m"] == pytest.approx(0.0)
     assert fault["outcome"] == "FAULT_DISCRIMINATIVE"
     assert stops == ["F2_fault_service_retry_forbidden"]

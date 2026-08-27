@@ -424,7 +424,7 @@ def test_fault_initialpose_ledger_allows_legacy_missing_and_requires_whole_house
     next(row for row in rows if row["event"] == "episode_start")["variant"] = "whole_house_onebox_recovery"
     fault = next(row for row in rows if row["event"] == "fault_injected")
     fault.update(_fault_fields(pre_amcl=(5, 5, 0), pre_module1=(0, 0, 0), post_module1=(0, 0, 0), post_amcl=(-2.2, -2.95, -42)))
-    fault.update(service=None, service_request_count=0, service_response_observed=False, fault_initialpose_count=1,
+    fault.update(kind="deterministic_initialpose", service=None, service_request_count=0, service_response_observed=False, fault_initialpose_count=1,
                  fault_injection_pose={"x": -2.2, "y": -2.95, "yaw_deg": -42.0})
     rows.append(_event("E", "R0", 8601, "initialpose", 2.19, source="fault_injector", count=2))
     end.update(fault_service_request_count=0, fault_initialpose_count=1)

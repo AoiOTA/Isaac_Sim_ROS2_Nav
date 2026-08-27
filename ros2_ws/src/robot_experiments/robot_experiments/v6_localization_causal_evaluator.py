@@ -965,10 +965,10 @@ def evaluate_phase_de_episode(
             by_event["episode_start"][0].get("variant")
             == "whole_house_onebox_recovery"
         )
+        expected_kind = "deterministic_initialpose" if whole_house else "amcl_global_localization_particle_spread"
         common_fault_contract = (
             fault_row.get("fault_id") == "F2"
-            and fault_row.get("kind")
-            == "amcl_global_localization_particle_spread"
+            and fault_row.get("kind") == expected_kind
             and fault_row.get("first_post_fault_amcl_pose_observed") is True
         )
         if whole_house:
@@ -986,7 +986,7 @@ def evaluate_phase_de_episode(
                 and fault_row.get("service_response_observed") is True
             )
         if not valid_fault:
-            raise EvaluationError("Phase E particle-spread fault contract changed")
+            raise EvaluationError("Phase E localization fault contract changed")
         fault_discriminability = _fault_discriminability(
             fault_row, whole_house=whole_house
         )
