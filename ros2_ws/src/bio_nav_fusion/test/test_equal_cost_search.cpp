@@ -200,11 +200,44 @@ public:
     layer.maximum_ood_probability_ = 0.2;
     layer.latest_ =
       std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(message);
+    layer.latest_admission_reason_.clear();
     layer.expected_ = CognitiveObstacleLayer::Identity{
       message.reset_epoch, message.recurrent_session_id, message.map_version,
       message.cognitive_tile_id, message.tile_revision, message.graph_revision,
       message.model_id};
     layer.identity_bound_ = true;
+  }
+
+  static uint64_t observeStaticTrack(
+    CognitiveObstacleLayer & layer,
+    const bio_nav_interfaces::msg::CognitiveObstacleArray & message,
+    double map_x = 1.0, double map_y = 0.0)
+  {
+    std::lock_guard<std::mutex> lock(layer.mutex_);
+    return layer.observeStaticTrack(
+      message, message.obstacles.at(0), map_x, map_y);
+  }
+
+  static size_t staticTrackCount(CognitiveObstacleLayer & layer)
+  {
+    std::lock_guard<std::mutex> lock(layer.mutex_);
+    return layer.static_tracks_.size();
+  }
+
+  static size_t promotedStaticTrackCount(CognitiveObstacleLayer & layer)
+  {
+    std::lock_guard<std::mutex> lock(layer.mutex_);
+    return static_cast<size_t>(std::count_if(
+      layer.static_tracks_.begin(), layer.static_tracks_.end(),
+      [](const auto & entry) {return entry.second.promoted;}));
+  }
+
+  static void offer(
+    CognitiveObstacleLayer & layer,
+    const bio_nav_interfaces::msg::CognitiveObstacleArray & message)
+  {
+    layer.obstacleCallback(
+      std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(message));
   }
 
   static std::string applicationReason(uint32_t active_cells, uint32_t raised_cells)
@@ -1182,6 +1215,200 @@ TEST(CognitiveObstacleLayer, application_status_distinguishes_applied_masked_and
   EXPECT_EQ(Peer::applicationReason(12U, 4U), "");
   EXPECT_EQ(Peer::applicationReason(12U, 0U), "masked");
   EXPECT_EQ(Peer::applicationReason(0U, 0U), "no_costmap_cells");
+}
+
+TEST(CognitiveObstacleLayer, independent_static_rehits_promote_and_persist_until_reset)
+{
+  using Layer = bio_nav_fusion::CognitiveObstacleLayer;
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  auto clock = std::make_shared<rclcpp::Clock>(RCL_SYSTEM_TIME);
+  tf2_ros::Buffer tf_buffer(clock);
+  nav2_costmap_2d::LayeredCostmap layered_costmap("map", true, false);
+  layered_costmap.resizeMap(80U, 80U, 0.05, -2.0, -2.0);
+  auto * master = layered_costmap.getCostmap();
+  CognitiveObstacleLayerHarness layer;
+  layer.bind(layered_costmap, tf_buffer, clock);
+  layer.resizeMap(80U, 80U, 0.05, -2.0, -2.0);
+
+  const int64_t now_ns = clock->now().nanoseconds();
+  const int64_t source_ns = now_ns - 1000000000LL;
+  const auto add_identity_transform = [&](int64_t stamp_ns) {
+      geometry_msgs::msg::TransformStamped transform;
+      transform.header.frame_id = "map";
+      transform.header.stamp = stampFromNs(stamp_ns);
+      transform.child_frame_id = "base_link";
+      transform.transform.rotation.w = 1.0;
+      ASSERT_TRUE(tf_buffer.setTransform(transform, "static_latch_test"));
+    };
+  const auto apply = [&](const bio_nav_interfaces::msg::CognitiveObstacleArray & message) {
+      master->resetMap(0U, 0U, 80U, 80U);
+      Peer::configureActive(layer, message);
+      layer.updateCosts(*master, 0, 0, 80, 80);
+      unsigned int mx = 0U;
+      unsigned int my = 0U;
+      EXPECT_TRUE(layer.worldToMap(1.0, 0.0, mx, my));
+      return layer.getCost(mx, my);
+    };
+
+  auto first = staticRevalidatedObstacleFixture();
+  first.obstacles[0].count = 1U;
+  first.obstacles[0].confidence = 1.0;
+  first.obstacles[0].reliability = 1.0;
+  first.obstacles[0].ood_probability = 0.0;
+  retimeStatic(first, source_ns, now_ns - 30000000LL);
+  add_identity_transform(rclcpp::Time(first.validation_stamp).nanoseconds());
+  EXPECT_EQ(apply(first), 80U);
+  EXPECT_EQ(Peer::staticTrackCount(layer), 1U);
+  EXPECT_EQ(Peer::promotedStaticTrackCount(layer), 0U);
+
+  EXPECT_EQ(apply(first), 80U);
+  EXPECT_EQ(Peer::staticTrackCount(layer), 1U);
+  EXPECT_EQ(Peer::promotedStaticTrackCount(layer), 0U);
+
+  auto second = first;
+  second.obstacles[0].count = 2U;
+  retimeStatic(second, source_ns, now_ns - 20000000LL);
+  add_identity_transform(rclcpp::Time(second.validation_stamp).nanoseconds());
+  EXPECT_EQ(apply(second), 80U);
+  EXPECT_EQ(Peer::promotedStaticTrackCount(layer), 0U);
+
+  auto third = second;
+  retimeStatic(third, source_ns, now_ns - 10000000LL);
+  add_identity_transform(rclcpp::Time(third.validation_stamp).nanoseconds());
+  EXPECT_EQ(apply(third), nav2_costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_EQ(Peer::promotedStaticTrackCount(layer), 1U);
+
+  auto empty = third;
+  retimeStatic(empty, source_ns, now_ns - 5000000LL);
+  empty.sequence = 8U;
+  empty.obstacles.clear();
+  EXPECT_EQ(apply(empty), nav2_costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_EQ(apply(empty), nav2_costmap_2d::LETHAL_OBSTACLE);
+
+  auto unhealthy_empty = empty;
+  unhealthy_empty.input_healthy = false;
+  EXPECT_EQ(apply(unhealthy_empty), nav2_costmap_2d::LETHAL_OBSTACLE);
+
+  auto expired_empty = empty;
+  expired_empty.header.stamp = stampFromNs(now_ns - 2000000000LL);
+  expired_empty.validation_stamp = stampFromNs(now_ns - 1000000000LL);
+  expired_empty.source_age = durationFromNs(1000000000LL);
+  expired_empty.source_odom_stamp = expired_empty.header.stamp;
+  expired_empty.validation_odom_stamp = expired_empty.validation_stamp;
+  EXPECT_EQ(apply(expired_empty), nav2_costmap_2d::LETHAL_OBSTACLE);
+
+  layer.reset();
+  master->resetMap(0U, 0U, 80U, 80U);
+  layer.updateCosts(*master, 0, 0, 80, 80);
+  unsigned int mx = 0U;
+  unsigned int my = 0U;
+  ASSERT_TRUE(layer.worldToMap(1.0, 0.0, mx, my));
+  EXPECT_EQ(layer.getCost(mx, my), nav2_costmap_2d::FREE_SPACE);
+  EXPECT_EQ(Peer::staticTrackCount(layer), 0U);
+}
+
+TEST(CognitiveObstacleLayer, static_latch_key_clears_for_each_identity_rollover)
+{
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  auto clock = std::make_shared<rclcpp::Clock>(RCL_SYSTEM_TIME);
+  tf2_ros::Buffer tf_buffer(clock);
+  nav2_costmap_2d::LayeredCostmap layered_costmap("map", true, false);
+  layered_costmap.resizeMap(20U, 20U, 0.1, -1.0, -1.0);
+  const int64_t validation_ns = clock->now().nanoseconds() - 10000000LL;
+  const int64_t source_ns = validation_ns - 1000000000LL;
+
+  for (size_t field = 0; field < 7U; ++field) {
+    CognitiveObstacleLayerHarness layer;
+    layer.bind(layered_costmap, tf_buffer, clock);
+    layer.resizeMap(20U, 20U, 0.1, -1.0, -1.0);
+    auto message = staticRevalidatedObstacleFixture();
+    retimeStatic(message, source_ns, validation_ns);
+    Peer::configureActive(layer, message);
+    EXPECT_EQ(Peer::observeStaticTrack(layer, message), 3U);
+    ASSERT_EQ(Peer::promotedStaticTrackCount(layer), 1U);
+
+    auto rollover = message;
+    switch (field) {
+      case 0: ++rollover.reset_epoch; break;
+      case 1: rollover.recurrent_session_id = "next-session"; break;
+      case 2: rollover.map_version = "next-map"; break;
+      case 3: rollover.cognitive_tile_id = "next-tile"; break;
+      case 4: ++rollover.tile_revision; break;
+      case 5: ++rollover.graph_revision; break;
+      case 6: rollover.model_id = "next-model"; break;
+    }
+    Peer::offer(layer, rollover);
+    EXPECT_EQ(Peer::staticTrackCount(layer), 0U) << "identity field " << field;
+  }
+}
+
+TEST(CognitiveObstacleLayer, rejected_or_soft_candidates_never_create_a_lethal_latch)
+{
+  using Layer = bio_nav_fusion::CognitiveObstacleLayer;
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  auto clock = std::make_shared<rclcpp::Clock>(RCL_SYSTEM_TIME);
+  nav2_costmap_2d::LayeredCostmap layered_costmap("map", true, false);
+  layered_costmap.resizeMap(80U, 80U, 0.05, -2.0, -2.0);
+  auto * master = layered_costmap.getCostmap();
+  const int64_t validation_ns = clock->now().nanoseconds() - 10000000LL;
+  const int64_t source_ns = validation_ns - 1000000000LL;
+
+  const auto expect_no_track = [&](bio_nav_interfaces::msg::CognitiveObstacleArray message,
+      bool provide_tf) {
+      tf2_ros::Buffer tf_buffer(clock);
+      CognitiveObstacleLayerHarness layer;
+      layer.bind(layered_costmap, tf_buffer, clock);
+      layer.resizeMap(80U, 80U, 0.05, -2.0, -2.0);
+      retimeStatic(message, source_ns, validation_ns);
+      if (provide_tf) {
+        geometry_msgs::msg::TransformStamped transform;
+        transform.header.frame_id = "map";
+        transform.header.stamp = message.validation_stamp;
+        transform.child_frame_id = "base_link";
+        transform.transform.rotation.w = 1.0;
+        EXPECT_TRUE(tf_buffer.setTransform(transform, "static_rejection_test"));
+      }
+      Peer::configureActive(layer, message);
+      master->resetMap(0U, 0U, 80U, 80U);
+      layer.updateCosts(*master, 0, 0, 80, 80);
+      EXPECT_EQ(Peer::staticTrackCount(layer), 0U);
+    };
+
+  auto untrusted = staticRevalidatedObstacleFixture();
+  untrusted.trusted_write = false;
+  expect_no_track(untrusted, true);
+  auto ood = staticRevalidatedObstacleFixture();
+  ood.ood_probability = 0.8;
+  expect_no_track(ood, true);
+  auto dynamic = staticRevalidatedObstacleFixture();
+  dynamic.obstacles[0].motion_class =
+    bio_nav_interfaces::msg::CognitiveObstacle::MOTION_DYNAMIC;
+  expect_no_track(dynamic, true);
+  expect_no_track(staticRevalidatedObstacleFixture(), false);
+
+  Layer soft_layer;
+  auto soft = staticRevalidatedObstacleFixture();
+  soft.obstacles[0].count = 1U;
+  soft.obstacles[0].confidence = 0.5;
+  for (uint32_t rehit = 0U; rehit < 3U; ++rehit) {
+    soft.validation_stamp.nanosec += 1U;
+    soft.source_age.nanosec += 1U;
+    soft.validation_odom_stamp.nanosec += 1U;
+    const auto effective_count = Peer::observeStaticTrack(soft_layer, soft);
+    EXPECT_LT(
+      Layer::obstacleCost(soft.obstacles[0], effective_count, 80, 0.02, 0.45),
+      nav2_costmap_2d::LETHAL_OBSTACLE);
+  }
+  EXPECT_EQ(Peer::promotedStaticTrackCount(soft_layer), 0U);
 }
 
 TEST(CognitiveRiskCritic, nearer_and_more_directionally_deviant_cost_more)

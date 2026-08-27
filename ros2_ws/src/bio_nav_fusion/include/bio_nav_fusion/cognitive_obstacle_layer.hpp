@@ -3,9 +3,11 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "bio_nav_interfaces/msg/cognitive_obstacle_array.hpp"
 #include "bio_nav_interfaces/msg/risk_layer_status.hpp"
@@ -76,6 +78,10 @@ public:
     const bio_nav_interfaces::msg::CognitiveObstacle & obstacle,
     int maximum_soft_cost, double collision_min_height_m,
     double collision_max_height_m);
+  static uint8_t obstacleCost(
+    const bio_nav_interfaces::msg::CognitiveObstacle & obstacle,
+    uint64_t effective_count, int maximum_soft_cost,
+    double collision_min_height_m, double collision_max_height_m);
   static std::string resolveConsumerId(
     const std::string & node_fully_qualified_name,
     const std::string & layer_name,
@@ -95,8 +101,53 @@ public:
 private:
   friend class CognitiveObstacleLayerTestPeer;
 
+  struct StaticTrackKey
+  {
+    uint32_t reset_epoch{0};
+    std::string recurrent_session_id;
+    std::string map_version;
+    std::string cognitive_tile_id;
+    uint64_t tile_revision{0};
+    uint64_t graph_revision{0};
+    std::string model_id;
+    std::string track_id;
+
+    bool operator<(const StaticTrackKey & other) const;
+  };
+
+  struct StaticTrackState
+  {
+    bio_nav_interfaces::msg::CognitiveObstacle obstacle;
+    double map_x{0.0};
+    double map_y{0.0};
+    double radius_m{0.0};
+    double height_m{0.0};
+    uint64_t rehit_count{0};
+    uint64_t last_source_sequence{0};
+    int64_t last_validation_stamp_ns{0};
+    bool promoted{false};
+  };
+
+  struct AppliedObstacle
+  {
+    bio_nav_interfaces::msg::CognitiveObstacle obstacle;
+    double map_x{0.0};
+    double map_y{0.0};
+    uint64_t effective_count{0};
+  };
+
   void synchronizeCostmapGeometry(
     const nav2_costmap_2d::Costmap2D & master_grid);
+  static StaticTrackKey staticTrackKey(
+    const bio_nav_interfaces::msg::CognitiveObstacleArray & message,
+    const std::string & track_id);
+  uint64_t observeStaticTrack(
+    const bio_nav_interfaces::msg::CognitiveObstacleArray & message,
+    const bio_nav_interfaces::msg::CognitiveObstacle & obstacle,
+    double map_x, double map_y);
+  std::vector<AppliedObstacle> promotedStaticObstacles();
+  bool hasPromotedStaticObstacle();
+  void clearStaticTracks();
   static std::string applicationReason(
     uint32_t active_cells, uint32_t raised_cells);
   void obstacleCallback(
@@ -110,8 +161,10 @@ private:
 
   std::mutex mutex_;
   bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr latest_;
+  std::string latest_admission_reason_;
   Identity expected_;
   AcceptanceCursor accepted_;
+  std::map<StaticTrackKey, StaticTrackState> static_tracks_;
   bool identity_bound_{false};
   bool identity_parameters_configured_{false};
   std::string mode_{"off"};

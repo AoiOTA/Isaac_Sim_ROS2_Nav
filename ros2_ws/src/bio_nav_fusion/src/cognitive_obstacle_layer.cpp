@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <set>
 #include <sstream>
+#include <tuple>
 #include <utility>
 
 #include "geometry_msgs/msg/point_stamped.hpp"
@@ -193,7 +195,9 @@ void CognitiveObstacleLayer::reset()
 {
   std::lock_guard<std::mutex> lock(mutex_);
   latest_.reset();
+  latest_admission_reason_.clear();
   accepted_.reset();
+  clearStaticTracks();
   if (!identity_parameters_configured_) {
     expected_ = Identity{};
     identity_bound_ = false;
@@ -374,8 +378,18 @@ uint8_t CognitiveObstacleLayer::obstacleCost(
   int maximum_soft_cost, double collision_min_height_m,
   double collision_max_height_m)
 {
+  return obstacleCost(
+    obstacle, obstacle.count, maximum_soft_cost, collision_min_height_m,
+    collision_max_height_m);
+}
+
+uint8_t CognitiveObstacleLayer::obstacleCost(
+  const bio_nav_interfaces::msg::CognitiveObstacle & obstacle,
+  uint64_t effective_count, int maximum_soft_cost,
+  double collision_min_height_m, double collision_max_height_m)
+{
   const bool hard = obstacle.confidence >= 0.85 && obstacle.reliability >= 0.8 &&
-    obstacle.ood_probability <= 0.2 && obstacle.count >= 3U &&
+    obstacle.ood_probability <= 0.2 && effective_count >= 3U &&
     std::max(obstacle.position_stddev_m[0], obstacle.position_stddev_m[1]) <= 0.10 &&
     obstacle.height_m >= collision_min_height_m &&
     obstacle.height_m <= collision_max_height_m;
@@ -405,6 +419,87 @@ std::string CognitiveObstacleLayer::resolveConsumerId(
   return node_id + ":" + layer_id;
 }
 
+bool CognitiveObstacleLayer::StaticTrackKey::operator<(
+  const StaticTrackKey & other) const
+{
+  return std::tie(
+    reset_epoch, recurrent_session_id, map_version, cognitive_tile_id,
+    tile_revision, graph_revision, model_id, track_id) <
+         std::tie(
+    other.reset_epoch, other.recurrent_session_id, other.map_version,
+    other.cognitive_tile_id, other.tile_revision, other.graph_revision,
+    other.model_id, other.track_id);
+}
+
+CognitiveObstacleLayer::StaticTrackKey CognitiveObstacleLayer::staticTrackKey(
+  const bio_nav_interfaces::msg::CognitiveObstacleArray & message,
+  const std::string & track_id)
+{
+  return StaticTrackKey{
+    message.reset_epoch, message.recurrent_session_id, message.map_version,
+    message.cognitive_tile_id, message.tile_revision, message.graph_revision,
+    message.model_id, track_id};
+}
+
+uint64_t CognitiveObstacleLayer::observeStaticTrack(
+  const bio_nav_interfaces::msg::CognitiveObstacleArray & message,
+  const bio_nav_interfaces::msg::CognitiveObstacle & obstacle,
+  double map_x, double map_y)
+{
+  const auto key = staticTrackKey(message, obstacle.id);
+  auto & state = static_tracks_[key];
+  const int64_t validation_ns = stampNs(message.validation_stamp);
+  const bool independent_rehit =
+    state.rehit_count == 0U || state.last_source_sequence != message.sequence ||
+    state.last_validation_stamp_ns != validation_ns;
+  if (independent_rehit) {
+    ++state.rehit_count;
+    state.last_source_sequence = message.sequence;
+    state.last_validation_stamp_ns = validation_ns;
+    state.map_x = map_x;
+    state.map_y = map_y;
+    if (!state.promoted) {
+      state.obstacle = obstacle;
+      state.radius_m = obstacle.radius_m;
+      state.height_m = obstacle.height_m;
+      const uint64_t effective_count = std::max(obstacle.count, state.rehit_count);
+      state.promoted = obstacleCost(
+        state.obstacle, effective_count, maximum_soft_cost_,
+        collision_min_height_m_, collision_max_height_m_) ==
+        nav2_costmap_2d::LETHAL_OBSTACLE;
+    }
+  }
+  return std::max(obstacle.count, state.rehit_count);
+}
+
+std::vector<CognitiveObstacleLayer::AppliedObstacle>
+CognitiveObstacleLayer::promotedStaticObstacles()
+{
+  std::vector<AppliedObstacle> obstacles;
+  for (const auto & [key, state] : static_tracks_) {
+    (void)key;
+    if (!state.promoted) {
+      continue;
+    }
+    obstacles.push_back(AppliedObstacle{
+      state.obstacle, state.map_x, state.map_y,
+      std::max(state.obstacle.count, state.rehit_count)});
+  }
+  return obstacles;
+}
+
+bool CognitiveObstacleLayer::hasPromotedStaticObstacle()
+{
+  return std::any_of(
+    static_tracks_.begin(), static_tracks_.end(),
+    [](const auto & entry) {return entry.second.promoted;});
+}
+
+void CognitiveObstacleLayer::clearStaticTracks()
+{
+  static_tracks_.clear();
+}
+
 void CognitiveObstacleLayer::obstacleCallback(
   const bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr message)
 {
@@ -425,10 +520,17 @@ void CognitiveObstacleLayer::obstacleCallback(
         identity_bound_ = true;
       }
       latest_ = message;
+      latest_admission_reason_.clear();
       recordAccepted(*message, accepted_);
     } else {
-      latest_.reset();
-      resetMaps();
+      latest_ = message;
+      latest_admission_reason_ = reason;
+      if (reason == "identity" && identityFieldsPresent(*message) &&
+        !sameIdentity(*message, expected_))
+      {
+        clearStaticTracks();
+        resetMaps();
+      }
     }
   }
   addExtraBounds(-1000.0, -1000.0, 1000.0, 1000.0);
@@ -445,7 +547,7 @@ void CognitiveObstacleLayer::updateBounds(
 {
   useExtraBounds(min_x, min_y, max_x, max_y);
   std::lock_guard<std::mutex> lock(mutex_);
-  if (latest_) {
+  if (latest_ || hasPromotedStaticObstacle()) {
     touch(-1000.0, -1000.0, min_x, min_y, max_x, max_y);
     touch(1000.0, 1000.0, min_x, min_y, max_x, max_y);
   }
@@ -507,65 +609,104 @@ void CognitiveObstacleLayer::updateCosts(
     static_cast<unsigned int>(std::max(0, max_j)));
   bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr message;
   Identity expected;
+  std::string admission_reason;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     message = latest_;
     expected = expected_;
+    admission_reason = latest_admission_reason_;
   }
   const auto now = clock_->now();
   const AcceptanceCursor no_ordering_gate;
-  const auto validation_reason = message ? validateMessage(
-    *message, now.nanoseconds(), expected, no_ordering_gate, maximum_age_s_,
-    maximum_ood_probability_, true) : std::string("missing");
-  if (!modeWritesCostmap(mode_) || !message || !validation_reason.empty())
-  {
-    if (message && mode_ == "active") {
-      std::lock_guard<std::mutex> lock(mutex_);
-      latest_.reset();
+  const std::string validation_reason = !message ? std::string("missing") :
+    (!admission_reason.empty() ? admission_reason : validateMessage(
+      *message, now.nanoseconds(), expected, no_ordering_gate, maximum_age_s_,
+      maximum_ood_probability_, true));
+  if (!modeWritesCostmap(mode_)) {
+    return;
+  }
+
+  std::vector<AppliedObstacle> applied_obstacles;
+  bool tf_failed = false;
+  if (message && validation_reason.empty() && !message->obstacles.empty()) {
+    geometry_msgs::msg::TransformStamped transform;
+    try {
+      transform = tf_->lookupTransform(
+        layered_costmap_->getGlobalFrameID(), message->header.frame_id,
+        rclcpp::Time(message->validation_stamp), tf2::durationFromSec(0.0));
+    } catch (const std::exception &) {
+      tf_failed = true;
     }
-    if (modeWritesCostmap(mode_)) {
-      updateWithMax(master_grid, min_i, min_j, max_i, max_j);
-      if (message && !validation_reason.empty()) {
-        const double age_s = static_cast<double>(
-          now.nanoseconds() - stampNs(message->header.stamp)) * 1.0e-9;
-        publishStatus(*message, false, validation_reason, age_s);
+    if (!tf_failed) {
+      std::set<StaticTrackKey> observed_static_tracks;
+      for (const auto & obstacle : message->obstacles) {
+        geometry_msgs::msg::PointStamped source;
+        geometry_msgs::msg::PointStamped target;
+        source.header = message->header;
+        source.header.stamp = message->validation_stamp;
+        source.point.x = obstacle.pose_xy_m[0];
+        source.point.y = obstacle.pose_xy_m[1];
+        tf2::doTransform(source, target, transform);
+
+        const bool static_revalidated =
+          message->validation_mode ==
+          bio_nav_interfaces::msg::CognitiveObstacleArray::
+          VALIDATION_STATIC_DEPTH_REVALIDATED &&
+          obstacle.motion_class ==
+          bio_nav_interfaces::msg::CognitiveObstacle::MOTION_STATIC &&
+          obstacle.static_confirmed;
+        if (!static_revalidated) {
+          applied_obstacles.push_back(AppliedObstacle{
+            obstacle, target.point.x, target.point.y, obstacle.count});
+          continue;
+        }
+
+        const auto key = staticTrackKey(*message, obstacle.id);
+        if (!observed_static_tracks.insert(key).second) {
+          continue;
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (latest_ != message || !latest_admission_reason_.empty()) {
+          continue;
+        }
+        const uint64_t effective_count = observeStaticTrack(
+          *message, obstacle, target.point.x, target.point.y);
+        const auto & state = static_tracks_.at(key);
+        applied_obstacles.push_back(AppliedObstacle{
+          state.obstacle, state.map_x, state.map_y, effective_count});
       }
     }
-    return;
   }
-  geometry_msgs::msg::TransformStamped transform;
-  try {
-    transform = tf_->lookupTransform(
-      layered_costmap_->getGlobalFrameID(), message->header.frame_id,
-      rclcpp::Time(message->validation_stamp), tf2::durationFromSec(0.0));
-  } catch (const std::exception &) {
+
+  {
     std::lock_guard<std::mutex> lock(mutex_);
-    latest_.reset();
-    updateWithMax(master_grid, min_i, min_j, max_i, max_j);
-    const double age_s = static_cast<double>(
-      now.nanoseconds() - stampNs(message->validation_stamp)) * 1.0e-9;
-    publishStatus(*message, false, tfFailureReason(), age_s);
-    return;
+    auto promoted = promotedStaticObstacles();
+    applied_obstacles.insert(
+      applied_obstacles.end(), promoted.begin(), promoted.end());
+    if ((tf_failed || !validation_reason.empty()) && latest_ == message) {
+      latest_.reset();
+      latest_admission_reason_.clear();
+    }
   }
+
   uint32_t active_cells = 0;
   uint32_t raised_cells = 0;
   uint32_t masked_cells = 0;
   uint8_t maximum_cost = 0;
   uint8_t maximum_cost_increase = 0;
-  for (const auto & obstacle : message->obstacles) {
-    geometry_msgs::msg::PointStamped source;
-    geometry_msgs::msg::PointStamped target;
-    source.header = message->header;
-    source.header.stamp = message->validation_stamp;
-    source.point.x = obstacle.pose_xy_m[0];
-    source.point.y = obstacle.pose_xy_m[1];
-    tf2::doTransform(source, target, transform);
+  for (const auto & applied_obstacle : applied_obstacles) {
+    const auto & obstacle = applied_obstacle.obstacle;
     unsigned int center_x = 0;
     unsigned int center_y = 0;
-    if (!worldToMap(target.point.x, target.point.y, center_x, center_y)) {continue;}
+    if (!worldToMap(
+        applied_obstacle.map_x, applied_obstacle.map_y, center_x, center_y))
+    {
+      continue;
+    }
     const int radius_cells = static_cast<int>(std::ceil(obstacle.radius_m / getResolution()));
     const uint8_t cost = obstacleCost(
-      obstacle, maximum_soft_cost_, collision_min_height_m_, collision_max_height_m_);
+      obstacle, applied_obstacle.effective_count, maximum_soft_cost_,
+      collision_min_height_m_, collision_max_height_m_);
     for (int dy = -radius_cells; dy <= radius_cells; ++dy) {
       for (int dx = -radius_cells; dx <= radius_cells; ++dx) {
         if (dx * dx + dy * dy > radius_cells * radius_cells) {continue;}
@@ -602,11 +743,15 @@ void CognitiveObstacleLayer::updateCosts(
   updateWithMax(master_grid, min_i, min_j, max_i, max_j);
   const std::string reason = applicationReason(active_cells, raised_cells);
   const bool applied = reason.empty();
-  const double age_s = static_cast<double>(
-    now.nanoseconds() - stampNs(message->validation_stamp)) * 1.0e-9;
-  publishStatus(
-    *message, applied, reason, age_s, active_cells, maximum_cost,
-    raised_cells, masked_cells, maximum_cost_increase);
+  if (message) {
+    const double age_s = static_cast<double>(
+      now.nanoseconds() - stampNs(message->validation_stamp)) * 1.0e-9;
+    const std::string offer_reason = tf_failed ? tfFailureReason() : validation_reason;
+    publishStatus(
+      *message, applied, offer_reason.empty() ? reason : offer_reason, age_s,
+      active_cells, maximum_cost, raised_cells, masked_cells,
+      maximum_cost_increase);
+  }
 }
 
 void CognitiveObstacleLayer::publishStatus(
