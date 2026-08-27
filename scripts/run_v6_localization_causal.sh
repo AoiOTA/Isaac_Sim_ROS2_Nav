@@ -220,7 +220,6 @@ case "${component}" in
         --startup-profile module2_causal_obstacle_active \
         --active-effect-scope obstacle_only \
         --module2-root "${module2_root}" \
-        --shadow-config configs/kujiale_0026_module1_visual_shadow_v310.yaml \
         --candidate-manifest "${candidate_manifest}" \
         --socket "${socket_path}" \
         --device "${BIO_NAV_PHASE_DE_DEVICE:-cuda}" "$@"

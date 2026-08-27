@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 from types import SimpleNamespace
 
@@ -525,6 +526,10 @@ def test_w0_w1_wrapper_maps_to_r0_r1_with_onebox_m3_argv(tmp_path):
         for component in ("isaac", "ros", "module1", "bridge", "plan")
     }
     assert all(result.returncode == 0 for result in outputs.values())
+    manifest = tmp_path / (
+        "integration/ros2_ws/src/bio_nav_ros_bridge/config/"
+        "kujiale_0026_run4_read_only_shadow_candidate.json"
+    )
     for arm in ("W0", "W1"):
         assert "run_v6_kujiale_low_obstacles.sh isaac" in outputs[(arm, "isaac")].stdout
         ros = outputs[(arm, "ros")].stdout
@@ -536,7 +541,8 @@ def test_w0_w1_wrapper_maps_to_r0_r1_with_onebox_m3_argv(tmp_path):
         assert "run_v6_module2_causal_obstacle_server.sh" in module1
         assert "--startup-profile module2_causal_obstacle_active" in module1
         assert "--active-effect-scope obstacle_only" in module1
-        assert "--candidate-manifest" in module1
+        assert f"--candidate-manifest {manifest}" in module1
+        assert "--shadow-config" not in module1
         assert "startup_profile:=module2_causal_obstacle_active" in outputs[
             (arm, "bridge")
         ].stdout
@@ -545,6 +551,26 @@ def test_w0_w1_wrapper_maps_to_r0_r1_with_onebox_m3_argv(tmp_path):
         ].stdout
     assert "localization_supervisor_mode:=shadow" in outputs[("W0", "bridge")].stdout
     assert "localization_supervisor_mode:=active" in outputs[("W1", "bridge")].stdout
+
+    w0_module1 = shlex.split(outputs[("W0", "module1")].stdout)
+    w1_module1 = shlex.split(outputs[("W1", "module1")].stdout)
+    assert w0_module1 == w1_module1
+    assert w0_module1[w0_module1.index("--startup-profile") + 1] == (
+        "module2_causal_obstacle_active"
+    )
+    assert w0_module1[w0_module1.index("--active-effect-scope") + 1] == (
+        "obstacle_only"
+    )
+    assert w0_module1[w0_module1.index("--module2-root") + 1] == str(
+        tmp_path / "module2"
+    )
+    assert w0_module1[w0_module1.index("--candidate-manifest") + 1] == str(
+        manifest
+    )
+    assert w0_module1[w0_module1.index("--socket") + 1] == str(
+        tmp_path / "module2.sock"
+    )
+    assert w0_module1[w0_module1.index("--device") + 1] == "cuda"
 
     default_r0 = _run_wrapper(tmp_path, "R0", "ros")
     assert default_r0.returncode == 0
