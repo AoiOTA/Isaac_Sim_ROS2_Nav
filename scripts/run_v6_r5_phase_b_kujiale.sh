@@ -97,7 +97,7 @@ prepare_socket_directory() {
 }
 
 wait_for_ros_reset_services() {
-  local timeout_sec deadline service service_type
+  local timeout_sec deadline service service_list
   local -a required_services missing
   timeout_sec="${BIO_NAV_PHASE_B_ROS_READY_TIMEOUT_SEC:-120}"
   [[ "${timeout_sec}" =~ ^[1-9][0-9]*$ ]] \
@@ -109,10 +109,16 @@ wait_for_ros_reset_services() {
   required_services=(/wheel_odometry/reset)
   deadline=$((SECONDS + timeout_sec))
   while true; do
+    service_list="$(
+      timeout 2 ros2 service list -t --no-daemon --spin-time 1 2>/dev/null \
+        || true
+    )"
     missing=()
     for service in "${required_services[@]}"; do
-      service_type="$(timeout 2 ros2 service type "${service}" 2>/dev/null || true)"
-      [[ -n "${service_type}" ]] || missing+=("${service}")
+      awk -v service="${service}" \
+        '$1 == service && $2 == "[std_srvs/srv/Empty]" && NF == 2 { found = 1 } END { exit !found }' \
+        <<<"${service_list}" \
+        || missing+=("${service}")
     done
     if ((${#missing[@]} == 0)); then
       log_info "Phase B pre-Isaac ROS reset service is ready; starting Isaac"

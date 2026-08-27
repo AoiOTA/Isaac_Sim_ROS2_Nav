@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import time
 
 
 REPO = Path(__file__).resolve().parents[4]
@@ -75,7 +76,7 @@ def test_phase_b_help_declares_ros_first_and_isaac_readiness_order():
         < isaac_case.index('exec "${SCRIPT_DIR}/run_isaac.sh"')
 
 
-def _run_fake_isaac_startup(tmp_path, ready_services):
+def _run_fake_isaac_startup(tmp_path, service_listing, *, ros2_sleep_sec="0"):
     project = tmp_path / "project"
     scripts = project / "scripts"
     (scripts / "lib").mkdir(parents=True)
@@ -113,10 +114,10 @@ log_info() { printf '%s\\n' "$*"; }
     ros2 = fake_bin / "ros2"
     ros2.write_text(
         """#!/usr/bin/env bash
-if [[ "$1" == service && "$2" == type ]]; then
-  case ":${FAKE_READY_SERVICES:-}:" in
-    *":$3:"*) printf '%s\\n' std_srvs/srv/Empty ;;
-  esac
+if [[ "$#" -eq 6 && "$1" == service && "$2" == list && "$3" == -t \
+      && "$4" == --no-daemon && "$5" == --spin-time && "$6" == 1 ]]; then
+  sleep "${FAKE_ROS2_SLEEP_SEC:-0}"
+  printf '%s\\n' "${FAKE_SERVICE_LISTING:-}"
 fi
 """,
         encoding="utf-8",
@@ -128,7 +129,8 @@ fi
             "PATH": f"{fake_bin}:{env['PATH']}",
             "BIO_NAV_MODULE2_V310_ROOT": str(module2),
             "BIO_NAV_PHASE_B_ROS_READY_TIMEOUT_SEC": "1",
-            "FAKE_READY_SERVICES": ":".join(ready_services),
+            "FAKE_SERVICE_LISTING": service_listing,
+            "FAKE_ROS2_SLEEP_SEC": ros2_sleep_sec,
         }
     )
     return subprocess.run(
@@ -141,19 +143,47 @@ fi
 
 
 def test_phase_b_isaac_starts_before_mixed_ekf_set_pose_exists(tmp_path):
-    result = _run_fake_isaac_startup(tmp_path, ["/wheel_odometry/reset"])
+    result = _run_fake_isaac_startup(
+        tmp_path, "/wheel_odometry/reset [std_srvs/srv/Empty]"
+    )
 
     assert result.returncode == 0, result.stderr
     assert "pre-Isaac ROS reset service is ready" in result.stdout
     assert "--spawn-pose\nlong_route_start_g1" in result.stdout
 
 
-def test_phase_b_isaac_still_fails_when_wheel_reset_is_missing(tmp_path):
-    result = _run_fake_isaac_startup(tmp_path, ["/set_pose"])
+def test_phase_b_isaac_rejects_wheel_reset_with_wrong_type(tmp_path):
+    result = _run_fake_isaac_startup(
+        tmp_path, "/wheel_odometry/reset [example_interfaces/srv/Trigger]"
+    )
 
     assert result.returncode == 1
     assert "/wheel_odometry/reset" in result.stderr
     assert "start the ros component first" in result.stderr
+
+
+def test_phase_b_isaac_still_fails_when_wheel_reset_is_missing(tmp_path):
+    result = _run_fake_isaac_startup(
+        tmp_path, "/set_pose [robot_localization/srv/SetPose]"
+    )
+
+    assert result.returncode == 1
+    assert "/wheel_odometry/reset" in result.stderr
+    assert "start the ros component first" in result.stderr
+
+
+def test_phase_b_reset_service_discovery_remains_bounded(tmp_path):
+    started = time.monotonic()
+    result = _run_fake_isaac_startup(
+        tmp_path,
+        "/wheel_odometry/reset [std_srvs/srv/Empty]",
+        ros2_sleep_sec="10",
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.returncode == 1
+    assert elapsed < 4.5
+    assert "not ready after 1s" in result.stderr
 
 
 def test_phase_b_socket_defaults_local_and_preserves_absolute_override():
