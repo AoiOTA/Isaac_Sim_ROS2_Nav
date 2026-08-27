@@ -5,7 +5,7 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
-source_ros --require-integration-underlay
+source_ros --require-integration-underlay --skip-module3-overlay
 
 cd "${PROJECT_ROOT}/ros2_ws"
 exec colcon build --symlink-install "$@"

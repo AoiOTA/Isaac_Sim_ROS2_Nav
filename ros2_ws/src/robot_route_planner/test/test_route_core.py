@@ -17,6 +17,7 @@ from robot_route_planner.ros_node import (
     CostmapSnapshot,
     DEFAULT_ROUTE_ODOMETRY_TOPIC,
     RouteCoordinator,
+    TerminalFenceToken,
     edge_prior_is_usable,
     footprint_is_free,
     navigation_result_succeeded,
@@ -239,27 +240,68 @@ def test_request7_zero_then_late_healthy_prior_reuses_pending_window() -> None:
     assert coordinator.prepared == [{}, {7: (1.0, 0.8)}]
 
 
-def test_repeated_zero_prior_prepares_geometry_once_until_expiry() -> None:
-    coordinator = _prior_wait_coordinator()
+@pytest.mark.parametrize('callback_order', ('message_timer', 'timer_message'))
+def test_gvg_geometry_timeout_keeps_request_for_late_healthy_prior(
+    callback_order,
+) -> None:
+    coordinator = _prior_wait_coordinator(mode='gvg')
 
-    for now_ns in (1_600_000_000, 2_100_000_000, 3_100_000_000):
+    for now_ns in (1_050_000_000, 1_100_000_000, 1_200_000_000):
         coordinator._now_ns = now_ns
         zero = _edge_prior_message(request_id=9, stamp_ns=now_ns)
         zero.priors = []
         coordinator._on_priors(zero)
 
-    assert coordinator.pending_deadline_ns == 5_000_000_000
+    assert coordinator.pending_deadline_ns == 1_250_000_000
     assert coordinator.prepared == [{}]
 
-    coordinator._now_ns = 5_000_000_000
-    coordinator._check_prior_timeout()
+    coordinator._now_ns = 1_450_000_000
+    healthy = _edge_prior_message(
+        request_id=9, stamp_ns=1_450_000_000)
+    if callback_order == 'message_timer':
+        coordinator._on_priors(healthy)
+        coordinator._check_prior_timeout()
+    else:
+        coordinator._check_prior_timeout()
+
+        assert coordinator.pending_deadline_ns is None
+        assert coordinator.pending_prior_request_id == 9
+        assert coordinator.pending_prior_graph_id == 'test:gvg_v1'
+        assert coordinator.pending_prior_graph_revision == 3
+        assert coordinator.pending_prior_started_ns == 1_000_000_000
+        assert coordinator.pending_prior_geometry_prepared is True
+        coordinator._on_priors(healthy)
 
     assert coordinator.pending_deadline_ns is None
+    assert coordinator.pending_prior_request_id is None
     assert coordinator.pending_prior_geometry_prepared is False
+    assert coordinator.latest_priors == {7: (1.0, 0.8)}
+    assert coordinator.prepared == [{}, {7: (1.0, 0.8)}]
+
+
+@pytest.mark.parametrize('callback_order', ('message_timer', 'timer_message'))
+def test_expired_healthy_prior_without_geometry_has_timer_semantics(
+    callback_order,
+) -> None:
+    coordinator = _prior_wait_coordinator(mode='gvg')
+    coordinator._now_ns = 1_450_000_000
+    healthy = _edge_prior_message(
+        request_id=9, stamp_ns=1_450_000_000)
+
+    if callback_order == 'message_timer':
+        coordinator._on_priors(healthy)
+        coordinator._check_prior_timeout()
+    else:
+        coordinator._check_prior_timeout()
+        coordinator._on_priors(healthy)
+
+    assert coordinator.pending_prior_request_id is None
+    assert coordinator.pending_prior_geometry_prepared is False
+    assert coordinator.latest_priors == {}
     assert coordinator.prepared == [{}]
 
 
-def test_new_context_and_clear_reset_geometry_prepare_latch() -> None:
+def test_pending_clear_preserves_route_generation_ledger_until_retire() -> None:
     coordinator = _prior_wait_coordinator()
     coordinator._now_ns = 1_600_000_000
     zero = _edge_prior_message(request_id=9, stamp_ns=1_600_000_000)
@@ -267,21 +309,29 @@ def test_new_context_and_clear_reset_geometry_prepare_latch() -> None:
     coordinator._on_priors(zero)
     assert coordinator.pending_prior_geometry_prepared is True
 
-    coordinator.request_id = 10
-    coordinator._now_ns = 2_000_000_000
-    coordinator._arm_prior_request(coordinator._now_ns)
-    assert coordinator.pending_prior_request_id == 10
-    assert coordinator.pending_prior_geometry_prepared is False
-
     coordinator.pending_prior_geometry_prepared = True
+    coordinator.pending_prior_observed_generation = object()
+    coordinator.pending_prior_observed_stamp_ns = 2_000_000_000
+    retired = object()
+    coordinator.pending_prior_retired_generations = [retired]
     coordinator._clear_pending_prior_request()
     assert coordinator.pending_prior_geometry_prepared is False
+    assert coordinator.pending_prior_observed_generation is not None
+    assert coordinator.pending_prior_observed_stamp_ns == 2_000_000_000
+    assert coordinator.pending_prior_retired_generations == [retired]
+
+    coordinator._clear_prior_generation_ledger()
+    assert coordinator.pending_prior_observed_generation is None
+    assert coordinator.pending_prior_observed_stamp_ns is None
+    assert coordinator.pending_prior_retired_generations == []
 
 
 def test_primary_timeout_and_late_prior_are_generation_safe() -> None:
     coordinator = _prior_wait_coordinator()
     coordinator._now_ns = 5_000_000_000
     coordinator._check_prior_timeout()
+    assert coordinator.pending_prior_request_id is None
+    assert coordinator.pending_prior_geometry_prepared is False
     assert coordinator.prepared == [{}]
     coordinator._now_ns = 5_100_000_000
     coordinator._on_priors(_edge_prior_message(
@@ -553,6 +603,177 @@ def test_async_old_generation_cannot_replace_new_generation(monkeypatch) -> None
     assert coordinator.latest_priors_generation.recurrent_session_id == 'session-b'
 
 
+def test_unhealthy_generation_retires_old_but_allows_newer_healthy() -> None:
+    coordinator = _prior_wait_coordinator(mode='gvg')
+    coordinator.request_id = 6
+    coordinator._arm_prior_request(coordinator._now_ns)
+    coordinator._now_ns = 1_100_000_000
+    source423 = _edge_prior_message(
+        request_id=6,
+        stamp_ns=1_100_000_000,
+        recurrent_session_id='source423',
+    )
+    coordinator._on_priors(source423)
+
+    coordinator._now_ns = 2_000_000_000
+    coordinator._arm_prior_request(coordinator._now_ns)
+    source425 = _edge_prior_message(
+        request_id=6,
+        stamp_ns=2_100_000_000,
+        recurrent_session_id='source425',
+    )
+    source425.healthy = False
+    coordinator._now_ns = 2_100_000_000
+    coordinator._on_priors(source425)
+    coordinator._now_ns = 2_250_000_000
+    coordinator._check_prior_timeout()
+
+    late_source423 = _edge_prior_message(
+        request_id=6,
+        stamp_ns=2_300_000_000,
+        recurrent_session_id='source423',
+    )
+    coordinator._now_ns = 2_300_000_000
+    coordinator._on_priors(late_source423)
+    assert coordinator.latest_priors == {}
+    assert coordinator.prepared == [{7: (1.0, 0.8)}, {}]
+
+    source427 = _edge_prior_message(
+        request_id=6,
+        stamp_ns=2_400_000_000,
+        recurrent_session_id='source427',
+    )
+    source427.priors[0].cost_delta_m = 2.0
+    coordinator._now_ns = 2_400_000_000
+    coordinator._on_priors(source427)
+
+    assert coordinator.latest_priors == {7: (2.0, 0.8)}
+    assert coordinator.latest_priors_generation.recurrent_session_id == 'source427'
+    assert coordinator.prepared == [
+        {7: (1.0, 0.8)}, {}, {7: (2.0, 0.8)},
+    ]
+
+
+def test_retired_generation_survives_healthy_clear_and_refresh() -> None:
+    coordinator = _prior_wait_coordinator(mode='gvg')
+    coordinator._now_ns = 1_050_000_000
+    source0 = _edge_prior_message(
+        request_id=9,
+        stamp_ns=1_050_000_000,
+        recurrent_session_id='source0',
+    )
+    source0.healthy = False
+    coordinator._on_priors(source0)
+
+    coordinator._now_ns = 1_100_000_000
+    source1 = _edge_prior_message(
+        request_id=9,
+        stamp_ns=1_100_000_000,
+        recurrent_session_id='source1',
+    )
+    coordinator._on_priors(source1)
+    assert coordinator.pending_prior_request_id is None
+    assert source0.recurrent_session_id in {
+        generation.recurrent_session_id
+        for generation in coordinator.pending_prior_retired_generations
+    }
+
+    coordinator._now_ns = 2_000_000_000
+    coordinator._arm_prior_request(coordinator._now_ns)
+    late_source0 = _edge_prior_message(
+        request_id=9,
+        stamp_ns=2_100_000_000,
+        recurrent_session_id='source0',
+    )
+    coordinator._now_ns = 2_100_000_000
+    coordinator._on_priors(late_source0)
+    assert coordinator.latest_priors_generation.recurrent_session_id == 'source1'
+
+    source2 = _edge_prior_message(
+        request_id=9,
+        stamp_ns=2_200_000_000,
+        recurrent_session_id='source2',
+    )
+    source2.priors[0].cost_delta_m = 2.0
+    coordinator._now_ns = 2_200_000_000
+    coordinator._on_priors(source2)
+    assert coordinator.latest_priors == {7: (2.0, 0.8)}
+    assert coordinator.latest_priors_generation.recurrent_session_id == 'source2'
+
+
+def test_new_route_request_can_reuse_retired_generation_identity() -> None:
+    coordinator = _prior_wait_coordinator(mode='gvg')
+    coordinator._now_ns = 1_050_000_000
+    source0 = _edge_prior_message(
+        request_id=9,
+        stamp_ns=1_050_000_000,
+        recurrent_session_id='source0',
+    )
+    source0.healthy = False
+    coordinator._on_priors(source0)
+    coordinator._now_ns = 1_100_000_000
+    coordinator._on_priors(_edge_prior_message(
+        request_id=9,
+        stamp_ns=1_100_000_000,
+        recurrent_session_id='source1',
+    ))
+
+    coordinator._retire_route_state()
+    coordinator.request_id = 10
+    coordinator.pending_goal = object()
+    coordinator._now_ns = 2_000_000_000
+    coordinator._arm_prior_request(coordinator._now_ns)
+    coordinator._now_ns = 2_100_000_000
+    coordinator._on_priors(_edge_prior_message(
+        request_id=10,
+        stamp_ns=2_100_000_000,
+        recurrent_session_id='source0',
+    ))
+
+    assert coordinator.latest_priors == {7: (1.0, 0.8)}
+    assert coordinator.latest_priors_generation.recurrent_session_id == 'source0'
+
+
+def test_pending_generation_retirement_keeps_oldest_and_allows_progress() -> None:
+    coordinator = _prior_wait_coordinator(mode='gvg')
+    for index in range(40):
+        coordinator._now_ns = 1_001_000_000 + index * 1_000_000
+        message = _edge_prior_message(
+            request_id=9,
+            stamp_ns=coordinator._now_ns,
+            recurrent_session_id=f'source{index}',
+        )
+        message.healthy = False
+        coordinator._on_priors(message)
+
+    assert len(coordinator.pending_prior_retired_generations) == 39
+    assert (
+        coordinator.pending_prior_observed_generation.recurrent_session_id
+        == 'source39'
+    )
+
+    coordinator._now_ns = 1_050_000_000
+    late_source0 = _edge_prior_message(
+        request_id=9,
+        stamp_ns=1_050_000_000,
+        recurrent_session_id='source0',
+    )
+    coordinator._on_priors(late_source0)
+    assert coordinator.latest_priors == {}
+    assert coordinator.prepared == [{}]
+
+    coordinator._now_ns = 1_100_000_000
+    source40 = _edge_prior_message(
+        request_id=9,
+        stamp_ns=1_100_000_000,
+        recurrent_session_id='source40',
+    )
+    coordinator._on_priors(source40)
+
+    assert coordinator.latest_priors == {7: (1.0, 0.8)}
+    assert coordinator.latest_priors_generation.recurrent_session_id == 'source40'
+
+
 def test_validated_model_rollover_retires_but_does_not_accept_new_prior() -> None:
     coordinator = _prior_wait_coordinator(mode='gvg')
     coordinator._now_ns = 1_100_000_000
@@ -695,6 +916,84 @@ def test_old_dynamic_edges_callback_generation_is_discarded() -> None:
     assert evaluated == [True]
 
 
+@pytest.mark.parametrize(
+    'callback_order', ('healthy_first', 'old_geometry_first')
+)
+def test_new_plan_attempt_wins_over_old_geometry_future(
+    monkeypatch, callback_order,
+) -> None:
+    coordinator = RouteCoordinator.__new__(RouteCoordinator)
+    coordinator.pending_goal = object()
+    coordinator.request_id = 6
+    coordinator.graph_generation = 2
+    coordinator.plan_attempt_serial = 2
+    edge7 = SimpleNamespace(
+        id=7, from_node=1, to_node=2,
+        polyline_xy=np.asarray(((0.0, 0.0), (1.0, 0.0))),
+    )
+    edge8 = SimpleNamespace(
+        id=8, from_node=3, to_node=4,
+        polyline_xy=np.asarray(((0.0, 0.0), (0.0, 1.0))),
+    )
+    coordinator.graph = SimpleNamespace(
+        graph_id='graph-a', revision=3,
+        edge_by_id=lambda: {7: edge7, 8: edge8},
+    )
+    coordinator.support = SimpleNamespace(
+        support_to_canonical_edge={101: 7, 102: 8})
+    coordinator.defaults = {'route_tracking': {}}
+    coordinator.frame_id = 'map'
+    coordinator._now = lambda: SimpleNamespace(to_msg=lambda: object())
+    coordinator.CanonicalRoute = lambda: SimpleNamespace(
+        header=SimpleNamespace(), node_ids=[], edge_ids=[])
+    coordinator.route_pub = _CapturePublisher()
+    coordinator.node = SimpleNamespace(get_logger=lambda: SimpleNamespace(
+        info=lambda _message: None, warning=lambda _message: None,
+    ))
+    coordinator.cognitive_graph_mode = 'gvg'
+    compute_requests = []
+    coordinator.route_client = SimpleNamespace(
+        server_is_ready=lambda: True,
+        send_goal_async=lambda goal: compute_requests.append(goal),
+    )
+    monkeypatch.setattr(
+        ros_node_module,
+        'RouteTracker',
+        lambda _graph, edge_ids, _settings, **_kwargs: tuple(edge_ids),
+    )
+    route_generation = ros_node_module.RouteCallbackGeneration(
+        6, 2, 'graph-a', 3)
+    old_generation = ros_node_module.PlanCallbackGeneration(
+        route_generation, 1)
+    healthy_generation = ros_node_module.PlanCallbackGeneration(
+        route_generation, 2)
+    old_geometry = SimpleNamespace(result=lambda: SimpleNamespace(success=True))
+    healthy_route = SimpleNamespace(result=lambda: SimpleNamespace(
+        result=SimpleNamespace(
+            error_code=0,
+            route=SimpleNamespace(
+                edges=[SimpleNamespace(
+                    edgeid=102,
+                    start=SimpleNamespace(x=0.0, y=0.0),
+                    end=SimpleNamespace(x=0.0, y=1.0),
+                )],
+                route_cost=2.0,
+            ),
+        ),
+    ))
+
+    if callback_order == 'healthy_first':
+        coordinator._on_route_result(healthy_route, healthy_generation)
+        coordinator._after_edge_update(old_geometry, 1, 2, old_generation)
+    else:
+        coordinator._after_edge_update(old_geometry, 1, 2, old_generation)
+        coordinator._on_route_result(healthy_route, healthy_generation)
+
+    assert coordinator.tracker == (8,)
+    assert [message.edge_ids for message in coordinator.route_pub.messages] == [[8]]
+    assert compute_requests == []
+
+
 @pytest.mark.parametrize('failure_kind', ('dynamic', 'route', 'navigation'))
 def test_primary_async_failures_request_exactly_one_fallback(failure_kind) -> None:
     coordinator = RouteCoordinator.__new__(RouteCoordinator)
@@ -772,6 +1071,13 @@ def _reset_route_coordinator(*, active=True, handle=None):
     coordinator.reset_status_authority_seen = False
     coordinator.reset_hold_barrier = False
     coordinator.reset_ready_pending = False
+    coordinator.terminal_fence_arm_pending = False
+    coordinator.terminal_fence_serial = 0
+    coordinator.terminal_fence_binding = None
+    coordinator.pending_terminal_fence = None
+    coordinator.terminal_fence_future = None
+    coordinator.terminal_fence_deadline_steady_s = None
+    coordinator.terminal_fence_lockout_generation = None
     coordinator.graph = SimpleNamespace(graph_id='physical', revision=4)
     coordinator.gvg_graph = coordinator.graph
     coordinator.cognitive_graph_identity = CognitiveGraphIdentity(
@@ -929,6 +1235,13 @@ def test_reset_stop_gate_status_parser_rejects_malformed_or_incoherent_state() -
     }))
     assert valid.generation == 4
     assert valid.held is True
+    terminal = parse_reset_stop_gate_status(json.dumps({
+        'generation': 4,
+        'held': True,
+        'eligible_generation': None,
+        'reason': 'terminal_hold',
+    }))
+    assert terminal.reason == 'terminal_hold'
 
     for payload in (
         'not-json',
@@ -965,6 +1278,9 @@ def test_hold_retires_active_route_before_event_and_same_generation_is_idempoten
     }
     assert coordinator.runtime_snapshots == []
     assert coordinator.graph_reconciliations == []
+    response = SimpleNamespace(success=None, message='')
+    coordinator._arm_next_terminal_fence(object(), response)
+    assert response.success is False
 
     coordinator._on_reset_stop_gate_status(hold)
     coordinator._on_reset_event(None)
@@ -1000,6 +1316,277 @@ def test_hold_retires_active_route_before_event_and_same_generation_is_idempoten
     coordinator._on_goal(fresh_goal)
     assert coordinator.pending_goal is fresh_goal
     assert prepared == [{}]
+
+
+def test_terminal_hold_status_does_not_enter_simulation_reset_path() -> None:
+    coordinator = _reset_route_coordinator(active=False)
+    coordinator._retire_route_state()
+    request_id = coordinator.request_id
+    reset_generation = getattr(coordinator, 'reset_generation', 0)
+    reset_epoch = coordinator.cognitive_graph_identity.reset_epoch
+
+    coordinator._on_reset_stop_gate_status(
+        _gate_status(1, True, 'terminal_hold'))
+
+    assert coordinator.reset_hold_barrier is False
+    assert coordinator.reset_status_snapshot.reason == 'terminal_hold'
+    assert coordinator.request_id == request_id
+    assert getattr(coordinator, 'reset_generation', 0) == reset_generation
+    assert coordinator.cognitive_graph_identity.reset_epoch == reset_epoch
+    assert coordinator.runtime_snapshots == []
+    assert coordinator.graph_reconciliations == []
+    response = SimpleNamespace(success=None, message='')
+    coordinator._arm_next_terminal_fence(object(), response)
+    assert response.success is False
+
+
+def test_terminal_fence_arm_binds_only_next_local_request() -> None:
+    coordinator = _reset_route_coordinator(active=False)
+    coordinator._retire_route_state()
+    coordinator.reset_generation = 99
+    coordinator.module2_enabled = False
+    coordinator.route_prior_enabled = False
+    coordinator.graph_coherent = True
+    coordinator.graph_reassert_required = False
+    coordinator._publish_route_context = lambda: None
+    coordinator._prepare_route = lambda _priors: None
+    response = SimpleNamespace(success=None, message='')
+
+    coordinator._arm_next_terminal_fence(object(), response)
+    assert response.success is True
+    goal = SimpleNamespace(pose=SimpleNamespace(position=SimpleNamespace(
+        x=5.0, y=6.0)))
+    coordinator._on_goal(goal)
+
+    binding = coordinator.terminal_fence_binding
+    assert binding.request_id == 42
+    assert binding.expected_reset_status_generation == 1
+    assert coordinator.terminal_fence_arm_pending is False
+
+    old_generation = ros_node_module.RouteCallbackGeneration(
+        41, coordinator.graph_generation,
+        coordinator.graph.graph_id, coordinator.graph.revision,
+    )
+    coordinator._on_navigation_result(
+        SimpleNamespace(result=lambda: SimpleNamespace(
+            status=6, result=SimpleNamespace(error_code=207))),
+        old_generation,
+    )
+    assert coordinator.terminal_fence_binding == binding
+
+    coordinator._on_goal(goal)
+    assert coordinator.request_id == 43
+    assert coordinator.terminal_fence_binding is None
+
+
+class _DeferredFuture:
+    def __init__(self):
+        self.callback = None
+        self.response = None
+
+    def add_done_callback(self, callback):
+        self.callback = callback
+
+    def result(self):
+        return self.response
+
+    def complete(self, response):
+        self.response = response
+        assert self.callback is not None
+        self.callback(self)
+
+
+def _terminal_fence_route(
+    *,
+    succeeded: bool,
+    service_ready: bool = True,
+    call_error: Exception | None = None,
+):
+    coordinator = _reset_route_coordinator(handle=_AcceptedHandle())
+    coordinator.reset_generation = 99
+    coordinator.pending_structural_map = None
+    coordinator.cognitive_graph_feedback_active = None
+    coordinator.cognitive_graph_mode = 'gvg'
+    coordinator.navigation_goal_pending = False
+    coordinator.navigation_goal_targets_final = succeeded
+    coordinator._current_xy = lambda: (0.0, 0.0)
+    coordinator.pending_goal = SimpleNamespace(
+        pose=SimpleNamespace(position=SimpleNamespace(x=0.0, y=0.0)))
+    coordinator.route_goal_completion_tolerance_m = 0.25
+    coordinator.terminal_fence_binding = TerminalFenceToken(1, 41, 1)
+    coordinator.terminal_fence_arm_pending = False
+    coordinator.pending_terminal_fence = None
+    coordinator.terminal_fence_future = None
+    coordinator.terminal_fence_deadline_steady_s = None
+    coordinator.terminal_fence_lockout_generation = None
+    future = _DeferredFuture()
+    requests = []
+    coordinator.SetParameters = SimpleNamespace(
+        Request=lambda: SimpleNamespace(parameters=[])
+    )
+    coordinator.Parameter = lambda **kwargs: SimpleNamespace(**kwargs)
+    coordinator.ParameterValue = lambda **kwargs: SimpleNamespace(**kwargs)
+    coordinator.ParameterType = SimpleNamespace(PARAMETER_INTEGER=2)
+
+    def call_async(request):
+        requests.append(request)
+        if call_error is not None:
+            raise call_error
+        return future
+
+    coordinator.terminal_hold_client = SimpleNamespace(
+        service_is_ready=lambda: service_ready,
+        call_async=call_async,
+    )
+    coordinator._steady_now = lambda: 10.0
+    generation = coordinator._route_callback_generation()
+    wrapped = SimpleNamespace(
+        status=4 if succeeded else 6,
+        result=SimpleNamespace(error_code=0 if succeeded else 207),
+    )
+    coordinator._on_navigation_result(
+        SimpleNamespace(result=lambda: wrapped), generation)
+    return coordinator, future, requests
+
+
+def _parameter_response(successful: bool, reason: str = ""):
+    return SimpleNamespace(results=[SimpleNamespace(
+        successful=successful, reason=reason)])
+
+
+def _assert_terminal_lockout_rejects_work(coordinator) -> None:
+    pending = coordinator.pending_terminal_fence
+    future = coordinator.terminal_fence_future
+    request_id = coordinator.request_id
+    arm = SimpleNamespace(success=None, message="")
+
+    coordinator._arm_next_terminal_fence(object(), arm)
+    coordinator._on_goal(SimpleNamespace(
+        pose=SimpleNamespace(position=SimpleNamespace(x=5.0, y=6.0))))
+
+    assert arm.success is False
+    assert coordinator.request_id == request_id
+    assert coordinator.pending_terminal_fence is pending
+    assert coordinator.terminal_fence_future is future
+    assert coordinator.terminal_fence_lockout_generation == 1
+
+
+@pytest.mark.parametrize('succeeded', (True, False))
+def test_bound_terminal_waits_for_stop_gate_ack_before_bool_json_pair(
+    succeeded,
+) -> None:
+    coordinator, future, requests = _terminal_fence_route(succeeded=succeeded)
+
+    assert coordinator.route_active is False
+    assert coordinator.pending_goal is None
+    assert coordinator.goal_complete_pub.messages == []
+    assert coordinator.goal_result_pub.messages == []
+    assert coordinator.terminal_fence_lockout_generation == 1
+    assert len(requests) == 1
+    parameter = requests[0].parameters[0]
+    assert parameter.name == "reset_stop_gate_terminal_hold_generation"
+    assert parameter.value.type == 2
+    assert parameter.value.integer_value == 1
+    assert coordinator.reset_generation == 99
+    _assert_terminal_lockout_rejects_work(coordinator)
+
+    future.complete(_parameter_response(True))
+
+    assert [message.data for message in coordinator.goal_complete_pub.messages] == [
+        succeeded]
+    result = json.loads(coordinator.goal_result_pub.messages[0].data)
+    assert result['request_id'] == 41
+    assert result['status'] == ('succeeded' if succeeded else 'failed')
+    _assert_terminal_lockout_rejects_work(coordinator)
+
+
+def test_terminal_hold_unavailable_fails_closed_without_terminal_pair() -> None:
+    coordinator, _future, requests = _terminal_fence_route(
+        succeeded=True, service_ready=False)
+
+    assert requests == []
+    assert coordinator.pending_terminal_fence is None
+    assert coordinator.goal_complete_pub.messages == []
+    assert coordinator.goal_result_pub.messages == []
+    _assert_terminal_lockout_rejects_work(coordinator)
+
+
+def test_terminal_hold_call_exception_keeps_lockout_without_terminal_pair() -> None:
+    coordinator, _future, requests = _terminal_fence_route(
+        succeeded=True, call_error=RuntimeError("injected call failure"))
+
+    assert len(requests) == 1
+    assert coordinator.pending_terminal_fence is None
+    assert coordinator.goal_complete_pub.messages == []
+    assert coordinator.goal_result_pub.messages == []
+    _assert_terminal_lockout_rejects_work(coordinator)
+
+
+def test_terminal_hold_negative_response_keeps_lockout_without_terminal_pair() -> None:
+    coordinator, future, _requests = _terminal_fence_route(succeeded=True)
+
+    future.complete(_parameter_response(False, "generation mismatch"))
+
+    assert coordinator.pending_terminal_fence is None
+    assert coordinator.goal_complete_pub.messages == []
+    assert coordinator.goal_result_pub.messages == []
+    _assert_terminal_lockout_rejects_work(coordinator)
+
+
+def test_terminal_hold_timeout_clears_pending_without_terminal_pair() -> None:
+    coordinator, _future, _requests = _terminal_fence_route(succeeded=True)
+    coordinator._steady_now = lambda: 12.1
+
+    coordinator._terminal_fence_tick()
+
+    assert coordinator.pending_terminal_fence is None
+    assert coordinator.goal_complete_pub.messages == []
+    assert coordinator.goal_result_pub.messages == []
+    _assert_terminal_lockout_rejects_work(coordinator)
+
+
+def test_same_generation_status_and_terminal_hold_do_not_clear_lockout() -> None:
+    coordinator, _future, _requests = _terminal_fence_route(succeeded=True)
+    pending = coordinator.pending_terminal_fence
+
+    coordinator._on_reset_stop_gate_status(
+        _gate_status(1, False, 'released:activation_gate'))
+    coordinator._on_reset_stop_gate_status(
+        _gate_status(1, True, 'terminal_hold'))
+    coordinator._on_reset_stop_gate_status(
+        _gate_status(1, True, 'terminal_hold'))
+
+    assert coordinator.terminal_fence_lockout_generation == 1
+    assert coordinator.pending_terminal_fence is pending
+    _assert_terminal_lockout_rejects_work(coordinator)
+
+
+@pytest.mark.parametrize('reason', ('hold', 'reset_complete'))
+def test_higher_generation_real_reset_clears_terminal_lockout(reason) -> None:
+    coordinator, _future, _requests = _terminal_fence_route(succeeded=True)
+
+    coordinator._on_reset_stop_gate_status(_gate_status(
+        2,
+        True,
+        reason,
+        eligible=2 if reason == 'reset_complete' else None,
+    ))
+
+    assert coordinator.terminal_fence_lockout_generation is None
+    assert coordinator.pending_terminal_fence is None
+    assert coordinator.terminal_fence_future is None
+
+
+def test_reset_preempts_old_terminal_hold_ack_without_publication() -> None:
+    coordinator, future, _requests = _terminal_fence_route(succeeded=True)
+
+    coordinator._on_reset_stop_gate_status(_gate_status(2, True, 'hold'))
+    future.complete(_parameter_response(True))
+
+    assert coordinator.terminal_fence_lockout_generation is None
+    assert coordinator.pending_terminal_fence is None
+    assert coordinator.goal_complete_pub.messages == []
+    assert coordinator.goal_result_pub.messages == []
 
 
 def test_release_publishes_deferred_ready_once_after_reassert_commit_in_hold() -> None:
@@ -1545,6 +2132,38 @@ def test_hold_fences_late_acceptance_and_navigation_result() -> None:
     assert late_handle.cancel_calls == 1
     assert [message.data for message in coordinator.goal_complete_pub.messages] == [False]
     assert len(coordinator.goal_result_pub.messages) == 1
+
+
+def test_replan_serial_does_not_stale_navigation_handle_or_result() -> None:
+    coordinator = _reset_route_coordinator()
+    coordinator.pending_structural_map = None
+    coordinator.cognitive_graph_feedback_active = None
+    coordinator.cognitive_graph_mode = 'gvg'
+    coordinator.plan_attempt_serial = 1
+    generation = coordinator._route_callback_generation()
+    handle = _AcceptedHandle()
+
+    coordinator.plan_attempt_serial = 2
+    coordinator._on_navigation_goal_handle(
+        SimpleNamespace(result=lambda: handle), generation)
+
+    assert coordinator.navigation_goal_pending is False
+    assert coordinator.navigation_goal_handle is handle
+    assert handle.cancel_calls == 0
+
+    coordinator.plan_attempt_serial = 3
+    coordinator._on_navigation_result(
+        SimpleNamespace(result=lambda: SimpleNamespace(
+            status=5, result=SimpleNamespace(error_code=207))),
+        generation,
+    )
+
+    assert coordinator.route_active is False
+    assert coordinator.pending_goal is None
+    assert coordinator.navigation_goal_pending is False
+    assert coordinator.navigation_goal_handle is None
+    assert [message.data for message in coordinator.goal_complete_pub.messages] == [
+        False]
 
 
 def test_navigation_terminal_before_hold_is_not_followed_by_reset_abort() -> None:

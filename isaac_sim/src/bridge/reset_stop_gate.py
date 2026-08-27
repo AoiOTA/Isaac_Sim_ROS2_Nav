@@ -60,6 +60,7 @@ class ResetStopGate:
     """
 
     RELEASE_PARAMETER = "reset_stop_gate_release_generation"
+    TERMINAL_HOLD_PARAMETER = "reset_stop_gate_terminal_hold_generation"
 
     def __init__(
         self,
@@ -91,6 +92,7 @@ class ResetStopGate:
         self._heartbeat_stop = threading.Event()
         self._heartbeat_failure: str | None = None
         self._closed = False
+        self._terminal_held = False
         self._last_forwarded_command_was_zero = False
         self._heartbeat_period_s = 1.0 / float(zero_rate_hz)
         self._Twist = Twist
@@ -127,6 +129,8 @@ class ResetStopGate:
         )
         if not node.has_parameter(self.RELEASE_PARAMETER):
             node.declare_parameter(self.RELEASE_PARAMETER, -1)
+        if not node.has_parameter(self.TERMINAL_HOLD_PARAMETER):
+            node.declare_parameter(self.TERMINAL_HOLD_PARAMETER, -1)
         self._parameter_callback = self._set_parameters_callback
         node.add_on_set_parameters_callback(self._parameter_callback)
         self._heartbeat_thread = threading.Thread(
@@ -151,6 +155,7 @@ class ResetStopGate:
                 if self._closed:
                     raise ResetStopGateError("reset stop gate is closed")
                 generation = self.state.hold()
+                self._terminal_held = False
                 self._last_forwarded_command_was_zero = False
                 self.publish_zero()
                 self._publish_status("hold")
@@ -186,7 +191,38 @@ class ResetStopGate:
                 self._publish_status(f"released:{source}", state=staged)
                 self.state.held = staged.held
                 self.state.eligible_generation = staged.eligible_generation
+                self._terminal_held = False
                 self._last_forwarded_command_was_zero = False
+
+    def terminal_hold(self, expected_generation: int) -> None:
+        """Latch terminal zero only in the released generation requested."""
+
+        with self._publish_lock:
+            with self._lock:
+                if self._closed:
+                    raise ResetStopGateError("reset stop gate is closed")
+                if expected_generation != self.state.generation:
+                    raise ResetStopGateError(
+                        "terminal hold generation mismatch: "
+                        f"requested={expected_generation}, "
+                        f"current={self.state.generation}"
+                    )
+                if self.state.held:
+                    if self._terminal_held:
+                        return
+                    raise ResetStopGateError("reset stop gate is held by reset")
+                try:
+                    self.state.held = True
+                    self.state.eligible_generation = None
+                    self._terminal_held = True
+                    self._last_forwarded_command_was_zero = True
+                    self.publish_zero()
+                    self._publish_status("terminal_hold")
+                except Exception as error:
+                    self._record_publish_failure_locked(
+                        error, source="terminal_hold"
+                    )
+                    raise ResetStopGateError(str(error)) from error
 
     def publish_zero(self) -> None:
         self._publisher.publish(self._Twist())
@@ -265,24 +301,38 @@ class ResetStopGate:
             )
 
     def _set_parameters_callback(self, parameters: list[Any]) -> Any:
-        requested = [
+        release_requested = [
             parameter for parameter in parameters
             if parameter.name == self.RELEASE_PARAMETER
         ]
-        if not requested:
+        terminal_requested = [
+            parameter for parameter in parameters
+            if parameter.name == self.TERMINAL_HOLD_PARAMETER
+        ]
+        if not release_requested and not terminal_requested:
             return self._SetParametersResult(successful=True)
+        if release_requested and terminal_requested:
+            return self._SetParametersResult(
+                successful=False,
+                reason="reset stop release and terminal hold cannot be combined",
+            )
+        requested = release_requested or terminal_requested
         if len(requested) != 1:
             return self._SetParametersResult(
-                successful=False, reason="duplicate reset stop release generation"
+                successful=False,
+                reason="duplicate reset stop gate generation command",
             )
         value = requested[0].value
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             return self._SetParametersResult(
                 successful=False,
-                reason="reset stop release generation must be non-negative int",
+                reason="reset stop gate generation must be non-negative int",
             )
         try:
-            self.release(value, source="activation_gate")
+            if terminal_requested:
+                self.terminal_hold(value)
+            else:
+                self.release(value, source="activation_gate")
         except ResetStopGateError as exc:
             return self._SetParametersResult(successful=False, reason=str(exc))
         return self._SetParametersResult(successful=True)
@@ -309,6 +359,7 @@ class ResetStopGate:
                 return
             self.state.held = True
             self.state.eligible_generation = None
+            self._terminal_held = False
             self._closed = True
             self._heartbeat_stop.set()
 

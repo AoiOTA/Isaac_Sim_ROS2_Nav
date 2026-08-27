@@ -904,6 +904,10 @@ class ExperimentRunner(Node):
             reliable,
         )
         self._reset_client = self.create_client(Trigger, self._reset_service_name)
+        self._terminal_fence_arm_client = self.create_client(
+            Trigger,
+            "/bio_nav/route_coordinator/arm_next_terminal_fence",
+        )
         self._localization_buffer_client = (
             self.create_client(
                 Empty, "/slam_toolbox/clear_localization_buffer"
@@ -2565,6 +2569,8 @@ class ExperimentRunner(Node):
                     if self._minimum_poses_remaining is None
                     else min(self._minimum_poses_remaining, poses_remaining)
                 )
+                if index == len(specifications) - 1:
+                    self._arm_next_terminal_fence()
                 if not self._goal_dispatch_recorded:
                     self._record_trial_dispatched()
                 self._route_goal_publisher.publish(
@@ -2667,6 +2673,26 @@ class ExperimentRunner(Node):
         finally:
             self._navigation_end_stamp_s = self._clock_seconds()
             self._navigation_active = False
+
+    def _arm_next_terminal_fence(self) -> None:
+        """Synchronously reserve the final route request before publishing it."""
+
+        if not self._terminal_fence_arm_client.wait_for_service(
+            timeout_sec=self._service_timeout_sec
+        ):
+            self._raise_if_shutdown()
+            raise RuntimeError(
+                "RouteCoordinator terminal fence arm service is unavailable"
+            )
+        future = self._terminal_fence_arm_client.call_async(Trigger.Request())
+        if not self._wait_future(
+            future, time.monotonic() + self._service_timeout_sec
+        ):
+            raise TimeoutError("arming final route terminal fence timed out")
+        response = future.result()
+        if response is None or not response.success:
+            detail = "no response" if response is None else response.message
+            raise RuntimeError(f"arming final route terminal fence failed: {detail}")
 
     @staticmethod
     def _motion_quality_metrics(

@@ -9,6 +9,7 @@ export ROS_SETUP="${ROS_SETUP:-/opt/ros/jazzy/setup.bash}"
 export ISAAC_NAV_RUNTIME_DIR="${ISAAC_NAV_RUNTIME_DIR:-/tmp/isaac_sim_ros2_nav_${UID}}"
 export ISAAC_NAV_FASTDDS_PROFILE="${ISAAC_NAV_FASTDDS_PROFILE:-${PROJECT_ROOT}/isaac_sim/configs/ros2_bridge/fastdds_udp_only.xml}"
 export BIO_NAV_INTEGRATION_SETUP="${BIO_NAV_INTEGRATION_SETUP:-/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration/ros2_ws/install/setup.bash}"
+export BIO_NAV_MODULE3_INSTALL="${BIO_NAV_MODULE3_INSTALL:-${PROJECT_ROOT}/ros2_ws/install}"
 
 readonly ISAAC_NAV_EXPECTED_ROS_DISTRO="jazzy"
 readonly BIO_NAV_ALLOWED_INTEGRATION_ROOT="/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration"
@@ -109,15 +110,29 @@ source_v6_integration_underlay() {
 source_ros() {
   local require_workspace=false
   local require_integration=false
-  if [[ "${1:-}" == "--require-workspace" ]]; then
-    require_workspace=true
-  elif [[ "${1:-}" == "--require-integration-underlay" ]]; then
-    require_integration=true
-  elif [[ -n "${1:-}" ]]; then
-    die "source_ros accepts only --require-workspace or --require-integration-underlay"
-  fi
+  local skip_module3_overlay=false
+  while (($#)); do
+    case "$1" in
+      --require-workspace)
+        require_workspace=true
+        ;;
+      --require-integration-underlay)
+        require_integration=true
+        ;;
+      --skip-module3-overlay)
+        skip_module3_overlay=true
+        ;;
+      *)
+        die "unknown source_ros option: $1"
+        ;;
+    esac
+    shift
+  done
   if [[ "${ISAAC_NAV_REQUIRE_V6_INTEGRATION:-0}" == 1 ]]; then
     require_integration=true
+  fi
+  if [[ "${skip_module3_overlay}" == true && "${require_integration}" != true ]]; then
+    die "--skip-module3-overlay requires --require-integration-underlay"
   fi
 
   require_file "${ROS_SETUP}"
@@ -134,22 +149,20 @@ source_ros() {
     source_v6_integration_underlay
   fi
 
-  local workspace_setup="${PROJECT_ROOT}/ros2_ws/install/setup.bash"
-  if [[ "${require_integration}" == true ]]; then
-    # setup.bash replays the underlays captured at the previous build.  V6
-    # already sourced its pinned Integration underlay explicitly, so source
-    # only this worktree's overlay and do not reintroduce a stale underlay.
-    workspace_setup="${PROJECT_ROOT}/ros2_ws/install/local_setup.bash"
-  fi
-  if [[ -f "${workspace_setup}" ]]; then
+  if [[ "${skip_module3_overlay}" != true ]]; then
+    local workspace_setup="${BIO_NAV_MODULE3_INSTALL}/setup.bash"
+    if [[ "${require_integration}" == true ]]; then
+      # setup.bash replays the underlays captured at the previous build.  V6
+      # already sourced its pinned Integration underlay explicitly, so source
+      # only this worktree's overlay and do not reintroduce a stale underlay.
+      workspace_setup="${BIO_NAV_MODULE3_INSTALL}/local_setup.bash"
+    fi
+    require_file "${workspace_setup}"
     set +u
     # shellcheck disable=SC1091
     source "${workspace_setup}"
-  elif [[ "${require_workspace}" == true || "${require_integration}" == true ]]; then
     set -u
-    die "ROS workspace is not built: ${workspace_setup}; run scripts/build_ros2.sh"
   fi
-  set -u
 
   [[ "${ROS_DISTRO:-}" == "${ISAAC_NAV_EXPECTED_ROS_DISTRO}" ]] \
     || die "ROS_DISTRO must be ${ISAAC_NAV_EXPECTED_ROS_DISTRO}; got ${ROS_DISTRO:-unset}"

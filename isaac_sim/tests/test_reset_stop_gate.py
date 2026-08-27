@@ -154,6 +154,7 @@ def _heartbeat_gate(*, period_s=0.02):
     gate._heartbeat_stop = threading.Event()
     gate._heartbeat_failure = None
     gate._closed = False
+    gate._terminal_held = False
     gate._last_forwarded_command_was_zero = False
     gate._heartbeat_period_s = period_s
     gate._Twist = _twist
@@ -161,6 +162,9 @@ def _heartbeat_gate(*, period_s=0.02):
     gate._status_publisher = _HeartbeatPublisher()
     gate._subscription = object()
     gate._parameter_callback = object()
+    gate._SetParametersResult = lambda *, successful, reason="": SimpleNamespace(
+        successful=successful, reason=reason
+    )
     gate._String = lambda: SimpleNamespace(data="")
     gate._heartbeat_thread = threading.Thread(
         target=gate._zero_heartbeat, daemon=True
@@ -275,6 +279,140 @@ def test_heartbeat_stale_generation_close_and_resource_ordering():
         "callback", "subscription", "publisher", "publisher"
     ]
     gate.close()
+
+
+def test_terminal_hold_parameter_zero_and_status_precede_success_response():
+    gate, publisher, _destroyed = _heartbeat_gate(period_s=0.02)
+    events = []
+    original_publish = publisher.publish
+
+    def publish(message):
+        events.append("zero" if ResetStopGate._is_zero_twist(message) else "nonzero")
+        original_publish(message)
+
+    gate._publisher.publish = publish
+    gate._publish_status = lambda reason, **_kwargs: events.append(
+        (reason, gate.state.held, gate._terminal_held)
+    )
+
+    def result(*, successful, reason=""):
+        if successful:
+            events.append("ack")
+        return SimpleNamespace(successful=successful, reason=reason)
+
+    gate._SetParametersResult = result
+    try:
+        gate.mark_reset_complete(2)
+        gate.release(2, source="test")
+        events.clear()
+
+        response = gate._set_parameters_callback([
+            SimpleNamespace(
+                name=gate.TERMINAL_HOLD_PARAMETER,
+                value=2,
+            )
+        ])
+
+        assert response.successful is True
+        assert gate.state.held is True
+        assert gate._terminal_held is True
+        assert events[:3] == [
+            "zero", ("terminal_hold", True, True), "ack"
+        ]
+
+        gate._command_callback(_twist(linear_x=0.4, angular_z=0.2))
+        assert events[-1] == "zero"
+    finally:
+        gate.close()
+
+
+def test_real_reset_clears_terminal_hold_and_can_release_normally():
+    gate, _publisher, _destroyed = _heartbeat_gate()
+    try:
+        gate.mark_reset_complete(2)
+        gate.release(2, source="test")
+        response = gate._set_parameters_callback([
+            SimpleNamespace(name=gate.TERMINAL_HOLD_PARAMETER, value=2)
+        ])
+        assert response.successful is True
+
+        generation = gate.hold()
+        assert gate._terminal_held is False
+        gate.mark_reset_complete(generation)
+        gate.release(generation, source="reset")
+        assert gate.state.held is False
+    finally:
+        gate.close()
+
+
+def test_stale_terminal_generation_after_new_release_has_no_side_effect():
+    gate, publisher, _destroyed = _heartbeat_gate()
+    try:
+        gate.mark_reset_complete(2)
+        gate.release(2, source="test")
+        generation = gate.hold()
+        gate.mark_reset_complete(generation)
+        gate.release(generation, source="reset")
+        zero_count = publisher.count()
+        status_count = gate._status_publisher.count()
+
+        response = gate._set_parameters_callback([
+            SimpleNamespace(name=gate.TERMINAL_HOLD_PARAMETER, value=2)
+        ])
+
+        assert response.successful is False
+        assert "mismatch" in response.reason
+        assert gate.state.generation == generation
+        assert gate.state.held is False
+        assert gate._terminal_held is False
+        assert publisher.count() == zero_count
+        assert gate._status_publisher.count() == status_count
+    finally:
+        gate.close()
+
+
+def test_terminal_hold_duplicate_is_idempotent_and_real_reset_wins():
+    gate, publisher, _destroyed = _heartbeat_gate()
+    command = SimpleNamespace(name=gate.TERMINAL_HOLD_PARAMETER, value=2)
+    try:
+        gate.mark_reset_complete(2)
+        gate.release(2, source="test")
+        first = gate._set_parameters_callback([command])
+        zero_count = publisher.count()
+        status_count = gate._status_publisher.count()
+
+        duplicate = gate._set_parameters_callback([command])
+
+        assert first.successful is True
+        assert duplicate.successful is True
+        assert publisher.count() == zero_count
+        assert gate._status_publisher.count() == status_count
+
+        generation = gate.hold()
+        held_zero_count = publisher.count()
+        held_status_count = gate._status_publisher.count()
+        stale = gate._set_parameters_callback([command])
+        assert stale.successful is False
+        assert gate.state.generation == generation
+        assert gate.state.held is True
+        assert gate._terminal_held is False
+        assert publisher.count() == held_zero_count
+        assert gate._status_publisher.count() == held_status_count
+
+        real_reset_hold = gate._set_parameters_callback([
+            SimpleNamespace(
+                name=gate.TERMINAL_HOLD_PARAMETER,
+                value=generation,
+            )
+        ])
+        assert real_reset_hold.successful is False
+        assert "held by reset" in real_reset_hold.reason
+        assert gate.state.held is True
+        assert gate._terminal_held is False
+        assert publisher.count() == held_zero_count
+        assert gate._status_publisher.count() == held_status_count
+    finally:
+        gate.close()
 
 
 def test_relay_publish_exception_returns_gate_to_observable_hold():

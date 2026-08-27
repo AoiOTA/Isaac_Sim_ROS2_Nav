@@ -10,6 +10,7 @@ import uuid
 REPO = Path(__file__).resolve().parents[4]
 WRAPPER = REPO / "scripts/run_v6_r5_phase_b_kujiale.sh"
 COMMON = REPO / "scripts/lib/common.sh"
+BUILD_ROS2 = REPO / "scripts/build_ros2.sh"
 WAIT_HELPER = REPO / "scripts/wait_for_empty_service.py"
 
 
@@ -43,19 +44,81 @@ def test_phase_b_wrapper_uses_canonical_shadow_server_and_planning_prior_record(
     assert "--pilot --dispatch-pilot" in source
 
 
-def test_phase_b_integration_mode_sources_current_module3_overlay():
-    source = COMMON.read_text(encoding="utf-8")
-
-    integration_branch = source.index(
-        'workspace_setup="${PROJECT_ROOT}/ros2_ws/install/local_setup.bash"'
+def _run_common_shell(command, env=None):
+    return subprocess.run(
+        ["bash", "-c", f'source "{COMMON}"\n{command}'],
+        capture_output=True,
+        text=True,
+        env=env,
     )
-    overlay_source = source.index('source "${workspace_setup}"', integration_branch)
-    validation = source.index("validate_v6_integration_underlay", overlay_source)
 
-    assert overlay_source < validation
-    assert 'if [[ -f "${workspace_setup}" ]]; then' in source
-    assert '"${require_workspace}" == true || "${require_integration}" == true' \
-        in source
+
+def test_module3_install_defaults_to_current_worktree_and_allows_override(tmp_path):
+    default_env = os.environ.copy()
+    default_env.pop("BIO_NAV_MODULE3_INSTALL", None)
+    default = _run_common_shell('printf "%s" "${BIO_NAV_MODULE3_INSTALL}"', default_env)
+
+    override_path = tmp_path / "selected-module3-install"
+    override_env = {**default_env, "BIO_NAV_MODULE3_INSTALL": str(override_path)}
+    override = _run_common_shell('printf "%s" "${BIO_NAV_MODULE3_INSTALL}"', override_env)
+
+    assert default.returncode == 0, default.stderr
+    assert default.stdout == str(REPO / "ros2_ws/install")
+    assert override.returncode == 0, override.stderr
+    assert override.stdout == str(override_path)
+
+
+def test_build_sources_integration_underlay_without_module3_overlay(tmp_path):
+    source = COMMON.read_text(encoding="utf-8")
+    build_source = BUILD_ROS2.read_text(encoding="utf-8")
+    ros_setup = tmp_path / "ros_setup.bash"
+    ros_setup.write_text("export ROS_DISTRO=jazzy\n", encoding="utf-8")
+    missing_install = tmp_path / "not-built-yet"
+
+    result = _run_common_shell(
+        """
+source_v6_integration_underlay() { printf 'INTEGRATION\n'; }
+validate_v6_integration_underlay() { :; }
+validate_runtime_environment() { :; }
+source_ros --require-integration-underlay --skip-module3-overlay
+""",
+        {
+            **os.environ,
+            "ROS_SETUP": str(ros_setup),
+            "BIO_NAV_MODULE3_INSTALL": str(missing_install),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "INTEGRATION\n"
+    assert (
+        "source_ros --require-integration-underlay --skip-module3-overlay"
+        in build_source
+    )
+    assert '--skip-module3-overlay)' in source
+
+
+def test_runtime_integration_mode_requires_selected_module3_overlay(tmp_path):
+    ros_setup = tmp_path / "ros_setup.bash"
+    ros_setup.write_text("export ROS_DISTRO=jazzy\n", encoding="utf-8")
+    missing_install = tmp_path / "selected-but-missing"
+
+    result = _run_common_shell(
+        """
+source_v6_integration_underlay() { :; }
+validate_v6_integration_underlay() { :; }
+validate_runtime_environment() { :; }
+source_ros --require-integration-underlay
+""",
+        {
+            **os.environ,
+            "ROS_SETUP": str(ros_setup),
+            "BIO_NAV_MODULE3_INSTALL": str(missing_install),
+        },
+    )
+
+    assert result.returncode == 1
+    assert f"required file not found: {missing_install}/local_setup.bash" in result.stderr
 
 
 def test_phase_b_help_declares_ros_first_and_isaac_readiness_order():

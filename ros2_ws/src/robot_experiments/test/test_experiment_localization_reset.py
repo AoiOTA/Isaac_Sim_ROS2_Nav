@@ -201,3 +201,103 @@ def test_map_base_translation_tolerance_rejects_invalid_values(value):
         match="reset_map_base_translation_tolerance_m must be positive and finite",
     ):
         _positive_finite_float(value, "reset_map_base_translation_tolerance_m")
+
+
+class _RouteGoalPublisher:
+    def __init__(self, runner):
+        self.runner = runner
+        self.messages = []
+
+    def get_subscription_count(self):
+        return 1
+
+    def publish(self, message):
+        self.messages.append(message)
+        self.runner._canonical_route_epoch += 1
+        self.runner._canonical_routes.append({
+            "request_id": len(self.messages),
+            "planned_length_m": 1.0,
+            "edge_ids": [len(self.messages)],
+        })
+        self.runner._route_goal_complete_epoch += 1
+        self.runner._latest_route_goal_complete = True
+
+
+def test_route_guided_arms_only_after_four_legs_and_before_final_goal():
+    specifications = tuple(
+        SimpleNamespace(goal_id=f"G{index}") for index in range(1, 6)
+    )
+    runner = SimpleNamespace(
+        _navigation_graph=object(),
+        _service_timeout_sec=1.0,
+        _scenario=SimpleNamespace(
+            route=specifications,
+            goal=specifications[-1],
+            timeout_sec=30.0,
+            leg_timeout_sec=5.0,
+        ),
+        _navigation_active=False,
+        _navigation_start_stamp_s=None,
+        _navigation_end_stamp_s=None,
+        _minimum_poses_remaining=None,
+        _canonical_route_epoch=0,
+        _route_goal_complete_epoch=0,
+        _latest_route_goal_complete=False,
+        _canonical_routes=[],
+        _ground_truth_samples=[],
+        _leg_results=[],
+        _goal_dispatch_recorded=True,
+        _dynamic_guard_aborted=False,
+        _wait_until=lambda predicate, _timeout: predicate(),
+        _clock_seconds=lambda: 1.0,
+        _pose_message=lambda specification: specification,
+        _trigger_obstacle_group=lambda _goal_id: None,
+        _complete_obstacle_group=lambda _goal_id: None,
+        _spin_once=lambda _timeout: None,
+    )
+    runner._route_goal_publisher = _RouteGoalPublisher(runner)
+    arm_publication_counts = []
+    runner._arm_next_terminal_fence = lambda: arm_publication_counts.append(
+        len(runner._route_goal_publisher.messages)
+    )
+
+    result = ExperimentRunner._navigate_route_guided(runner)
+
+    assert result == (
+        True,
+        False,
+        experiment_runner_module.GoalStatus.STATUS_SUCCEEDED,
+    )
+    assert len(runner._route_goal_publisher.messages) == 5
+    assert arm_publication_counts == [4]
+
+
+def test_route_goal_complete_bool_does_not_arm_terminal_fence():
+    client = SimpleNamespace(call_count=0)
+    runner = SimpleNamespace(
+        _route_goal_complete_epoch=0,
+        _latest_route_goal_complete=False,
+        _terminal_fence_arm_client=client,
+    )
+
+    ExperimentRunner._route_goal_complete_callback(
+        runner, SimpleNamespace(data=True))
+
+    assert runner._route_goal_complete_epoch == 1
+    assert runner._latest_route_goal_complete is True
+    assert client.call_count == 0
+
+
+def test_terminal_fence_arm_service_unavailable_fails_before_request():
+    client = _UnavailableClient()
+    runner = SimpleNamespace(
+        _terminal_fence_arm_client=client,
+        _service_timeout_sec=0.25,
+        _raise_if_shutdown=lambda: None,
+    )
+
+    with pytest.raises(RuntimeError, match="arm service is unavailable"):
+        ExperimentRunner._arm_next_terminal_fence(runner)
+
+    assert client.wait_count == 1
+    assert client.call_count == 0

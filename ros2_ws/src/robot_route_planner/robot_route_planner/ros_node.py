@@ -180,6 +180,7 @@ def parse_reset_stop_gate_status(payload: str) -> ResetStopGateStatus:
         raise ValueError("invalid reset stop gate status fields")
     valid_state = (
         (reason == "hold" and held and eligible is None)
+        or (reason == "terminal_hold" and held and eligible is None)
         or (reason == "reset_complete" and held and eligible == generation)
         or (reason in {"initialized", "closed"} and held and eligible is None)
         or (
@@ -210,6 +211,12 @@ class RouteCallbackGeneration:
     graph_generation: int
     graph_id: str
     graph_revision: int
+
+
+@dataclass(frozen=True)
+class PlanCallbackGeneration:
+    route_generation: RouteCallbackGeneration
+    plan_attempt_serial: int
 
 
 @dataclass(frozen=True)
@@ -257,6 +264,23 @@ class RouteInputGeneration:
     graph_generation: int
     graph_id: str
     graph_revision: int
+
+
+@dataclass(frozen=True)
+class TerminalFenceToken:
+    serial: int
+    request_id: int
+    expected_reset_status_generation: int
+
+
+@dataclass(frozen=True)
+class PendingTerminalFence:
+    token: TerminalFenceToken
+    success: bool
+    status: str
+    reason: str
+    reset_epoch: int
+    rebuild: bool
 
 
 @dataclass(frozen=True)
@@ -450,12 +474,15 @@ class RouteCoordinator:
         from nav2_msgs.msg import Costmap
         from nav2_msgs.srv import DynamicEdges, SetRouteGraph
         from nav_msgs.msg import OccupancyGrid, Odometry
+        from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+        from rcl_interfaces.srv import SetParameters
         from rclpy.action import ActionClient
         from rclpy.clock import Clock, ClockType
         from rclpy.duration import Duration
         from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
         from rclpy.time import Time
         from std_msgs.msg import Bool, Empty, String
+        from std_srvs.srv import Trigger
         from tf2_ros import Buffer, TransformListener
 
         self.node = node
@@ -607,6 +634,13 @@ class RouteCoordinator:
         # fences outputs; the release of that generation publishes the single
         # READY for the reset cycle.
         self.reset_ready_pending = False
+        self.terminal_fence_arm_pending = False
+        self.terminal_fence_serial = 0
+        self.terminal_fence_binding: TerminalFenceToken | None = None
+        self.pending_terminal_fence: PendingTerminalFence | None = None
+        self.terminal_fence_future = None
+        self.terminal_fence_deadline_steady_s: float | None = None
+        self.terminal_fence_lockout_generation: int | None = None
         self.structural_generation = 0
         self.desired_graph_generation = 0
         self.desired_graph = self.gvg_graph
@@ -662,7 +696,11 @@ class RouteCoordinator:
         self.pending_prior_started_ns: int | None = None
         self.pending_prior_model_id: str | None = None
         self.pending_prior_geometry_prepared = False
+        self.pending_prior_observed_generation: EdgePriorGeneration | None = None
+        self.pending_prior_observed_stamp_ns: int | None = None
+        self.pending_prior_retired_generations: list[EdgePriorGeneration] = []
         self.request_id = 0
+        self.plan_attempt_serial = 0
         self.last_context_publish_ns = 0
         self.latest_priors: dict[int, tuple[float, float]] = {}
         self.latest_priors_stamp_ns: int | None = None
@@ -742,6 +780,10 @@ class RouteCoordinator:
         self.RouteEdgeCostArray = RouteEdgeCostArray
         self.Bool = Bool
         self.String = String
+        self.Parameter = Parameter
+        self.ParameterType = ParameterType
+        self.ParameterValue = ParameterValue
+        self.SetParameters = SetParameters
         qos_latched = QoSProfile(
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
@@ -891,6 +933,14 @@ class RouteCoordinator:
             SetRouteGraph,
             str(node.get_parameter("set_route_graph_service").value),
         )
+        self.terminal_hold_client = node.create_client(
+            SetParameters, "/isaac_navigation_sim/set_parameters"
+        )
+        node.create_service(
+            Trigger,
+            "/bio_nav/route_coordinator/arm_next_terminal_fence",
+            self._arm_next_terminal_fence,
+        )
         node.create_timer(0.02, self._check_prior_timeout)
         node.create_timer(
             1.0 / float(self.defaults["route_tracking"]["update_rate_hz"]),
@@ -902,6 +952,11 @@ class RouteCoordinator:
         node.create_timer(
             0.1,
             self._graph_reconciliation_tick,
+            clock=self._graph_reconciliation_clock,
+        )
+        node.create_timer(
+            0.1,
+            self._terminal_fence_tick,
             clock=self._graph_reconciliation_clock,
         )
         self._publish_graph()
@@ -1562,6 +1617,26 @@ class RouteCoordinator:
             and generation == self._route_callback_generation()
         )
 
+    def _plan_callback_generation(self) -> PlanCallbackGeneration:
+        return PlanCallbackGeneration(
+            self._route_callback_generation(),
+            int(getattr(self, "plan_attempt_serial", 0)),
+        )
+
+    def _plan_callback_is_current(
+        self,
+        generation: PlanCallbackGeneration | RouteCallbackGeneration | None,
+    ) -> bool:
+        if isinstance(generation, PlanCallbackGeneration):
+            return bool(
+                generation.plan_attempt_serial
+                == int(getattr(self, "plan_attempt_serial", 0))
+                and self._route_callback_is_current(
+                    generation.route_generation
+                )
+            )
+        return self._route_callback_is_current(generation)
+
     def _cognitive_validation_generation_locked(
         self,
     ) -> CognitiveValidationGeneration:
@@ -1652,6 +1727,7 @@ class RouteCoordinator:
         self.route_active = False
         self.pending_goal = None
         self._clear_pending_prior_request()
+        self._clear_prior_generation_ledger()
         self._clear_latest_priors()
         self.tracker = None
         self.navigation_goal_pending = False
@@ -1660,6 +1736,200 @@ class RouteCoordinator:
         self.navigation_failed = False
         self.pending_reroute_outcome = None
         return handle
+
+    def _clear_terminal_fence_locked(self, *, clear_arm: bool) -> None:
+        if clear_arm:
+            self.terminal_fence_arm_pending = False
+        self.terminal_fence_binding = None
+        self.pending_terminal_fence = None
+        self.terminal_fence_future = None
+        self.terminal_fence_deadline_steady_s = None
+
+    def _arm_next_terminal_fence(self, _request, response):
+        """Reserve the next locally allocated route request for terminal HOLD."""
+
+        with self._route_output_lock():
+            with self._route_state_lock():
+                unavailable = bool(
+                    self._reset_barrier_is_held()
+                    or getattr(self, "reset_status_generation", None) is None
+                    or getattr(
+                        getattr(self, "reset_status_snapshot", None),
+                        "reason", "",
+                    ) == "terminal_hold"
+                    or getattr(self, "route_active", False)
+                    or getattr(self, "pending_goal", None) is not None
+                    or getattr(self, "tracker", None) is not None
+                    or getattr(self, "navigation_goal_pending", False)
+                    or getattr(self, "navigation_goal_handle", None) is not None
+                    or getattr(self, "terminal_fence_arm_pending", False)
+                    or getattr(self, "terminal_fence_binding", None) is not None
+                    or getattr(self, "pending_terminal_fence", None) is not None
+                    or getattr(
+                        self, "terminal_fence_lockout_generation", None
+                    ) is not None
+                )
+                if unavailable:
+                    response.success = False
+                    response.message = "route coordinator is not idle for terminal fence"
+                else:
+                    self.terminal_fence_arm_pending = True
+                    response.success = True
+                    response.message = "next route request terminal fence armed"
+        return response
+
+    def _reserve_terminal_fence_locked(
+        self,
+        *,
+        success: bool,
+        status: str,
+        reason: str,
+        reset_epoch: int,
+        rebuild: bool,
+    ) -> PendingTerminalFence | None:
+        binding = getattr(self, "terminal_fence_binding", None)
+        reset_status_generation = getattr(
+            self, "reset_status_generation", None
+        )
+        if binding is None or (
+            binding.request_id != int(getattr(self, "request_id", 0))
+            or reset_status_generation is None
+            or binding.expected_reset_status_generation
+            != int(reset_status_generation)
+        ):
+            return None
+        pending = PendingTerminalFence(
+            binding,
+            bool(success),
+            str(status),
+            str(reason),
+            int(reset_epoch),
+            bool(rebuild),
+        )
+        self.terminal_fence_binding = None
+        self.pending_terminal_fence = pending
+        self.terminal_fence_lockout_generation = (
+            binding.expected_reset_status_generation
+        )
+        return pending
+
+    def _fail_terminal_fence(self, token: TerminalFenceToken, detail: str) -> None:
+        rebuild = False
+        with self._route_output_lock():
+            with self._route_state_lock():
+                pending = getattr(self, "pending_terminal_fence", None)
+                if pending is None or pending.token != token:
+                    return
+                rebuild = pending.rebuild
+                self.pending_terminal_fence = None
+                self.terminal_fence_future = None
+                self.terminal_fence_deadline_steady_s = None
+        self.node.get_logger().error(
+            f"terminal hold failed closed for request {token.request_id}: {detail}"
+        )
+        if rebuild:
+            self._rebuild_structural_graph()
+
+    def _request_terminal_hold(self, pending: PendingTerminalFence) -> None:
+        client = getattr(self, "terminal_hold_client", None)
+        if client is None or not client.service_is_ready():
+            self._fail_terminal_fence(
+                pending.token, "ResetStopGate parameter service unavailable"
+            )
+            return
+        try:
+            request = self.SetParameters.Request()
+            request.parameters = [
+                self.Parameter(
+                    name="reset_stop_gate_terminal_hold_generation",
+                    value=self.ParameterValue(
+                        type=self.ParameterType.PARAMETER_INTEGER,
+                        integer_value=(
+                            pending.token.expected_reset_status_generation
+                        ),
+                    ),
+                )
+            ]
+            future = client.call_async(request)
+        except Exception as error:
+            self._fail_terminal_fence(pending.token, str(error))
+            return
+        with self._route_state_lock():
+            if getattr(self, "pending_terminal_fence", None) == pending:
+                self.terminal_fence_future = future
+                self.terminal_fence_deadline_steady_s = self._steady_now() + 2.0
+        future.add_done_callback(
+            lambda completed: self._finish_terminal_hold(
+                completed, pending.token
+            )
+        )
+
+    def _finish_terminal_hold(self, future, token: TerminalFenceToken) -> None:
+        try:
+            response = future.result()
+        except Exception as error:
+            self._fail_terminal_fence(token, str(error))
+            return
+        results = [] if response is None else list(
+            getattr(response, "results", [])
+        )
+        if len(results) != 1 or not bool(
+            getattr(results[0], "successful", False)
+        ):
+            detail = (
+                "no response"
+                if response is None
+                else (
+                    str(getattr(results[0], "reason", "parameter rejected"))
+                    if results
+                    else "missing parameter result"
+                )
+            )
+            self._fail_terminal_fence(token, detail)
+            return
+        rebuild = False
+        with self._route_output_lock():
+            with self._route_state_lock():
+                pending = getattr(self, "pending_terminal_fence", None)
+                if (
+                    pending is None
+                    or pending.token != token
+                    or token.request_id != int(getattr(self, "request_id", 0))
+                    or token.expected_reset_status_generation
+                    != getattr(self, "reset_status_generation", None)
+                    or token.expected_reset_status_generation
+                    != getattr(
+                        self, "terminal_fence_lockout_generation", None
+                    )
+                    or self._reset_barrier_is_held()
+                ):
+                    return
+                self.pending_terminal_fence = None
+                self.terminal_fence_future = None
+                self.terminal_fence_deadline_steady_s = None
+                rebuild = pending.rebuild
+            self._publish_route_terminal_pair(
+                success=pending.success,
+                request_id=token.request_id,
+                status=pending.status,
+                reason=pending.reason,
+                reset_epoch=pending.reset_epoch,
+            )
+        if rebuild:
+            self._rebuild_structural_graph()
+
+    def _terminal_fence_tick(self) -> None:
+        with self._route_state_lock():
+            pending = getattr(self, "pending_terminal_fence", None)
+            deadline = getattr(self, "terminal_fence_deadline_steady_s", None)
+            timed_out = bool(
+                pending is not None
+                and deadline is not None
+                and self._steady_now() >= float(deadline)
+            )
+            token = None if pending is None else pending.token
+        if timed_out and token is not None:
+            self._fail_terminal_fence(token, "terminal_hold response timed out")
 
     def _cancel_navigation_handle(self, handle) -> None:
         if handle is None:
@@ -1685,6 +1955,7 @@ class RouteCoordinator:
         self.graph_switch_generation = int(
             getattr(self, "graph_switch_generation", 0)
         ) + 1
+        self._clear_terminal_fence_locked(clear_arm=True)
         self._retire_route_state()
 
         runtime = getattr(self, "runtime", None)
@@ -1875,6 +2146,34 @@ class RouteCoordinator:
             self._fail_closed_reset_status(str(error))
             return
 
+        if status.reason == "terminal_hold":
+            failure = None
+            with self._route_output_lock():
+                with self._route_state_lock():
+                    seen = getattr(self, "reset_status_generation", None)
+                    previous = getattr(self, "reset_status_snapshot", None)
+                    if (
+                        seen is None
+                        or status.generation != int(seen)
+                        or self._reset_barrier_is_held()
+                        or (
+                            previous is not None
+                            and previous.reason != "terminal_hold"
+                            and not previous.reason.startswith("released:")
+                        )
+                    ):
+                        failure = (
+                            "terminal HOLD is not a same-generation released "
+                            f"boundary: generation={status.generation}"
+                        )
+                    else:
+                        # Terminal HOLD is an actuator fence for an already
+                        # retired route.  It is not a simulation reset intent.
+                        self.reset_status_snapshot = status
+            if failure is not None:
+                self._fail_closed_reset_status(failure)
+            return
+
         old_handle = None
         terminal = None
         complete = False
@@ -1903,6 +2202,11 @@ class RouteCoordinator:
                     self.reset_intent_generation = status.generation
                     self.reset_event_completed_generation = None
                     self.reset_hold_barrier = True
+                    lockout = getattr(
+                        self, "terminal_fence_lockout_generation", None
+                    )
+                    if lockout is not None and status.generation > lockout:
+                        self.terminal_fence_lockout_generation = None
                     reset = self._begin_simulation_reset_locked()
                     was_active, old_request_id, old_handle, reset_epoch = reset
                     if was_active:
@@ -1917,6 +2221,11 @@ class RouteCoordinator:
                     self.reset_intent_generation = status.generation
                     self.reset_event_completed_generation = status.generation
                     self.reset_hold_barrier = True
+                    lockout = getattr(
+                        self, "terminal_fence_lockout_generation", None
+                    )
+                    if lockout is not None and status.generation > lockout:
+                        self.terminal_fence_lockout_generation = None
                     reset = self._begin_simulation_reset_locked()
                     was_active, old_request_id, old_handle, reset_epoch = reset
                     if was_active:
@@ -2877,7 +3186,9 @@ class RouteCoordinator:
     def _fallback_to_gvg_once(
         self,
         reason: str,
-        generation: RouteCallbackGeneration | None = None,
+        generation: (
+            PlanCallbackGeneration | RouteCallbackGeneration | None
+        ) = None,
         *,
         request_id: int | None = None,
         reset_generation: int | None = None,
@@ -2889,7 +3200,7 @@ class RouteCoordinator:
                     self._reset_barrier_is_held()
                     or (
                         generation is not None
-                        and not self._route_callback_is_current(generation)
+                        and not self._plan_callback_is_current(generation)
                     )
                     or (
                         request_id is not None
@@ -3241,40 +3552,64 @@ class RouteCoordinator:
     def _on_goal(self, goal) -> None:
         # Fence old action callbacks and remove its tracker before exposing the
         # new request to the prior/context path.
-        with self._route_state_lock():
-            if self._reset_barrier_is_held():
-                self.node.get_logger().warning(
-                    "route goal rejected while simulation reset HOLD is active"
+        with self._route_output_lock():
+            with self._route_state_lock():
+                if (
+                    self._reset_barrier_is_held()
+                    or getattr(
+                        self, "terminal_fence_lockout_generation", None
+                    ) is not None
+                    or getattr(
+                        getattr(self, "reset_status_snapshot", None),
+                        "reason", "",
+                    ) == "terminal_hold"
+                ):
+                    self.node.get_logger().warning(
+                        "route goal rejected while actuator HOLD is active"
+                    )
+                    return
+                was_preemption = bool(
+                    getattr(self, "route_active", False)
+                    or getattr(self, "pending_goal", None) is not None
                 )
-                return
-            was_preemption = bool(
-                getattr(self, "route_active", False)
-                or getattr(self, "pending_goal", None) is not None
-            )
-            self.request_id += 1
-            previous_handle = self._retire_route_state()
-            if (
-                getattr(self, "graph_retry_kind", "switch") == "structural"
-                and getattr(self, "graph_retry_due_steady_s", None) is not None
-            ):
-                self._clear_graph_retry_locked()
-            self.primary_fallback_used = False
-            self.pending_reroute_outcome = None
-            self.pending_goal = goal
-            self.route_active = True
-            graph_was_incoherent = not self._desired_graph_is_coherent_locked()
-            if was_preemption or graph_was_incoherent:
-                self._set_desired_graph_locked(
-                    self.gvg_graph,
-                    getattr(self, "gvg_support", getattr(self, "support", None)),
-                    require_reassert=True,
-                )
-                # Reassert the server graph; a pending older switch will be
-                # consumed and compensated before this new goal can route.
-                self.graph_coherent = False
-            coherent = self._desired_graph_is_coherent_locked()
-            request_id = int(self.request_id)
-            input_generation = self._route_input_generation_locked()
+                self.terminal_fence_binding = None
+                self.pending_terminal_fence = None
+                self.terminal_fence_future = None
+                self.terminal_fence_deadline_steady_s = None
+                self.request_id += 1
+                previous_handle = self._retire_route_state()
+                if getattr(self, "terminal_fence_arm_pending", False):
+                    self.terminal_fence_serial = int(
+                        getattr(self, "terminal_fence_serial", 0)
+                    ) + 1
+                    self.terminal_fence_binding = TerminalFenceToken(
+                        self.terminal_fence_serial,
+                        int(self.request_id),
+                        int(self.reset_status_generation),
+                    )
+                    self.terminal_fence_arm_pending = False
+                if (
+                    getattr(self, "graph_retry_kind", "switch") == "structural"
+                    and getattr(self, "graph_retry_due_steady_s", None) is not None
+                ):
+                    self._clear_graph_retry_locked()
+                self.primary_fallback_used = False
+                self.pending_reroute_outcome = None
+                self.pending_goal = goal
+                self.route_active = True
+                graph_was_incoherent = not self._desired_graph_is_coherent_locked()
+                if was_preemption or graph_was_incoherent:
+                    self._set_desired_graph_locked(
+                        self.gvg_graph,
+                        getattr(self, "gvg_support", getattr(self, "support", None)),
+                        require_reassert=True,
+                    )
+                    # Reassert the server graph; a pending older switch will be
+                    # consumed and compensated before this new goal can route.
+                    self.graph_coherent = False
+                coherent = self._desired_graph_is_coherent_locked()
+                request_id = int(self.request_id)
+                input_generation = self._route_input_generation_locked()
         self._cancel_navigation_handle(previous_handle)
         self.node.get_logger().info(
             "received route goal request "
@@ -3334,6 +3669,92 @@ class RouteCoordinator:
         self.pending_prior_started_ns = None
         self.pending_prior_model_id = None
         self.pending_prior_geometry_prepared = False
+
+    def _clear_prior_generation_ledger(self) -> None:
+        self.pending_prior_observed_generation = None
+        self.pending_prior_observed_stamp_ns = None
+        self.pending_prior_retired_generations = []
+
+    def _observe_pending_prior_generation_locked(
+        self,
+        generation: EdgePriorGeneration,
+        stamp_ns: int,
+    ) -> bool:
+        """Advance one route request without admitting a retired generation."""
+
+        retired = list(getattr(
+            self, "pending_prior_retired_generations", []
+        ))
+        if generation in retired:
+            return False
+        observed = getattr(self, "pending_prior_observed_generation", None)
+        observed_stamp_ns = getattr(
+            self, "pending_prior_observed_stamp_ns", None
+        )
+        if generation == observed:
+            if observed_stamp_ns is not None and stamp_ns < observed_stamp_ns:
+                return False
+            self.pending_prior_observed_stamp_ns = stamp_ns
+            return True
+        if observed is not None:
+            retired.append(observed)
+            self.pending_prior_retired_generations = retired
+        self.pending_prior_observed_generation = generation
+        self.pending_prior_observed_stamp_ns = stamp_ns
+        return True
+
+    def _transition_expired_prior_locked(
+        self, now_ns: int
+    ) -> tuple[bool, bool, bool] | None:
+        """Apply the timer's deadline transition while holding route state."""
+
+        if self.pending_deadline_ns is None or now_ns < self.pending_deadline_ns:
+            return None
+        geometry_prepared = bool(getattr(
+            self, "pending_prior_geometry_prepared", False
+        ))
+        pending_request_is_active = bool(
+            self.pending_goal is not None
+            and self.pending_prior_request_id == self.request_id
+            and self.pending_prior_graph_id == self.graph.graph_id
+            and self.pending_prior_graph_revision == self.graph.revision
+            and self.pending_prior_started_ns is not None
+        )
+        keep_late_healthy_window = geometry_prepared and pending_request_is_active
+        if keep_late_healthy_window:
+            self.pending_deadline_ns = None
+        else:
+            self._clear_pending_prior_request()
+        retained_priors = self._accepted_prior_is_current_locked()
+        if self.latest_priors and not retained_priors:
+            self._clear_latest_priors()
+        return geometry_prepared, retained_priors, keep_late_healthy_window
+
+    def _finish_prior_timeout_transition(
+        self,
+        input_generation: RouteInputGeneration,
+        geometry_prepared: bool,
+        retained_priors: bool,
+    ) -> None:
+        if retained_priors:
+            self.node.get_logger().info(
+                "Module2 edge prior refresh timed out; retaining accepted "
+                "route preference"
+            )
+            return
+        if geometry_prepared:
+            self.node.get_logger().info(
+                "Module2 edge prior timed out after geometry-only route was "
+                "already prepared"
+            )
+            return
+        self.node.get_logger().info(
+            "Module2 edge prior timed out; using geometry-only route"
+        )
+        with self._route_state_lock():
+            if not self._route_input_is_current_locked(input_generation):
+                return
+        self._prepare_route({})
 
     def _clear_latest_priors(self) -> None:
         self.latest_priors = {}
@@ -3437,6 +3858,17 @@ class RouteCoordinator:
         with self._route_state_lock():
             if not self._route_input_is_current_locked(input_generation):
                 return
+            timeout_transition = self._transition_expired_prior_locked(now_ns)
+        if timeout_transition is not None and not timeout_transition[2]:
+            self._finish_prior_timeout_transition(
+                input_generation,
+                timeout_transition[0],
+                timeout_transition[1],
+            )
+            return
+        with self._route_state_lock():
+            if not self._route_input_is_current_locked(input_generation):
+                return
             pending_identity = (
                 self.pending_deadline_ns,
                 self.pending_prior_request_id,
@@ -3450,10 +3882,16 @@ class RouteCoordinator:
                 self.pending_prior_model_id is not None
                 and str(message.model_id) != self.pending_prior_model_id
             )
+            late_after_geometry_timeout = bool(
+                self.pending_deadline_ns is None
+                and getattr(self, "pending_prior_geometry_prepared", False)
+            )
             if (
                 self.pending_goal is None
-                or self.pending_deadline_ns is None
-                or now_ns >= self.pending_deadline_ns
+                or (
+                    self.pending_deadline_ns is None
+                    and not late_after_geometry_timeout
+                )
                 or self.pending_prior_request_id != self.request_id
                 or self.pending_prior_graph_id != self.graph.graph_id
                 or self.pending_prior_graph_revision != self.graph.revision
@@ -3468,6 +3906,14 @@ class RouteCoordinator:
                 != self.graph.revision
             ):
                 return
+            if not self._observe_pending_prior_generation_locked(
+                incoming_generation, stamp_ns
+            ):
+                return
+            pending_identity += (
+                self.pending_prior_observed_generation,
+                self.pending_prior_observed_stamp_ns,
+            )
             edge_ids = {int(edge.id) for edge in self.graph.edges}
         observed_ids = [int(item.edge_id) for item in message.priors]
         invalid_edges = (
@@ -3517,10 +3963,16 @@ class RouteCoordinator:
                 self.pending_prior_started_ns,
                 self.pending_prior_model_id,
                 id(self.pending_goal),
+                getattr(self, "pending_prior_observed_generation", None),
+                getattr(self, "pending_prior_observed_stamp_ns", None),
             )
             if (
                 not self._route_input_is_current_locked(input_generation)
                 or current_pending_identity != pending_identity
+            ):
+                return
+            if late_after_geometry_timeout and (
+                invalid_edges or not usable or not priors or model_rollover
             ):
                 return
             retained_priors = (
@@ -3604,34 +4056,16 @@ class RouteCoordinator:
             if (
                 not self._route_input_is_current_locked(input_generation)
                 or self.pending_goal is None
-                or self.pending_deadline_ns is None
-                or now_ns < self.pending_deadline_ns
             ):
                 return
-            geometry_prepared = bool(getattr(
-                self, "pending_prior_geometry_prepared", False
-            ))
-            self._clear_pending_prior_request()
-            retained_priors = self._accepted_prior_is_current_locked()
-            if self.latest_priors and not retained_priors:
-                self._clear_latest_priors()
-        if retained_priors:
-            self.node.get_logger().info(
-                "Module2 edge prior refresh timed out; retaining accepted "
-                "route preference"
-            )
+            timeout_transition = self._transition_expired_prior_locked(now_ns)
+        if timeout_transition is None:
             return
-        if geometry_prepared:
-            self.node.get_logger().info(
-                "Module2 edge prior timed out after geometry-only route was "
-                "already prepared"
-            )
-            return
-        self.node.get_logger().info("Module2 edge prior timed out; using geometry-only route")
-        with self._route_state_lock():
-            if not self._route_input_is_current_locked(input_generation):
-                return
-        self._prepare_route({})
+        self._finish_prior_timeout_transition(
+            input_generation,
+            timeout_transition[0],
+            timeout_transition[1],
+        )
 
     def _nearest_support_node(
         self, xy: tuple[float, float], *, departing: bool
@@ -3653,13 +4087,16 @@ class RouteCoordinator:
             ):
                 return
             priors = self._priors_for_consumption(priors)
-            generation = self._route_callback_generation()
+            self.plan_attempt_serial = int(
+                getattr(self, "plan_attempt_serial", 0)
+            ) + 1
+            generation = self._plan_callback_generation()
         current = self._current_xy()
         if current is None:
             self.node.get_logger().warning("route request has no map pose")
             return
         with self._route_state_lock():
-            if not self._route_callback_is_current(generation):
+            if not self._plan_callback_is_current(generation):
                 return
             goal_xy = (
                 float(self.pending_goal.pose.position.x),
@@ -3737,7 +4174,7 @@ class RouteCoordinator:
                 request.adjust_edges.append(adjustment)
         with self._route_output_lock():
             with self._route_state_lock():
-                if not self._route_callback_is_current(generation):
+                if not self._plan_callback_is_current(generation):
                     return
             self.route_edge_cost_pub.publish(cost_message)
             if not self.dynamic_client.service_is_ready():
@@ -3748,7 +4185,7 @@ class RouteCoordinator:
                     )
                 return
             with self._route_state_lock():
-                if not self._route_callback_is_current(generation):
+                if not self._plan_callback_is_current(generation):
                     return
             future = self.dynamic_client.call_async(request)
         future.add_done_callback(
@@ -3762,7 +4199,7 @@ class RouteCoordinator:
         future,
         start_node: int,
         goal_node: int,
-        generation: RouteCallbackGeneration | None = None,
+        generation: PlanCallbackGeneration | RouteCallbackGeneration | None = None,
     ) -> None:
         try:
             response = future.result()
@@ -3772,7 +4209,7 @@ class RouteCoordinator:
         else:
             failure_detail = "DynamicEdges rejected or route unavailable"
         with self._route_state_lock():
-            if not self._route_callback_is_current(generation):
+            if not self._plan_callback_is_current(generation):
                 return
         route_ready = bool(
             response is not None
@@ -3780,7 +4217,7 @@ class RouteCoordinator:
             and self.route_client.server_is_ready()
         )
         with self._route_state_lock():
-            if not self._route_callback_is_current(generation):
+            if not self._plan_callback_is_current(generation):
                 return
             failed = response is None or not response.success or not route_ready
             fallback = failed and self._primary_fallback_available()
@@ -3802,7 +4239,7 @@ class RouteCoordinator:
             return
         with self._route_output_lock():
             with self._route_state_lock():
-                if not self._route_callback_is_current(generation):
+                if not self._plan_callback_is_current(generation):
                     return
             self.node.get_logger().info(
                 f"edge update accepted for route request {self.request_id}: "
@@ -3816,11 +4253,11 @@ class RouteCoordinator:
     def _on_route_goal_handle(
         self,
         future,
-        generation: RouteCallbackGeneration | None = None,
+        generation: PlanCallbackGeneration | RouteCallbackGeneration | None = None,
     ) -> None:
         handle = future.result()
         with self._route_state_lock():
-            current = self._route_callback_is_current(generation)
+            current = self._plan_callback_is_current(generation)
             fallback = current and (
                 handle is None or not handle.accepted
             ) and self._primary_fallback_available()
@@ -3841,14 +4278,14 @@ class RouteCoordinator:
     def _on_route_result(
         self,
         future,
-        generation: RouteCallbackGeneration | None = None,
+        generation: PlanCallbackGeneration | RouteCallbackGeneration | None = None,
     ) -> None:
         wrapped = future.result()
         failure = None
         fallback = False
         message = None
         with self._route_state_lock():
-            if not self._route_callback_is_current(generation):
+            if not self._plan_callback_is_current(generation):
                 return
             if wrapped is None or int(wrapped.result.error_code) != 0:
                 code = -1 if wrapped is None else int(wrapped.result.error_code)
@@ -3916,7 +4353,7 @@ class RouteCoordinator:
         assert message is not None
         with self._route_output_lock():
             with self._route_state_lock():
-                if not self._route_callback_is_current(generation):
+                if not self._plan_callback_is_current(generation):
                     return
             self.route_pub.publish(message)
             self.node.get_logger().info(
@@ -4049,6 +4486,7 @@ class RouteCoordinator:
         edge_failure = None
         late_handle = None
         terminal_snapshot = None
+        terminal_fence = None
         rebuild = False
         with self._route_output_lock():
             with self._route_state_lock():
@@ -4080,6 +4518,13 @@ class RouteCoordinator:
                                 getattr(self, "pending_structural_map", None)
                                 is not None
                             )
+                            terminal_fence = self._reserve_terminal_fence_locked(
+                                success=False,
+                                status="failed",
+                                reason="navigate_to_pose_rejected",
+                                reset_epoch=terminal_snapshot[1],
+                                rebuild=rebuild,
+                            )
                     else:
                         self.navigation_goal_handle = handle
             if not current:
@@ -4092,7 +4537,7 @@ class RouteCoordinator:
                         feedback, validated_edge_id, candidate_edge_id,
                         success=False, reason="navigate_to_pose_rejected",
                     )
-                if terminal_snapshot is not None:
+                if terminal_snapshot is not None and terminal_fence is None:
                     request_id, reset_epoch = terminal_snapshot
                     self._publish_route_terminal_pair(
                         success=False,
@@ -4105,6 +4550,8 @@ class RouteCoordinator:
             self._cancel_navigation_handle(late_handle)
             return
         if rejected:
+            if terminal_fence is not None:
+                self._request_terminal_hold(terminal_fence)
             if fallback:
                 self._fallback_to_gvg_once(
                     "NavigateToPose rejected", generation
@@ -4113,7 +4560,7 @@ class RouteCoordinator:
                 self.node.get_logger().warning(
                     "route-guided NavigateToPose rejected"
                 )
-                if rebuild:
+                if rebuild and terminal_fence is None:
                     self._rebuild_structural_graph()
             return
         result_future = handle.get_result_async()
@@ -4135,6 +4582,7 @@ class RouteCoordinator:
         edge = None
         rebuild = False
         terminal_snapshot = None
+        terminal_fence = None
         with self._route_output_lock():
             with self._route_state_lock():
                 if (
@@ -4192,6 +4640,15 @@ class RouteCoordinator:
                     rebuild = (
                         getattr(self, "pending_structural_map", None) is not None
                     )
+                    terminal_fence = self._reserve_terminal_fence_locked(
+                        success=terminal_snapshot[2],
+                        status=(
+                            "succeeded" if terminal_snapshot[2] else "failed"
+                        ),
+                        reason=terminal_snapshot[3],
+                        reset_epoch=terminal_snapshot[1],
+                        rebuild=rebuild,
+                    )
             if edge is not None:
                 feedback, validated_edge_id, candidate_edge_id = edge
                 self._publish_edge_outcome(
@@ -4202,7 +4659,7 @@ class RouteCoordinator:
                         else f"navigate_to_pose_failed_error_{result_code}"
                     ),
                 )
-            if terminal_snapshot is not None:
+            if terminal_snapshot is not None and terminal_fence is None:
                 request_id, reset_epoch, terminal_success, reason = terminal_snapshot
                 self._publish_route_terminal_pair(
                     success=terminal_success,
@@ -4222,7 +4679,9 @@ class RouteCoordinator:
                 f"NavigateToPose failed with error {result_code}", generation
             )
             return
-        if rebuild:
+        if terminal_fence is not None:
+            self._request_terminal_hold(terminal_fence)
+        elif rebuild:
             self._rebuild_structural_graph()
         if succeeded:
             self.node.get_logger().info("route-guided navigation completed")
