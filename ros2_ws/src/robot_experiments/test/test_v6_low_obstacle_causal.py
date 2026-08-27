@@ -1225,7 +1225,16 @@ def test_recorder_uses_receipt_generation_and_excludes_other_episode_records():
     assert evidence["reset"]["excluded_record_count"] == 3
 
 
-def test_recorder_explicit_target_epoch_overrides_receipt_generation():
+@pytest.mark.parametrize(
+    ("target_reset_epoch", "expected_candidate", "expected_excluded"),
+    [
+        (2, "candidate-1", 1),
+        (3, "candidate-2", 1),
+    ],
+)
+def test_recorder_accepts_current_or_legacy_next_target_epoch_and_isolates_records(
+    target_reset_epoch, expected_candidate, expected_excluded
+):
     manifest = load_manifest(CONFIG)
     run = next(item for item in manifest.runs if item.arm == "M2")
 
@@ -1264,14 +1273,16 @@ def test_recorder_explicit_target_epoch_overrides_receipt_generation():
         ],
         {
             "reset_receipt": {"generation": 2},
-            "target_reset_epoch": 3,
+            "target_reset_epoch": target_reset_epoch,
             "_evidence_window": {"start_ns": 200, "end_ns": 400},
         },
     )
     assert evidence["module2_health"]["message_count"] == 1
-    assert [row["id"] for row in evidence["obstacle_validation"]] == ["candidate-2"]
-    assert evidence["reset"]["target_reset_epoch"] == 3
-    assert evidence["reset"]["excluded_record_count"] == 1
+    assert [row["id"] for row in evidence["obstacle_validation"]] == [
+        expected_candidate
+    ]
+    assert evidence["reset"]["target_reset_epoch"] == target_reset_epoch
+    assert evidence["reset"]["excluded_record_count"] == expected_excluded
 
 
 @pytest.mark.parametrize(
@@ -1286,6 +1297,26 @@ def test_recorder_explicit_target_epoch_overrides_receipt_generation():
     ],
 )
 def test_recorder_rejects_missing_or_invalid_receipt_generation(episode_result):
+    manifest = load_manifest(CONFIG)
+    run = next(item for item in manifest.runs if item.arm == "M2")
+    with pytest.raises(
+        causal.CausalContractError,
+        match=r"reset_receipt\.generation must be a positive integer",
+    ):
+        build_recorded_evidence(manifest, run, [], episode_result)
+
+
+@pytest.mark.parametrize(
+    "episode_result",
+    [
+        {"target_reset_epoch": 3},
+        {
+            "reset_receipt": {"generation": 0},
+            "target_reset_epoch": 3,
+        },
+    ],
+)
+def test_recorder_rejects_invalid_receipt_even_with_explicit_target(episode_result):
     manifest = load_manifest(CONFIG)
     run = next(item for item in manifest.runs if item.arm == "M2")
     with pytest.raises(
@@ -1310,6 +1341,27 @@ def test_recorder_rejects_invalid_explicit_target_epoch(target_reset_epoch):
             {
                 "reset_receipt": {"generation": 2},
                 "target_reset_epoch": target_reset_epoch,
+            },
+        )
+
+
+def test_recorder_rejects_unrelated_explicit_target_epoch():
+    manifest = load_manifest(CONFIG)
+    run = next(item for item in manifest.runs if item.arm == "M2")
+    with pytest.raises(
+        causal.CausalContractError,
+        match=(
+            r"target_reset_epoch must equal reset_receipt\.generation "
+            r"or reset_receipt\.generation \+ 1"
+        ),
+    ):
+        build_recorded_evidence(
+            manifest,
+            run,
+            [],
+            {
+                "reset_receipt": {"generation": 2},
+                "target_reset_epoch": 100,
             },
         )
 

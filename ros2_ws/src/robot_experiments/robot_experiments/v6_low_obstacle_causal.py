@@ -1409,7 +1409,25 @@ def build_recorded_evidence(
     static path keeps using its frozen obstacle unchanged.
     """
 
-    if "target_reset_epoch" in episode_result:
+    reset_receipt = episode_result.get("reset_receipt")
+    receipt_generation = (
+        reset_receipt.get("generation")
+        if isinstance(reset_receipt, Mapping)
+        else None
+    )
+    if (
+        not isinstance(receipt_generation, int)
+        or isinstance(receipt_generation, bool)
+        or receipt_generation <= 0
+    ):
+        raise CausalContractError(
+            "reset_receipt.generation must be a positive integer"
+        )
+    if "target_reset_epoch" not in episode_result:
+        # The exactly-once episode reset receipt reports the actual generation
+        # stamped by cognitive producers for this episode.
+        target_reset_epoch = receipt_generation
+    else:
         target_reset_epoch = episode_result["target_reset_epoch"]
         if (
             not isinstance(target_reset_epoch, int)
@@ -1419,24 +1437,13 @@ def build_recorded_evidence(
             raise CausalContractError(
                 "target_reset_epoch must be a positive integer"
             )
-    else:
-        reset_receipt = episode_result.get("reset_receipt")
-        receipt_generation = (
-            reset_receipt.get("generation")
-            if isinstance(reset_receipt, Mapping)
-            else None
-        )
-        if (
-            not isinstance(receipt_generation, int)
-            or isinstance(receipt_generation, bool)
-            or receipt_generation <= 0
-        ):
+        # Legacy static artifacts can record the producer epoch immediately
+        # after the reset receipt; no wider cross-episode override is valid.
+        if target_reset_epoch not in (receipt_generation, receipt_generation + 1):
             raise CausalContractError(
-                "reset_receipt.generation must be a positive integer"
+                "target_reset_epoch must equal reset_receipt.generation "
+                "or reset_receipt.generation + 1"
             )
-        # The exactly-once episode reset receipt reports the actual generation
-        # stamped by cognitive producers for this episode.
-        target_reset_epoch = receipt_generation
     evidence_window = episode_result.get("_evidence_window", {})
     window_start_ns = (
         int(evidence_window["start_ns"])
