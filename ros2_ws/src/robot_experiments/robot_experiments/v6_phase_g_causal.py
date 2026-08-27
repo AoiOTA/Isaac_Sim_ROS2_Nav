@@ -285,6 +285,39 @@ def candidate_is_current_trusted(
     )
 
 
+def graph_only_g1_warmup_candidate_status(
+    candidates: Sequence[Mapping[str, Any]],
+    validation_acks: Sequence[Mapping[str, Any]],
+    *,
+    reset_generation: int | None,
+) -> tuple[bool, tuple[str, ...]]:
+    """Require G1's shadow candidate to come from this run's warmup."""
+
+    if reset_generation is None:
+        return False, ("current_reset_generation_missing",)
+    current_identities = [
+        ack
+        for ack in validation_acks
+        if int(ack.get("generation", -1)) == int(reset_generation)
+        and int(ack.get("reset_epoch", -1)) >= 1
+        and str(ack.get("recurrent_session_id", ""))
+    ]
+    if not current_identities:
+        return False, ("current_reset_session_identity_missing",)
+    current = current_identities[-1]
+    current_epoch = int(current["reset_epoch"])
+    current_session = str(current["recurrent_session_id"])
+    matched = any(
+        candidate_is_current_trusted(candidate, reset_epoch=current_epoch)
+        and str(candidate.get("recurrent_session_id", "")) == current_session
+        and candidate.get("loop_index") in range(WARMUP_LOOP_COUNT)
+        for candidate in candidates
+    )
+    if not matched:
+        return False, ("current_warmup_trusted_mature_cognitive_graph_missing",)
+    return True, ()
+
+
 def causal_contrast_status(
     arm: str,
     selected_graph_id: str,
@@ -779,6 +812,19 @@ class PhaseGCausalNode(V6FormalNode):
                 self.validation_history,
                 reset_epoch=self.guard.reset_events,
             )
+            if valid and self.graph_only_no_box and self.arm == "G1":
+                receipt = getattr(self, "reset_receipt", None) or {}
+                generation = receipt.get("generation")
+                valid, reasons = graph_only_g1_warmup_candidate_status(
+                    self.candidate_history,
+                    self.validation_history,
+                    reset_generation=(
+                        int(generation)
+                        if isinstance(generation, int)
+                        and not isinstance(generation, bool)
+                        else None
+                    ),
+                )
             if not valid:
                 self._invalidate_contrast(*reasons, selected_graph_id=selected)
                 return False
@@ -947,6 +993,7 @@ class PhaseGCausalNode(V6FormalNode):
                     "cognitive_profile": "M0",
                     "m3_safety_status": "DEFERRED",
                     "route_prior_status": "DEFERRED",
+                    "reset_receipt": dict(base.get("reset_receipt") or {}),
                 }
             )
             result["pair_identity"].update(
@@ -1005,13 +1052,18 @@ def graph_only_contrast_is_eligible(result: Mapping[str, Any]) -> bool:
     if any(graph_kind(graph_id) != expected_kind for graph_id in selected):
         return False
     if arm == "G1":
-        return expected_kind == "gvg" and any(
-            candidate_is_current_trusted(
-                candidate,
-                reset_epoch=int(result.get("reset_events", -1)),
-            )
-            for candidate in result.get("candidate_graphs", ())
+        receipt = result.get("reset_receipt")
+        generation = receipt.get("generation") if isinstance(receipt, Mapping) else None
+        valid, _reasons = graph_only_g1_warmup_candidate_status(
+            result.get("candidate_graphs", ()),
+            result.get("validation_acks", ()),
+            reset_generation=(
+                int(generation)
+                if isinstance(generation, int) and not isinstance(generation, bool)
+                else None
+            ),
         )
+        return expected_kind == "gvg" and valid
     valid, _reasons = causal_contrast_status(
         arm,
         selected[-1],
@@ -1464,6 +1516,7 @@ __all__ = [
     "PhaseGConfigError",
     "build_timeline",
     "candidate_is_mature",
+    "graph_only_g1_warmup_candidate_status",
     "causal_contrast_status",
     "evaluate_group",
     "evaluate_graph_only_group",

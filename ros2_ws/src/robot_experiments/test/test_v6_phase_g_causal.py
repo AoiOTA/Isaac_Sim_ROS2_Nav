@@ -18,6 +18,7 @@ from robot_experiments.v6_phase_g_causal import (
     causal_contrast_status,
     evaluate_group,
     evaluate_graph_only_group,
+    graph_only_g1_warmup_candidate_status,
     graph_kind,
     load_config,
     pareto_direction,
@@ -147,6 +148,7 @@ def _graph_only_result(
             }[arm],
             "candidate_graphs": [],
             "validation_acks": [],
+            "reset_receipt": {"generation": 1},
         }
     )
     row["pair_identity"].update(
@@ -161,6 +163,8 @@ def _graph_only_result(
         "edge_count": 1,
         "all_edge_ids_nonempty": True,
         "reset_epoch": 1,
+        "recurrent_session_id": "session-current",
+        "loop_index": 1,
         "module2_healthy": True,
         "observation_valid": True,
         "trusted_write": True,
@@ -174,14 +178,83 @@ def _graph_only_result(
         row["validation_acks"] = [
             {
                 "accepted": True,
+                "generation": 1,
                 "reset_epoch": 1,
+                "recurrent_session_id": "session-current",
                 "candidate_graph_id": candidate["graph_id"],
                 "candidate_topology_revision": 4,
                 "candidate_value_sequence": 9,
                 "validated_graph_id": selected_graph_id,
             }
         ]
+    else:
+        row["validation_acks"] = [
+            {
+                "accepted": False,
+                "generation": 1,
+                "reset_epoch": 1,
+                "recurrent_session_id": "session-current",
+            }
+        ]
     return row
+
+
+def test_graph_only_g1_accepts_current_warmup_candidate() -> None:
+    row = _graph_only_result("G1")
+    assert graph_only_g1_warmup_candidate_status(
+        row["candidate_graphs"],
+        row["validation_acks"],
+        reset_generation=1,
+    ) == (True, ())
+    assert evaluate_graph_only_group(
+        {name: _graph_only_result(name) for name in ("G1", "G2", "G3")}
+    )["eligibility"]["G1"] is True
+
+
+def test_graph_only_g1_rejects_pre_reset_or_unattributed_candidate() -> None:
+    row = _graph_only_result("G1")
+    row["candidate_graphs"][0]["loop_index"] = None
+    valid, reasons = graph_only_g1_warmup_candidate_status(
+        row["candidate_graphs"],
+        row["validation_acks"],
+        reset_generation=1,
+    )
+    assert valid is False
+    assert reasons == ("current_warmup_trusted_mature_cognitive_graph_missing",)
+
+
+def test_graph_only_g1_rejects_stale_reset_or_recurrent_session() -> None:
+    row = _graph_only_result("G1")
+    row["validation_acks"][-1].update(
+        {
+            "generation": 0,
+            "reset_epoch": 0,
+            "recurrent_session_id": "session-stale",
+        }
+    )
+    assert graph_only_g1_warmup_candidate_status(
+        row["candidate_graphs"],
+        row["validation_acks"],
+        reset_generation=1,
+    ) == (False, ("current_reset_session_identity_missing",))
+
+    row = _graph_only_result("G1")
+    row["candidate_graphs"][0]["recurrent_session_id"] = "session-stale"
+    assert graph_only_g1_warmup_candidate_status(
+        row["candidate_graphs"],
+        row["validation_acks"],
+        reset_generation=1,
+    ) == (False, ("current_warmup_trusted_mature_cognitive_graph_missing",))
+
+
+def test_graph_only_g1_rejects_candidate_first_seen_in_scoring() -> None:
+    row = _graph_only_result("G1")
+    row["candidate_graphs"][0]["loop_index"] = 2
+    assert graph_only_g1_warmup_candidate_status(
+        row["candidate_graphs"],
+        row["validation_acks"],
+        reset_generation=1,
+    ) == (False, ("current_warmup_trusted_mature_cognitive_graph_missing",))
 
 
 def test_config_freezes_modes_route_loops_and_whole_group_fallback() -> None:
