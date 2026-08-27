@@ -79,6 +79,7 @@ def load_experiment(path: str | Path) -> DynamicLowObstacleExperiment:
         "dynamic_variant_id": "v1",
         "actor_id": "v6_dynamic_low_box_solo",
         "trigger_group": "G2",
+        "route_backend": "gvg",
         "direct_rgbd_costmap_enabled": False,
         "module1_amcl_prior_enabled": False,
         "cognitive_place_graph_enabled": False,
@@ -221,6 +222,8 @@ def build_plan(
     arm_label: str,
     output_root: str | Path,
 ) -> dict[str, Any]:
+    if experiment.identity.get("route_backend") != "gvg":
+        raise DynamicLowObstacleError("identity.route_backend must be 'gvg'")
     manifest, run = _causal_manifest(experiment, arm_label)
     run_dir = Path(output_root).expanduser().resolve() / run.run_id
     socket_path = f"/tmp/bnv6dyn-{run.arm.lower()}-{os.getpid()}.sock"
@@ -254,6 +257,8 @@ def build_plan(
         "run_id": run.run_id,
         "run_directory": str(run_dir),
         "module2_socket": socket_path,
+        "route_backend": "gvg",
+        "route_graph": str(experiment.identity["route_graph"]),
         "commands": commands,
         "dynamic_actor": dict(experiment.actor),
         "trigger": {
@@ -265,6 +270,7 @@ def build_plan(
             "direct_rgbd_costmap_enabled": False,
             "module1_amcl_prior_enabled": False,
             "cognitive_place_graph_enabled": False,
+            "route_prior_enabled": False,
             "producer_fault_injection": False,
         },
     }

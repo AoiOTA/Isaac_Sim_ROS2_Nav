@@ -537,6 +537,7 @@ write_process_identity stack "${run_dir}" "$$" "${stack_pgid}"
 
 exit_if_terminating
 setsid --wait -- "${script_dir}/run_v6_kujiale_low_obstacles.sh" ros "${arm}" \
+  route_prior_enabled:=false \
   >"${run_dir}/module3_ros.log" 2>&1 &
 module3_pid="$!"
 register_child module3_ros "${module3_pid}"

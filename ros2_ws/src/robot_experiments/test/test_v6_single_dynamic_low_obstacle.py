@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -8,6 +9,7 @@ from robot_experiments import v6_low_obstacle_causal as causal
 from robot_experiments.v6_low_obstacle_causal import RecordedMessage
 from robot_experiments.v6_single_dynamic_low_obstacle import (
     DYNAMIC_STATE_TOPIC,
+    DynamicLowObstacleError,
     _actor_resolver,
     actor_timeline,
     build_plan,
@@ -191,7 +193,7 @@ def _evidence(arm_label="M3"):
     }
 
 
-def test_plan_uses_one_dynamic_actor_m3_primary_and_explicit_m2_fallback(tmp_path):
+def test_plan_uses_one_dynamic_actor_m3_and_explicit_m2_fallback(tmp_path):
     experiment = load_experiment(CONFIG)
     m3 = build_plan(experiment, "M3", tmp_path)
     fallback = build_plan(experiment, "M2-fallback", tmp_path)
@@ -203,10 +205,35 @@ def test_plan_uses_one_dynamic_actor_m3_primary_and_explicit_m2_fallback(tmp_pat
     assert "--dynamic-obstacles" in m3["commands"]["scene"]
     assert str(experiment.identity["obstacle_config"]) in m3["commands"]["scene"]
     assert m3["commands"]["stack"][1] == "M3"
+    assert experiment.identity["route_backend"] == "gvg"
+    assert m3["route_backend"] == "gvg"
+    assert m3["route_graph"].endswith("v6_kujiale_isaacgen_v1_gvg_v1.geojson")
+    assert m3["isolation"]["route_prior_enabled"] is False
     assert "producer_stop" not in m3["commands"]
     assert fallback["module3_mode"] == "M2"
     assert fallback["fallback_only"] is True
     assert fallback["commands"]["stack"][1] == "M2"
+
+
+def test_loader_and_plan_reject_non_gvg_route_backend(tmp_path, monkeypatch):
+    invalid_config = tmp_path / CONFIG.name
+    invalid_config.write_text(
+        CONFIG.read_text(encoding="utf-8").replace(
+            "route_backend: gvg", "route_backend: primary"
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(causal.MODULE3_ROOT_ENV, str(ROOT))
+    with pytest.raises(DynamicLowObstacleError, match="identity.route_backend"):
+        load_experiment(invalid_config)
+
+    experiment = load_experiment(CONFIG)
+    invalid_experiment = replace(
+        experiment,
+        identity={**experiment.identity, "route_backend": "primary"},
+    )
+    with pytest.raises(DynamicLowObstacleError, match="identity.route_backend"):
+        build_plan(invalid_experiment, "M3", tmp_path)
 
 
 def test_actor_timeline_tracks_armed_moving_parked_and_events():

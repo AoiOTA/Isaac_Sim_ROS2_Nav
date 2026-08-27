@@ -2914,7 +2914,7 @@ def _phase_f_pid_is_running(pid: int) -> bool:
 
 
 def _start_fake_phase_f_stack(
-    tmp_path: Path, *, producer_ignores_term: bool = False
+    tmp_path: Path, *, arm: str = "M3", producer_ignores_term: bool = False
 ) -> SimpleNamespace:
     root = PACKAGE.parents[2]
     project = tmp_path / "project"
@@ -2933,8 +2933,10 @@ validate_v6_dynamic_integration_overlay() { :; }
         encoding="utf-8",
     )
     heartbeat = tmp_path / "module3.heartbeat"
+    module3_argv = tmp_path / "module3.argv"
     (scripts / "run_v6_kujiale_low_obstacles.sh").write_text(
         """#!/usr/bin/env bash
+printf '%s\n' "$@" >"${FAKE_MODULE3_ARGV}"
 mkdir -p "${ISAAC_NAV_RUNTIME_DIR}"
 exec 9>"${ISAAC_NAV_RUNTIME_DIR}/ros.lock"
 flock -n 9
@@ -3047,6 +3049,7 @@ wait "$!"
         "BIO_NAV_INTEGRATION_ROOT": str(integration),
         "BIO_NAV_MODULE2_V310_ROOT": str(module2),
         "FAKE_MODULE3_HEARTBEAT": str(heartbeat),
+        "FAKE_MODULE3_ARGV": str(module3_argv),
         "FAKE_SIGNAL_LOG": str(signal_log),
         "FAKE_PRODUCER_IGNORE_TERM": "1" if producer_ignores_term else "0",
         "FAKE_SOCKET_SERVER": str(socket_server),
@@ -3059,7 +3062,7 @@ wait "$!"
     process = subprocess.Popen(
         [
             str(scripts / "run_v6_low_obstacle_phase_f_stack.sh"),
-            "M3", "--domain", "150", "--run-dir", str(run_dir),
+            arm, "--domain", "150", "--run-dir", str(run_dir),
             "--socket", str(socket_path),
         ],
         stdout=subprocess.PIPE,
@@ -3091,9 +3094,23 @@ wait "$!"
         socket=socket_path,
         runtime_dir=runtime_dir,
         heartbeat=heartbeat,
+        module3_argv=module3_argv,
         signal_log=signal_log,
         env=env,
     )
+
+
+@pytest.mark.parametrize("arm", ["M1", "M2", "M3"])
+def test_phase_f_stack_explicitly_disables_route_prior_for_module2_arms(
+    tmp_path, arm
+):
+    fake = _start_fake_phase_f_stack(tmp_path, arm=arm)
+    try:
+        assert fake.module3_argv.read_text(encoding="utf-8").splitlines() == [
+            "ros", arm, "route_prior_enabled:=false"
+        ]
+    finally:
+        _stop_fake_phase_f_stack(fake)
 
 
 def _stop_fake_phase_f_stack(fake: SimpleNamespace) -> None:

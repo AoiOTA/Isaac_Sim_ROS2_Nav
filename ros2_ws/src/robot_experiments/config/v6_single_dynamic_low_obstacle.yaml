@@ -8,7 +8,7 @@ identity:
   start: {id: G1, reset_pose_name: long_route_start_g1}
   goal: {id: G2, frame_id: map, x: 0.80, y: 4.80}
   timeout_sec: 180.0
-  route_backend: primary
+  route_backend: gvg
   graph_backend: gvg
   direct_rgbd_costmap_enabled: false
   module1_amcl_prior_enabled: false

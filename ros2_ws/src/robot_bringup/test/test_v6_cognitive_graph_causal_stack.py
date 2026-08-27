@@ -231,7 +231,7 @@ def test_graph_stack_rejects_partial_or_out_of_contract_arms(tmp_path):
     assert "shadow or startup" in result.stderr
 
 
-def test_new_axis_does_not_change_phase_f_or_legacy_defaults():
+def test_phase_f_disables_route_prior_without_changing_legacy_default():
     phase_f = (
         REPOSITORY_ROOT / "scripts/run_v6_low_obstacle_phase_f_stack.sh"
     ).read_text(encoding="utf-8")
@@ -239,6 +239,6 @@ def test_new_axis_does_not_change_phase_f_or_legacy_defaults():
         REPOSITORY_ROOT
         / "ros2_ws/src/robot_bringup/launch/ros_stack.launch.py"
     ).read_text(encoding="utf-8")
-    assert "route_prior_enabled" not in phase_f
+    assert "route_prior_enabled:=false" in phase_f
     assert "'route_prior_enabled', default_value='auto'" in core
     assert "resolve_route_prior_enabled(" in core
