@@ -761,8 +761,10 @@ void CognitiveObstacleLayer::publishStatus(
   uint32_t masked_cells, uint8_t maximum_cost_increase)
 {
   if (!status_publisher_ || !status_publisher_->is_activated()) {return;}
+  (void)age_s;
   bio_nav_interfaces::msg::RiskLayerStatus status;
-  status.stamp = clock_->now();
+  const auto now = clock_->now();
+  status.stamp = now;
   status.consumer = consumer_id_;
   status.mode = mode_;
   status.offered = true;
@@ -770,6 +772,8 @@ void CognitiveObstacleLayer::publishStatus(
   status.rejected = !reason.empty() && reason != "offered" && reason != "shadow";
   status.source_sequence = message.sequence;
   status.recurrent_session_id = message.recurrent_session_id;
+  status.risk_model_sha256 = message.risk_model_sha256;
+  status.qualification_receipt_sha256 = message.qualification_receipt_sha256;
   status.rejection_mask = message.rejection_mask;
   std::ostringstream detail;
   detail << "validation_mode=" << static_cast<unsigned int>(message.validation_mode)
@@ -783,8 +787,8 @@ void CognitiveObstacleLayer::publishStatus(
              obstacle.static_confirmed;
     });
   status.fallback_reason = detail.str();
-  status.message_age_ms = std::isfinite(age_s) ? age_s * 1000.0 :
-    std::numeric_limits<float>::infinity();
+  status.message_age_ms = static_cast<double>(std::max<int64_t>(
+      0, now.nanoseconds() - stampNs(message.validation_stamp))) * 1.0e-6;
   status.active_cell_count = active_cells;
   status.maximum_cost = maximum_cost;
   status.raised_cell_count = raised_cells;

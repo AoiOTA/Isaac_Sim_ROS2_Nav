@@ -1,8 +1,10 @@
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <memory>
 #include <optional>
+#include <thread>
 
 #include "bio_nav_fusion/bio_nav_grid_based.hpp"
 #include "bio_nav_fusion/cognitive_obstacle_layer.hpp"
@@ -16,6 +18,7 @@
 #include "nav2_costmap_2d/costmap_2d_ros.hpp"
 #include "nav2_costmap_2d/layered_costmap.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "rclcpp_lifecycle/lifecycle_node.hpp"
 #include "tf2_ros/buffer.h"
 
 namespace bio_nav_fusion
@@ -238,6 +241,22 @@ public:
   {
     layer.obstacleCallback(
       std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(message));
+  }
+
+  static void configureStatusPublisher(
+    CognitiveObstacleLayer & layer,
+    const std::shared_ptr<rclcpp_lifecycle::LifecycleNode> & node,
+    const std::string & topic)
+  {
+    layer.status_publisher_ =
+      node->create_publisher<bio_nav_interfaces::msg::RiskLayerStatus>(
+      topic, rclcpp::QoS(10).reliable());
+    layer.status_publisher_->on_activate();
+  }
+
+  static size_t statusSubscriptionCount(CognitiveObstacleLayer & layer)
+  {
+    return layer.status_publisher_->get_subscription_count();
   }
 
   static std::string applicationReason(uint32_t active_cells, uint32_t raised_cells)
@@ -495,6 +514,8 @@ bio_nav_interfaces::msg::CognitiveObstacleArray obstacleFixture()
   message.graph_revision = 4;
   message.schema_version = "bio_nav_cognitive_obstacles_v1";
   message.model_id = "model";
+  message.risk_model_sha256 = "risk-model-sha256";
+  message.qualification_receipt_sha256 = "qualification-receipt-sha256";
   message.ttl.nanosec = 500000000U;
   message.validation_stamp.sec = 10;
   message.validation_ttl.nanosec = 500000000U;
@@ -1217,6 +1238,93 @@ TEST(CognitiveObstacleLayer, application_status_distinguishes_applied_masked_and
   EXPECT_EQ(Peer::applicationReason(0U, 0U), "no_costmap_cells");
 }
 
+TEST(CognitiveObstacleLayer, status_identity_and_age_follow_published_message)
+{
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  using Status = bio_nav_interfaces::msg::RiskLayerStatus;
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  auto clock = std::make_shared<rclcpp::Clock>(RCL_SYSTEM_TIME);
+  tf2_ros::Buffer tf_buffer(clock);
+  nav2_costmap_2d::LayeredCostmap layered_costmap("map", true, false);
+  CognitiveObstacleLayerHarness layer;
+  layer.bind(layered_costmap, tf_buffer, clock);
+
+  auto publisher_node = std::make_shared<rclcpp_lifecycle::LifecycleNode>(
+    "cognitive_obstacle_status_publisher");
+  auto subscriber_node = std::make_shared<rclcpp::Node>(
+    "cognitive_obstacle_status_subscriber");
+  const std::string topic = "/test/cognitive_obstacle_layer/status_identity";
+  std::vector<Status> statuses;
+  auto subscription = subscriber_node->create_subscription<Status>(
+    topic, rclcpp::QoS(10).reliable(),
+    [&statuses](const Status::SharedPtr status) {statuses.push_back(*status);});
+  (void)subscription;
+  Peer::configureStatusPublisher(layer, publisher_node, topic);
+
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(publisher_node->get_node_base_interface());
+  executor.add_node(subscriber_node);
+  for (int attempt = 0;
+    attempt < 100 && Peer::statusSubscriptionCount(layer) == 0U; ++attempt)
+  {
+    executor.spin_some();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_GT(Peer::statusSubscriptionCount(layer), 0U);
+  const auto wait_for_status_count = [&](size_t expected) {
+      for (int attempt = 0; attempt < 100 && statuses.size() < expected; ++attempt) {
+        executor.spin_some();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      }
+      return statuses.size() >= expected;
+    };
+  const auto expect_status_age = [](const Status & status,
+      const bio_nav_interfaces::msg::CognitiveObstacleArray & message) {
+      EXPECT_NEAR(
+        rclcpp::Time(status.stamp).nanoseconds() -
+        static_cast<int64_t>(std::llround(status.message_age_ms * 1.0e6)),
+        rclcpp::Time(message.validation_stamp).nanoseconds(), 1000000LL);
+    };
+
+  const int64_t source_ns = clock->now().nanoseconds() - 30000000LL;
+  auto accepted = obstacleFixture();
+  retimeFreshObstacle(accepted, source_ns);
+  Peer::offer(layer, accepted);
+  ASSERT_TRUE(wait_for_status_count(1U));
+  EXPECT_EQ(statuses.back().source_sequence, accepted.sequence);
+  EXPECT_EQ(statuses.back().risk_model_sha256, accepted.risk_model_sha256);
+  EXPECT_EQ(
+    statuses.back().qualification_receipt_sha256,
+    accepted.qualification_receipt_sha256);
+  expect_status_age(statuses.back(), accepted);
+
+  auto refresh = staticRevalidatedObstacleFixture();
+  retimeStatic(refresh, source_ns, clock->now().nanoseconds() - 10000000LL);
+  Peer::offer(layer, refresh);
+  ASSERT_TRUE(wait_for_status_count(2U));
+  EXPECT_EQ(statuses.back().source_sequence, accepted.sequence);
+  EXPECT_EQ(statuses.back().risk_model_sha256, accepted.risk_model_sha256);
+  EXPECT_EQ(
+    statuses.back().qualification_receipt_sha256,
+    accepted.qualification_receipt_sha256);
+  expect_status_age(statuses.back(), refresh);
+
+  auto replay = refresh;
+  replay.risk_model_sha256 = "rejected-risk-model-sha256";
+  replay.qualification_receipt_sha256 = "rejected-qualification-receipt-sha256";
+  Peer::offer(layer, replay);
+  ASSERT_TRUE(wait_for_status_count(3U));
+  EXPECT_TRUE(statuses.back().rejected);
+  EXPECT_EQ(statuses.back().source_sequence, replay.sequence);
+  EXPECT_EQ(statuses.back().risk_model_sha256, replay.risk_model_sha256);
+  EXPECT_EQ(
+    statuses.back().qualification_receipt_sha256,
+    replay.qualification_receipt_sha256);
+  expect_status_age(statuses.back(), replay);
+}
+
 TEST(CognitiveObstacleLayer, independent_static_rehits_promote_and_persist_until_reset)
 {
   using Layer = bio_nav_fusion::CognitiveObstacleLayer;
@@ -1907,6 +2015,10 @@ TEST(CognitiveRiskCritic, callback_admission_matches_layer_and_preserves_last_ac
   EXPECT_EQ(accepted_status.reset_epoch, fresh.reset_epoch);
   EXPECT_EQ(accepted_status.recurrent_session_id, fresh.recurrent_session_id);
   EXPECT_EQ(accepted_status.map_version, fresh.map_version);
+  EXPECT_EQ(accepted_status.risk_model_sha256, fresh.risk_model_sha256);
+  EXPECT_EQ(
+    accepted_status.qualification_receipt_sha256,
+    fresh.qualification_receipt_sha256);
   EXPECT_GT(accepted_status.message_age_ms, 0.0F);
   EXPECT_NEAR(
     rclcpp::Time(accepted_status.stamp).nanoseconds() -
@@ -1935,6 +2047,11 @@ TEST(CognitiveRiskCritic, callback_admission_matches_layer_and_preserves_last_ac
   EXPECT_GT(scoreAt(critic, 1.0F, 0.0F), 1.0F);
   const auto refresh_status =
     bio_nav_fusion::CognitiveRiskCriticTestPeer::lastStatus(critic);
+  EXPECT_EQ(refresh_status.source_sequence, fresh.sequence);
+  EXPECT_EQ(refresh_status.risk_model_sha256, fresh.risk_model_sha256);
+  EXPECT_EQ(
+    refresh_status.qualification_receipt_sha256,
+    fresh.qualification_receipt_sha256);
   EXPECT_NEAR(
     rclcpp::Time(refresh_status.stamp).nanoseconds() -
     static_cast<int64_t>(std::llround(refresh_status.message_age_ms * 1.0e6)),
@@ -1968,6 +2085,8 @@ TEST(CognitiveRiskCritic, callback_admission_matches_layer_and_preserves_last_ac
   retimeFresh(changed, prior, refresh_ns);
   changed.sequence = 8;
   changed.map_version = "new-map";
+  changed.risk_model_sha256 = "rejected-risk-model-sha256";
+  changed.qualification_receipt_sha256 = "rejected-qualification-receipt-sha256";
   EXPECT_EQ(Layer::validateMessage(
       changed, costmap->now().nanoseconds(), expected, layer_cursor, 0.5, 0.2),
     "identity");
@@ -1982,6 +2101,14 @@ TEST(CognitiveRiskCritic, callback_admission_matches_layer_and_preserves_last_ac
   EXPECT_EQ(rejection_status.reset_epoch, fresh.reset_epoch);
   EXPECT_EQ(rejection_status.recurrent_session_id, fresh.recurrent_session_id);
   EXPECT_EQ(rejection_status.map_version, fresh.map_version);
+  EXPECT_EQ(rejection_status.risk_model_sha256, fresh.risk_model_sha256);
+  EXPECT_EQ(
+    rejection_status.qualification_receipt_sha256,
+    fresh.qualification_receipt_sha256);
+  EXPECT_NEAR(
+    rclcpp::Time(rejection_status.stamp).nanoseconds() -
+    static_cast<int64_t>(std::llround(rejection_status.message_age_ms * 1.0e6)),
+    rclcpp::Time(refresh.validation_stamp).nanoseconds(), 1000000LL);
   EXPECT_NE(
     rejection_status.fallback_reason.find("offer_reset_epoch=3"),
     std::string::npos);

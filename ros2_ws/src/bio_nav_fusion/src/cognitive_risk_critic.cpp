@@ -701,12 +701,13 @@ void CognitiveRiskCritic::publishStatus(
     reason != "offered" && reason.find("zero_cost_delta") == std::string::npos;
   status.source_sequence = accepted_obstacles->sequence;
   status.recurrent_session_id = accepted_obstacles->recurrent_session_id;
+  status.risk_model_sha256 = accepted_obstacles->risk_model_sha256;
+  status.qualification_receipt_sha256 =
+    accepted_obstacles->qualification_receipt_sha256;
   status.reset_epoch = accepted_obstacles->reset_epoch;
   status.map_version = accepted_obstacles->map_version;
-  const double age_s = static_cast<double>(
-    now.nanoseconds() - stampNs(accepted_obstacles->validation_stamp)) * 1.0e-9;
-  status.message_age_ms = std::isfinite(age_s) ? age_s * 1000.0 :
-    std::numeric_limits<float>::infinity();
+  status.message_age_ms = static_cast<double>(std::max<int64_t>(
+      0, now.nanoseconds() - stampNs(accepted_obstacles->validation_stamp))) * 1.0e-6;
   std::ostringstream detail;
   detail << reason
          << ";maximum_obstacle_cost_delta="
