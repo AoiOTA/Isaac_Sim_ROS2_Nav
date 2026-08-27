@@ -1131,6 +1131,7 @@ def test_recorder_reduces_synthetic_messages_to_required_real_fields():
     ]
     episode_result = {
         "state": "SUCCEEDED",
+        "reset_receipt": {"generation": 1},
         "reset_calls": 1,
         "reset_events": 1,
         "goal_publications": 1,
@@ -1143,7 +1144,7 @@ def test_recorder_reduces_synthetic_messages_to_required_real_fields():
     evidence = build_recorded_evidence(manifest, run, records, episode_result)
     assert evidence["reset"]["calls"] == 1
     assert evidence["reset"]["events"] == 1
-    assert evidence["reset"]["target_reset_epoch"] is None
+    assert evidence["reset"]["target_reset_epoch"] == 1
     assert evidence["module2_health"]["trusted_write_count"] == 2
     assert evidence["module2_health"]["candidate_cadence_hz"] == pytest.approx(10.0)
     assert evidence["layer"]["global"]["cells"] == 7
@@ -1273,6 +1274,46 @@ def test_recorder_explicit_target_epoch_overrides_receipt_generation():
     assert evidence["reset"]["excluded_record_count"] == 1
 
 
+@pytest.mark.parametrize(
+    "episode_result",
+    [
+        {},
+        {"reset_receipt": {}},
+        {"reset_receipt": {"generation": 0}},
+        {"reset_receipt": {"generation": -1}},
+        {"reset_receipt": {"generation": True}},
+        {"reset_receipt": {"generation": "2"}},
+    ],
+)
+def test_recorder_rejects_missing_or_invalid_receipt_generation(episode_result):
+    manifest = load_manifest(CONFIG)
+    run = next(item for item in manifest.runs if item.arm == "M2")
+    with pytest.raises(
+        causal.CausalContractError,
+        match=r"reset_receipt\.generation must be a positive integer",
+    ):
+        build_recorded_evidence(manifest, run, [], episode_result)
+
+
+@pytest.mark.parametrize("target_reset_epoch", [0, -1, True, "3", None])
+def test_recorder_rejects_invalid_explicit_target_epoch(target_reset_epoch):
+    manifest = load_manifest(CONFIG)
+    run = next(item for item in manifest.runs if item.arm == "M2")
+    with pytest.raises(
+        causal.CausalContractError,
+        match="target_reset_epoch must be a positive integer",
+    ):
+        build_recorded_evidence(
+            manifest,
+            run,
+            [],
+            {
+                "reset_receipt": {"generation": 2},
+                "target_reset_epoch": target_reset_epoch,
+            },
+        )
+
+
 @pytest.mark.parametrize(("terminal_ns", "expected_end"), [(350, 350), (None, 400)])
 def test_episode_jsonl_bounds_evidence_by_reset_receipt_and_terminal_or_result(
     tmp_path, terminal_ns, expected_end
@@ -1394,7 +1435,7 @@ def test_recorder_marks_any_post_expiry_critic_application_invalid(
             critic_reason=critic_reason,
             critic_applied=critic_applied,
         ),
-        {},
+        {"reset_receipt": {"generation": 1}},
     )
     assert evidence["freshness"]["critic_ttl_status"] == causal.NOMINAL_TTL_STATUS
     assert evidence["freshness"]["nominal_post_route_critic_observation"] == (
@@ -1413,7 +1454,7 @@ def test_recorder_accepts_explicit_post_expiry_stale_critic_rejection():
         _m3_ttl_lifecycle_records(
             critic_reason="obstacle_rejected=validation_stale",
         ),
-        {},
+        {"reset_receipt": {"generation": 1}},
     )
     assert evidence["freshness"]["critic_ttl_status"] == causal.NOMINAL_TTL_STATUS
     assert evidence["freshness"]["nominal_post_route_critic_observation"] == (
@@ -1430,7 +1471,7 @@ def test_recorder_requires_both_costmap_layers_to_clear_after_expiry():
         manifest,
         run,
         _m3_ttl_lifecycle_records(include_local=False),
-        {},
+        {"reset_receipt": {"generation": 1}},
     )
     assert evidence["freshness"]["ttl_expiry_zero_write"] is False
     assert evidence["freshness"]["ttl_expiry_observed"] is False
@@ -1740,6 +1781,7 @@ def test_m1_health_is_reduced_from_planning_prior_not_typed_obstacles():
     }))
     evidence = build_recorded_evidence(manifest, run, records, {
         "state": "SUCCEEDED",
+        "reset_receipt": {"generation": 1},
         "reset_calls": 1,
         "reset_events": 1,
         "goal_publications": 1,
@@ -1798,7 +1840,12 @@ def test_m1_recorder_accepts_numpy_fixed_array_shadow_candidate():
             "pose": {"pose": {"position": {"x": -1.0, "y": -1.0}}},
         }),
     ]
-    evidence = build_recorded_evidence(manifest, run, records, {})
+    evidence = build_recorded_evidence(
+        manifest,
+        run,
+        records,
+        {"reset_receipt": {"generation": 1}},
+    )
     assert evidence["shadow_obstacle_candidate"] == {
         "message_count": 1,
         "nonempty_message_count": 1,

@@ -1409,20 +1409,34 @@ def build_recorded_evidence(
     static path keeps using its frozen obstacle unchanged.
     """
 
-    reset_receipt = episode_result.get("reset_receipt", {})
-    explicit_target_epoch = episode_result.get("target_reset_epoch")
-    if isinstance(explicit_target_epoch, int) and not isinstance(explicit_target_epoch, bool):
-        target_reset_epoch = int(explicit_target_epoch)
-    elif (
-        isinstance(reset_receipt, Mapping)
-        and isinstance(reset_receipt.get("generation"), int)
-        and not isinstance(reset_receipt.get("generation"), bool)
-    ):
+    if "target_reset_epoch" in episode_result:
+        target_reset_epoch = episode_result["target_reset_epoch"]
+        if (
+            not isinstance(target_reset_epoch, int)
+            or isinstance(target_reset_epoch, bool)
+            or target_reset_epoch <= 0
+        ):
+            raise CausalContractError(
+                "target_reset_epoch must be a positive integer"
+            )
+    else:
+        reset_receipt = episode_result.get("reset_receipt")
+        receipt_generation = (
+            reset_receipt.get("generation")
+            if isinstance(reset_receipt, Mapping)
+            else None
+        )
+        if (
+            not isinstance(receipt_generation, int)
+            or isinstance(receipt_generation, bool)
+            or receipt_generation <= 0
+        ):
+            raise CausalContractError(
+                "reset_receipt.generation must be a positive integer"
+            )
         # The exactly-once episode reset receipt reports the actual generation
         # stamped by cognitive producers for this episode.
-        target_reset_epoch = int(reset_receipt["generation"])
-    else:
-        target_reset_epoch = None
+        target_reset_epoch = receipt_generation
     evidence_window = episode_result.get("_evidence_window", {})
     window_start_ns = (
         int(evidence_window["start_ns"])
