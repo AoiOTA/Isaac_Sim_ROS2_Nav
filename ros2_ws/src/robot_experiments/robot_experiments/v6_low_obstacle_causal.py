@@ -374,7 +374,8 @@ def load_manifest(path: str | Path) -> CausalManifest:
         "seed": 8601,
         "ros_domain_id": 150,
         "timeout_sec": 180.0,
-        "route_backend": "primary",
+        "route_backend": "gvg",
+        "route_prior_enabled": False,
         "graph_backend": "gvg",
         "direct_rgbd_costmap_enabled": False,
         "exactly_once_reset": True,
@@ -1918,6 +1919,7 @@ def build_plan(
 ) -> dict[str, Any]:
     """Return the concrete pilot/formal command plan; perform no mutation."""
 
+    _require_phase_f_route_identity(manifest)
     rows = []
     root = Path(output_root).expanduser().resolve()
     for run in selected_runs(manifest, pilot=pilot):
@@ -1950,6 +1952,8 @@ def build_plan(
                 "obstacle_layer_mode": arm.obstacle_layer_mode,
                 "critic_mode": arm.critic_mode,
                 "graph_backend": "gvg",
+                "route_backend": manifest.identity["route_backend"],
+                "route_prior_enabled": manifest.identity["route_prior_enabled"],
                 "direct_rgbd_costmap_enabled": False,
                 "low_obstacles_enabled": True,
                 "dynamic_actors_enabled": False,
@@ -2203,7 +2207,6 @@ def dispatch_episode(
         V6FormalNode,
     )
 
-    arm = manifest.arms[run.arm]
     dynamic_actors_enabled = manifest.identity.get("dynamic_actors_enabled") is True
     dynamic_group = str(manifest.identity.get("trigger_group", ""))
     dynamic_case_id = str(manifest.identity.get("dynamic_case_id", "static"))
@@ -2212,27 +2215,11 @@ def dispatch_episode(
     )
     if dynamic_actors_enabled and not dynamic_group:
         raise CausalContractError("dynamic experiment requires identity.trigger_group")
-    runtime = {
-        "canonical_odom": {"topic": "/odom", "owner": "isaac_compute_odometry", "tf": "odom->base_link"},
-        "global_localization": {"pose_topic": "/amcl_pose", "owner": "amcl", "tf": "map->odom"},
-        "module1_odom": {
-            "topic": "/bio_nav/module1/odom", "owner": "wheel_imu_ekf", "publish_tf": False,
-        },
-        "recovery_enabled": False,
-        "module1_amcl_prior_enabled": False,
-        "module2_navigation_write_enabled": run.arm in {"M2", "M3"},
-        "module2_active_effect_scope": "obstacle_only" if run.arm in {"M2", "M3"} else (
-            "shadow" if run.arm == "M1" else "none"
-        ),
-        "cognitive_place_graph_enabled": False,
-        "route_backend": "gvg",
-        "low_obstacles_enabled": True,
-        "dynamic_actors_enabled": dynamic_actors_enabled,
-        "goal_checker": "position_xy",
-        "cognitive_profile": run.arm,
-        "obstacle_layer_mode": arm.obstacle_layer_mode,
-        "critic_mode": arm.critic_mode,
-    }
+    runtime = _phase_f_runtime(
+        manifest,
+        run,
+        dynamic_actors_enabled=dynamic_actors_enabled,
+    )
     formal_manifest = Manifest(
         path=manifest.path,
         raw={},
@@ -2279,6 +2266,45 @@ def dispatch_episode(
     finally:
         adapter.destroy()
         rclpy.shutdown()
+
+
+def _require_phase_f_route_identity(manifest: CausalManifest) -> None:
+    if manifest.identity.get("route_backend") != "gvg":
+        raise CausalContractError("identity.route_backend must be 'gvg'")
+    if manifest.identity.get("route_prior_enabled") is not False:
+        raise CausalContractError("identity.route_prior_enabled must be False")
+
+
+def _phase_f_runtime(
+    manifest: CausalManifest,
+    run: RunContract,
+    *,
+    dynamic_actors_enabled: bool,
+) -> dict[str, Any]:
+    _require_phase_f_route_identity(manifest)
+    arm = manifest.arms[run.arm]
+    return {
+        "canonical_odom": {"topic": "/odom", "owner": "isaac_compute_odometry", "tf": "odom->base_link"},
+        "global_localization": {"pose_topic": "/amcl_pose", "owner": "amcl", "tf": "map->odom"},
+        "module1_odom": {
+            "topic": "/bio_nav/module1/odom", "owner": "wheel_imu_ekf", "publish_tf": False,
+        },
+        "recovery_enabled": False,
+        "module1_amcl_prior_enabled": False,
+        "module2_navigation_write_enabled": run.arm in {"M2", "M3"},
+        "module2_active_effect_scope": "obstacle_only" if run.arm in {"M2", "M3"} else (
+            "shadow" if run.arm == "M1" else "none"
+        ),
+        "cognitive_place_graph_enabled": False,
+        "route_backend": manifest.identity["route_backend"],
+        "route_prior_enabled": manifest.identity["route_prior_enabled"],
+        "low_obstacles_enabled": True,
+        "dynamic_actors_enabled": dynamic_actors_enabled,
+        "goal_checker": "position_xy",
+        "cognitive_profile": run.arm,
+        "obstacle_layer_mode": arm.obstacle_layer_mode,
+        "critic_mode": arm.critic_mode,
+    }
 
 
 @dataclass

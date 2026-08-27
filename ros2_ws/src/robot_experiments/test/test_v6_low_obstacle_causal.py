@@ -244,6 +244,8 @@ def test_manifest_freezes_exact_twelve_counterbalanced_runs_and_identity():
     assert manifest.identity["start"]["id"] == "G1"
     assert manifest.identity["goal"]["id"] == "G2"
     assert manifest.identity["timeout_sec"] == 180.0
+    assert manifest.identity["route_backend"] == "gvg"
+    assert manifest.identity["route_prior_enabled"] is False
     assert manifest.identity["graph_backend"] == "gvg"
     assert manifest.identity["direct_rgbd_costmap_enabled"] is False
     assert manifest.identity["low_obstacles_enabled"] is True
@@ -265,6 +267,55 @@ def test_manifest_freezes_exact_twelve_counterbalanced_runs_and_identity():
     assert manifest.criteria["selected_arm_active_ttl_required"] is True
     assert manifest.criteria["depth_obstacle_bounds_tolerance_m"] <= 0.02
     assert manifest.criteria["depth_min_height_above_floor_m"] >= 0.02
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "reason"),
+    [
+        ("route_backend", "primary", "identity.route_backend"),
+        ("route_prior_enabled", True, "identity.route_prior_enabled"),
+    ],
+)
+def test_manifest_rejects_non_gvg_or_enabled_route_prior(
+    tmp_path, monkeypatch, key, value, reason
+):
+    raw = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    raw["identity"][key] = value
+    broken = tmp_path / "broken.yaml"
+    broken.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    monkeypatch.setenv("BIO_NAV_MODULE3_ROOT", str(PACKAGE.parents[2]))
+    with pytest.raises(causal.CausalContractError, match=reason):
+        load_manifest(broken)
+
+
+def test_plan_and_episode_runtime_share_gvg_without_route_prior(tmp_path):
+    manifest = load_manifest(CONFIG)
+    plan = build_plan(manifest, pilot=True, output_root=tmp_path)
+    for row in plan["runs"]:
+        assert row["setup"]["route_backend"] == "gvg"
+        assert row["setup"]["route_prior_enabled"] is False
+        run = next(item for item in manifest.runs if item.run_id == row["run_id"])
+        runtime = causal._phase_f_runtime(
+            manifest, run, dynamic_actors_enabled=False
+        )
+        assert runtime["route_backend"] == "gvg"
+        assert runtime["route_prior_enabled"] is False
+        assert runtime["obstacle_layer_mode"] == manifest.arms[run.arm].obstacle_layer_mode
+        assert runtime["critic_mode"] == manifest.arms[run.arm].critic_mode
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "reason"),
+    [
+        ("route_backend", "primary", "identity.route_backend"),
+        ("route_prior_enabled", True, "identity.route_prior_enabled"),
+    ],
+)
+def test_plan_rejects_inconsistent_route_identity(key, value, reason):
+    manifest = load_manifest(CONFIG)
+    broken = replace(manifest, identity={**manifest.identity, key: value})
+    with pytest.raises(causal.CausalContractError, match=reason):
+        build_plan(broken, pilot=True)
 
 
 def test_m0_disables_uds_but_preserves_same_localization_contract():
