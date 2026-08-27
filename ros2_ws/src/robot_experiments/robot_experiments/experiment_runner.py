@@ -240,6 +240,16 @@ def _boolean_parameter(value: object, name: str) -> bool:
     raise ConfigurationError(f"{name} must be boolean")
 
 
+def _positive_finite_float(value: object, name: str) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigurationError(f"{name} must be positive and finite") from exc
+    if not math.isfinite(parsed) or parsed <= 0.0:
+        raise ConfigurationError(f"{name} must be positive and finite")
+    return parsed
+
+
 def _reset_dynamic_selection(
     scenario_type: str, selection: RunSelection
 ) -> tuple[str | None, str | None]:
@@ -678,6 +688,12 @@ class ExperimentRunner(Node):
             self.declare_parameter(
                 "reset_tf_translation_tolerance_m", 0.05
             ).value
+        )
+        self._reset_map_base_translation_tolerance_m = _positive_finite_float(
+            self.declare_parameter(
+                "reset_map_base_translation_tolerance_m", 0.05
+            ).value,
+            "reset_map_base_translation_tolerance_m",
         )
         self._reset_tf_yaw_tolerance_rad = float(
             self.declare_parameter(
@@ -2150,7 +2166,7 @@ class ExperimentRunner(Node):
                     and math.hypot(
                         translation.x - expected_x,
                         translation.y - expected_y,
-                    ) <= self._reset_tf_translation_tolerance_m
+                    ) <= self._reset_map_base_translation_tolerance_m
                     and abs(wrap_angle(
                         map_base_yaw - expected_yaw
                     )) <= self._reset_tf_yaw_tolerance_rad
@@ -3441,6 +3457,9 @@ class ExperimentRunner(Node):
             "nav2_profile": self._nav2_profile,
             "clear_slam_localization_buffer": (
                 self._clear_slam_localization_buffer
+            ),
+            "reset_map_base_translation_tolerance_m": (
+                self._reset_map_base_translation_tolerance_m
             ),
             # A launcher argument is not sufficient four-arm provenance;
             # persist the value consumed by the installed runner.

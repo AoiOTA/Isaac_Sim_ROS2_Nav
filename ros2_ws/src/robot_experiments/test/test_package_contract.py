@@ -400,6 +400,16 @@ def test_runner_only_publishes_a21_route_goals_and_never_controls_or_localizes_r
     assert "ExternalShutdownException" in source
     assert "ExperimentIsolationError" in source
     assert "odom.stamp_s > sample_stamp_barrier_s" in source
+    assert '"reset_map_base_translation_tolerance_m", 0.05' in source
+    assert '"reset_map_base_translation_tolerance_m": (' in source
+
+    launch_source = (PACKAGE_ROOT / "launch" / "experiment.launch.py").read_text()
+    assert '"reset_map_base_translation_tolerance_m", default_value="0.05"' in launch_source
+    assert (
+        'LaunchConfiguration(\n                                '
+        '"reset_map_base_translation_tolerance_m"'
+    ) in launch_source
+    assert "value_type=float" in launch_source
 
 
 def test_initial_pose_contract_waits_for_clock_and_uses_reliable_qos():

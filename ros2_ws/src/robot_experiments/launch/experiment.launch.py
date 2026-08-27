@@ -44,6 +44,9 @@ def generate_launch_description():
             DeclareLaunchArgument("dynamic_case_id", default_value=""),
             DeclareLaunchArgument("dynamic_variant_id", default_value=""),
             DeclareLaunchArgument("dynamic_seed", default_value="0"),
+            DeclareLaunchArgument(
+                "reset_map_base_translation_tolerance_m", default_value="0.05"
+            ),
             # Attempt-23 paired A/B: the guidance sidecar hosts the
             # runner-facing NavigateToPose server; campaigns point the runner
             # at it through this override.  The default preserves every
@@ -114,6 +117,12 @@ def generate_launch_description():
                         "dynamic_case_id": LaunchConfiguration("dynamic_case_id"),
                         "dynamic_variant_id": LaunchConfiguration("dynamic_variant_id"),
                         "dynamic_seed": LaunchConfiguration("dynamic_seed"),
+                        "reset_map_base_translation_tolerance_m": ParameterValue(
+                            LaunchConfiguration(
+                                "reset_map_base_translation_tolerance_m"
+                            ),
+                            value_type=float,
+                        ),
                         "navigate_action": LaunchConfiguration("navigate_action"),
                         "navigation_execution_backend": LaunchConfiguration(
                             "navigation_execution_backend"
