@@ -1418,10 +1418,9 @@ def build_recorded_evidence(
         and isinstance(reset_receipt.get("generation"), int)
         and not isinstance(reset_receipt.get("generation"), bool)
     ):
-        # Phase-F starts the cognitive stack after Isaac's startup reset.  The
-        # episode reset receipt generation is therefore the event which advances
-        # the already-initialized cognitive identity to its successor epoch.
-        target_reset_epoch = int(reset_receipt["generation"]) + 1
+        # The exactly-once episode reset receipt reports the actual generation
+        # stamped by cognitive producers for this episode.
+        target_reset_epoch = int(reset_receipt["generation"])
     else:
         target_reset_epoch = None
     evidence_window = episode_result.get("_evidence_window", {})

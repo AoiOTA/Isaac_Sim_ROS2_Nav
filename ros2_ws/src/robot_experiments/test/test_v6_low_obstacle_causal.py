@@ -1143,6 +1143,7 @@ def test_recorder_reduces_synthetic_messages_to_required_real_fields():
     evidence = build_recorded_evidence(manifest, run, records, episode_result)
     assert evidence["reset"]["calls"] == 1
     assert evidence["reset"]["events"] == 1
+    assert evidence["reset"]["target_reset_epoch"] is None
     assert evidence["module2_health"]["trusted_write_count"] == 2
     assert evidence["module2_health"]["candidate_cadence_hz"] == pytest.approx(10.0)
     assert evidence["layer"]["global"]["cells"] == 7
@@ -1168,7 +1169,7 @@ def test_recorder_reduces_synthetic_messages_to_required_real_fields():
     assert evidence["passive"]["success"] is True
 
 
-def test_recorder_excludes_pre_reset_wrong_epoch_and_post_terminal_records():
+def test_recorder_uses_receipt_generation_and_excludes_other_episode_records():
     manifest = load_manifest(CONFIG)
     run = next(item for item in manifest.runs if item.arm == "M2")
 
@@ -1199,10 +1200,13 @@ def test_recorder_excludes_pre_reset_wrong_epoch_and_post_terminal_records():
                 "/bio_nav/module2/cognitive_obstacles", 250, message(1, 1)
             ),
             RecordedMessage(
-                "/bio_nav/module2/cognitive_obstacles", 300, message(3, 2)
+                "/bio_nav/module2/cognitive_obstacles", 300, message(2, 2)
             ),
             RecordedMessage(
-                "/bio_nav/module2/cognitive_obstacles", 500, message(3, 3)
+                "/bio_nav/module2/cognitive_obstacles", 350, message(3, 3)
+            ),
+            RecordedMessage(
+                "/bio_nav/module2/cognitive_obstacles", 500, message(2, 4)
             ),
             RecordedMessage("/ground_truth/odom", 350, {
                 "pose": {"pose": {"position": {"x": -1.0, "y": -1.0}}},
@@ -1210,13 +1214,63 @@ def test_recorder_excludes_pre_reset_wrong_epoch_and_post_terminal_records():
         ],
         {
             "reset_receipt": {"generation": 2},
+            "reset_events": 1,
+            "_evidence_window": {"start_ns": 200, "end_ns": 400},
+        },
+    )
+    assert evidence["module2_health"]["message_count"] == 1
+    assert [row["id"] for row in evidence["obstacle_validation"]] == ["candidate-2"]
+    assert evidence["reset"]["target_reset_epoch"] == 2
+    assert evidence["reset"]["excluded_record_count"] == 3
+
+
+def test_recorder_explicit_target_epoch_overrides_receipt_generation():
+    manifest = load_manifest(CONFIG)
+    run = next(item for item in manifest.runs if item.arm == "M2")
+
+    def message(epoch, sequence):
+        return {
+            "header": {"stamp": 2_000_000_000, "frame_id": "map"},
+            "reset_epoch": epoch,
+            "module2_healthy": True,
+            "trusted_write": True,
+            "observation_valid": True,
+            "validation_stamp": {"sec": 2, "nanosec": 0},
+            "sequence": sequence,
+            "validation_mode": causal.VALIDATION_STATIC_DEPTH_REVALIDATED,
+            "validation_sensor_mask": causal.VALIDATION_SENSOR_DEPTH,
+            "obstacles": [{
+                "id": f"candidate-{sequence}",
+                "pose_xy_m": [-0.45, -0.35],
+                "radius_m": 0.2,
+                "confidence": 0.9,
+            }],
+        }
+
+    evidence = build_recorded_evidence(
+        manifest,
+        run,
+        [
+            RecordedMessage(
+                "/bio_nav/module2/cognitive_obstacles", 250, message(2, 1)
+            ),
+            RecordedMessage(
+                "/bio_nav/module2/cognitive_obstacles", 300, message(3, 2)
+            ),
+            RecordedMessage("/ground_truth/odom", 350, {
+                "pose": {"pose": {"position": {"x": -1.0, "y": -1.0}}},
+            }),
+        ],
+        {
+            "reset_receipt": {"generation": 2},
+            "target_reset_epoch": 3,
             "_evidence_window": {"start_ns": 200, "end_ns": 400},
         },
     )
     assert evidence["module2_health"]["message_count"] == 1
     assert [row["id"] for row in evidence["obstacle_validation"]] == ["candidate-2"]
     assert evidence["reset"]["target_reset_epoch"] == 3
-    assert evidence["reset"]["excluded_record_count"] == 2
+    assert evidence["reset"]["excluded_record_count"] == 1
 
 
 @pytest.mark.parametrize(("terminal_ns", "expected_end"), [(350, 350), (None, 400)])
