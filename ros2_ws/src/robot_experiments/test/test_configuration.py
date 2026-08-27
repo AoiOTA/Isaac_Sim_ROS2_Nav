@@ -66,6 +66,18 @@ def test_v6_low_obstacle_scenario_selects_only_the_frozen_layout():
         "kujiale_v6_low_obstacles_phase_f_r2_20260826"
     )
     assert scenario.run_matrix[0].variant_id == "v6_phase_f_r2"
+    assert scenario.goal.require_orientation is False
+    assert tuple(goal.goal_id for goal in scenario.route) == (
+        "G2", "G3", "G4", "G5", "G1",
+    )
+    assert all(goal.require_orientation is False for goal in scenario.route)
+    assert tuple(goal.yaw_deg for goal in scenario.route) == (
+        -160.0, -105.0, -68.0, -42.0, 90.0,
+    )
+    assert scenario.success.maximum_static_geometric_overlap_m == pytest.approx(
+        0.010
+    )
+    assert scenario.success.static_geometric_overlap_is_diagnostic_only is True
     assert [item["id"] for item in scenario.obstacles["static"]] == [
         "v6_low_box_solo"
     ]
