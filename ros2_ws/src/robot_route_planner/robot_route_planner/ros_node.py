@@ -234,6 +234,21 @@ class CognitiveConstraintsIdentity:
 
 
 @dataclass(frozen=True)
+class EdgePriorGeneration:
+    """Module2 generation carried by one accepted EdgePriorArray."""
+
+    reset_epoch: int
+    recurrent_session_id: str
+    map_version: str
+    cognitive_tile_id: str
+    tile_revision: int
+    cognitive_graph_revision: int
+    model_id: str
+    source_physical_graph_id: str
+    source_physical_graph_revision: int
+
+
+@dataclass(frozen=True)
 class RouteInputGeneration:
     """One reset/route/graph identity captured at external-input admission."""
 
@@ -654,6 +669,7 @@ class RouteCoordinator:
         self.latest_priors_request_id: int | None = None
         self.latest_priors_graph_id: str | None = None
         self.latest_priors_graph_revision: int | None = None
+        self.latest_priors_generation: EdgePriorGeneration | None = None
         self.latest_priors_cognitive_identity: CognitiveGraphIdentity | None = None
         self.tracker: RouteTracker | None = None
         self.latest_pose_xy: tuple[float, float] | None = None
@@ -3323,6 +3339,7 @@ class RouteCoordinator:
         self.latest_priors_request_id = None
         self.latest_priors_graph_id = None
         self.latest_priors_graph_revision = None
+        self.latest_priors_generation = None
         self.latest_priors_cognitive_identity = None
 
     def _accepted_prior_is_current_locked(self) -> bool:
@@ -3334,6 +3351,11 @@ class RouteCoordinator:
             self, "latest_priors_cognitive_identity", None
         )
         current_identity = getattr(self, "cognitive_graph_identity", None)
+        local_cognitive_identity_is_current = bool(
+            getattr(self, "cognitive_graph_mode", "gvg") == "gvg"
+            or accepted_identity is None
+            or accepted_identity == current_identity
+        )
         return bool(
             getattr(self, "latest_priors_request_id", self.request_id)
             == self.request_id
@@ -3343,10 +3365,7 @@ class RouteCoordinator:
             and getattr(
                 self, "latest_priors_graph_revision", self.graph.revision
             ) == self.graph.revision
-            and (
-                accepted_identity is None
-                or accepted_identity == current_identity
-            )
+            and local_cognitive_identity_is_current
         )
 
     def _priors_for_consumption(
@@ -3401,6 +3420,17 @@ class RouteCoordinator:
             int(message.header.stamp.sec) * 1_000_000_000
             + int(message.header.stamp.nanosec)
         )
+        incoming_generation = EdgePriorGeneration(
+            int(message.reset_epoch),
+            str(message.recurrent_session_id),
+            str(message.map_version),
+            str(message.cognitive_tile_id),
+            int(message.tile_revision),
+            int(message.cognitive_graph_revision),
+            str(message.model_id),
+            str(message.source_physical_graph_id),
+            int(message.source_physical_graph_revision),
+        )
         with self._route_state_lock():
             if not self._route_input_is_current_locked(input_generation):
                 return
@@ -3429,6 +3459,10 @@ class RouteCoordinator:
                 or int(message.request_id) != self.request_id
                 or str(message.graph_id) != self.graph.graph_id
                 or int(message.graph_revision) != self.graph.revision
+                or incoming_generation.source_physical_graph_id
+                != self.graph.graph_id
+                or incoming_generation.source_physical_graph_revision
+                != self.graph.revision
             ):
                 return
             edge_ids = {int(edge.id) for edge in self.graph.edges}
@@ -3492,6 +3526,17 @@ class RouteCoordinator:
                 if self._accepted_prior_is_current_locked()
                 else {}
             )
+            accepted_generation = getattr(
+                self, "latest_priors_generation", None
+            )
+            generation_rollover = bool(
+                retained_priors
+                and accepted_generation is not None
+                and incoming_generation != accepted_generation
+            )
+            if generation_rollover:
+                self._clear_latest_priors()
+                retained_priors = {}
             if self.latest_priors and not retained_priors:
                 self._clear_latest_priors()
             if model_rollover and usable:
@@ -3506,8 +3551,11 @@ class RouteCoordinator:
                 self.latest_priors_request_id = int(message.request_id)
                 self.latest_priors_graph_id = str(message.graph_id)
                 self.latest_priors_graph_revision = int(message.graph_revision)
-                self.latest_priors_cognitive_identity = getattr(
-                    self, "cognitive_graph_identity", None
+                self.latest_priors_generation = incoming_generation
+                self.latest_priors_cognitive_identity = (
+                    None
+                    if getattr(self, "cognitive_graph_mode", "gvg") == "gvg"
+                    else getattr(self, "cognitive_graph_identity", None)
                 )
                 accepted_priors = priors
         if invalid_edges:
@@ -3522,6 +3570,11 @@ class RouteCoordinator:
             )
             self.node.get_logger().warning(
                 f"Module2 edge prior rejected ({reason}){suffix}"
+            )
+        elif generation_rollover and not model_rollover:
+            self.node.get_logger().info(
+                "Module2 edge prior generation changed; replacing the "
+                "accepted route preference"
             )
         elif model_rollover:
             self.node.get_logger().warning(

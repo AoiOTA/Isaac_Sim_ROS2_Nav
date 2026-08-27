@@ -36,7 +36,18 @@ from robot_route_planner.tracking import RouteTracker
 
 
 def _edge_prior_message(
-    *, request_id: int, stamp_ns: int, model_id: str = 'srdr-v310'
+    *,
+    request_id: int,
+    stamp_ns: int,
+    reset_epoch: int = 3,
+    recurrent_session_id: str = 'session-a',
+    map_version: str = 'map-v1',
+    cognitive_tile_id: str = 'tile-a',
+    tile_revision: int = 2,
+    cognitive_graph_revision: int = 4,
+    model_id: str = 'srdr-v310',
+    source_physical_graph_id: str = 'test:gvg_v1',
+    source_physical_graph_revision: int = 3,
 ):
     return SimpleNamespace(
         header=SimpleNamespace(stamp=SimpleNamespace(
@@ -46,7 +57,15 @@ def _edge_prior_message(
         request_id=request_id,
         graph_id='test:gvg_v1',
         graph_revision=3,
+        reset_epoch=reset_epoch,
+        recurrent_session_id=recurrent_session_id,
+        map_version=map_version,
+        cognitive_tile_id=cognitive_tile_id,
+        tile_revision=tile_revision,
+        cognitive_graph_revision=cognitive_graph_revision,
         model_id=model_id,
+        source_physical_graph_id=source_physical_graph_id,
+        source_physical_graph_revision=source_physical_graph_revision,
         healthy=True,
         priors=[SimpleNamespace(
             edge_id=7,
@@ -165,6 +184,7 @@ def _prior_wait_coordinator(*, mode='primary', timeout_s=0.25):
     coordinator.latest_priors_request_id = None
     coordinator.latest_priors_graph_id = None
     coordinator.latest_priors_graph_revision = None
+    coordinator.latest_priors_generation = None
     coordinator.node = SimpleNamespace(get_logger=lambda: SimpleNamespace(
         info=lambda _message: None, warning=lambda _message: None,
     ))
@@ -257,7 +277,10 @@ def test_prior_from_old_refresh_generation_is_rejected() -> None:
     coordinator._prepare_route = lambda priors: replans.append(priors)
 
     coordinator._on_priors(_edge_prior_message(
-        request_id=8, stamp_ns=5_400_000_000))
+        request_id=8,
+        stamp_ns=5_400_000_000,
+        recurrent_session_id='session-old',
+    ))
 
     assert coordinator.pending_deadline_ns == 6_500_000_000
     assert coordinator.latest_priors == {}
@@ -329,6 +352,142 @@ def test_unhealthy_and_zero_refresh_do_not_replace_accepted_prior() -> None:
     assert coordinator.prepared == [accepted]
 
 
+@pytest.mark.parametrize(
+    ('field', 'value'),
+    (
+        ('reset_epoch', 4),
+        ('recurrent_session_id', 'session-b'),
+        ('map_version', 'map-v2'),
+        ('cognitive_tile_id', 'tile-b'),
+        ('tile_revision', 3),
+        ('cognitive_graph_revision', 5),
+    ),
+)
+def test_unhealthy_generation_rollover_retires_accepted_prior(
+    field, value,
+) -> None:
+    coordinator = _prior_wait_coordinator(mode='gvg')
+    coordinator._now_ns = 1_100_000_000
+    coordinator._on_priors(_edge_prior_message(
+        request_id=9, stamp_ns=1_100_000_000))
+
+    coordinator._now_ns = 2_000_000_000
+    coordinator._arm_prior_request(coordinator._now_ns)
+    message = _edge_prior_message(
+        request_id=9, stamp_ns=2_100_000_000, **{field: value})
+    message.healthy = False
+    coordinator._now_ns = 2_100_000_000
+    coordinator._on_priors(message)
+
+    assert coordinator.latest_priors == {}
+    assert coordinator.latest_priors_generation is None
+    assert coordinator.prepared == [{7: (1.0, 0.8)}, {}]
+
+
+def test_healthy_generation_rollover_replaces_accepted_prior() -> None:
+    coordinator = _prior_wait_coordinator(mode='gvg')
+    coordinator._now_ns = 1_100_000_000
+    coordinator._on_priors(_edge_prior_message(
+        request_id=9, stamp_ns=1_100_000_000))
+
+    coordinator._now_ns = 2_000_000_000
+    coordinator._arm_prior_request(coordinator._now_ns)
+    message = _edge_prior_message(
+        request_id=9,
+        stamp_ns=2_100_000_000,
+        recurrent_session_id='session-b',
+    )
+    message.priors[0].cost_delta_m = 2.0
+    coordinator._now_ns = 2_100_000_000
+    coordinator._on_priors(message)
+
+    assert coordinator.latest_priors == {7: (2.0, 0.8)}
+    assert coordinator.latest_priors_generation.recurrent_session_id == 'session-b'
+    assert coordinator.prepared == [{7: (1.0, 0.8)}, {7: (2.0, 0.8)}]
+
+
+def test_zero_generation_rollover_retires_accepted_prior() -> None:
+    coordinator = _prior_wait_coordinator(mode='gvg')
+    coordinator._now_ns = 1_100_000_000
+    coordinator._on_priors(_edge_prior_message(
+        request_id=9, stamp_ns=1_100_000_000))
+
+    coordinator._now_ns = 2_000_000_000
+    coordinator._arm_prior_request(coordinator._now_ns)
+    message = _edge_prior_message(
+        request_id=9,
+        stamp_ns=2_100_000_000,
+        recurrent_session_id='session-b',
+    )
+    message.priors = []
+    coordinator._now_ns = 2_100_000_000
+    coordinator._on_priors(message)
+
+    assert coordinator.latest_priors == {}
+    assert coordinator.latest_priors_generation is None
+    assert coordinator.prepared == [{7: (1.0, 0.8)}, {}]
+
+
+def test_source_physical_graph_mismatch_is_rejected() -> None:
+    coordinator = _prior_wait_coordinator(mode='gvg')
+    coordinator._now_ns = 1_100_000_000
+    message = _edge_prior_message(
+        request_id=9,
+        stamp_ns=1_100_000_000,
+        source_physical_graph_id='other:gvg_v1',
+    )
+    coordinator._on_priors(message)
+
+    assert coordinator.pending_deadline_ns is not None
+    assert coordinator.latest_priors == {}
+    assert coordinator.prepared == []
+
+
+def test_async_old_generation_cannot_replace_new_generation(monkeypatch) -> None:
+    coordinator = _prior_wait_coordinator(mode='gvg')
+    coordinator._now_ns = 1_100_000_000
+    accepted = _edge_prior_message(
+        request_id=9, stamp_ns=1_100_000_000)
+    accepted.priors[0].cost_delta_m = 0.5
+    coordinator._on_priors(accepted)
+
+    coordinator._now_ns = 2_000_000_000
+    coordinator._arm_prior_request(coordinator._now_ns)
+    entered = threading.Barrier(2)
+    release = threading.Event()
+    original = ros_node_module.edge_prior_is_usable
+
+    def block_old_generation(**kwargs):
+        if kwargs['priors'][0][1] == 1.0:
+            entered.wait(timeout=2.0)
+            assert release.wait(timeout=2.0)
+        return original(**kwargs)
+
+    monkeypatch.setattr(
+        ros_node_module, 'edge_prior_is_usable', block_old_generation)
+    old_message = _edge_prior_message(
+        request_id=9, stamp_ns=2_100_000_000)
+    callback = threading.Thread(
+        target=coordinator._on_priors, args=(old_message,))
+    callback.start()
+    entered.wait(timeout=2.0)
+
+    new_message = _edge_prior_message(
+        request_id=9,
+        stamp_ns=2_200_000_000,
+        recurrent_session_id='session-b',
+    )
+    new_message.priors[0].cost_delta_m = 2.0
+    coordinator._now_ns = 2_200_000_000
+    coordinator._on_priors(new_message)
+    release.set()
+    callback.join(timeout=2.0)
+
+    assert not callback.is_alive()
+    assert coordinator.latest_priors == {7: (2.0, 0.8)}
+    assert coordinator.latest_priors_generation.recurrent_session_id == 'session-b'
+
+
 def test_validated_model_rollover_retires_but_does_not_accept_new_prior() -> None:
     coordinator = _prior_wait_coordinator(mode='gvg')
     coordinator._now_ns = 1_100_000_000
@@ -349,7 +508,7 @@ def test_validated_model_rollover_retires_but_does_not_accept_new_prior() -> Non
     assert coordinator.prepared == [{7: (1.0, 0.8)}, {}]
 
 
-def test_graph_and_session_rollover_retire_accepted_prior() -> None:
+def test_physical_graph_rollover_retires_accepted_prior() -> None:
     coordinator = _prior_wait_coordinator(mode='gvg')
     coordinator.cognitive_graph_identity = CognitiveGraphIdentity(
         3, 'session-a', 'map', 'tile', 2,
@@ -365,26 +524,28 @@ def test_graph_and_session_rollover_retire_accepted_prior() -> None:
     ) == {}
     assert coordinator.latest_priors == {}
 
-    session = _prior_wait_coordinator(mode='gvg')
-    session.cognitive_graph_identity = CognitiveGraphIdentity(
+
+def test_gvg_prior_does_not_depend_on_local_cognitive_identity() -> None:
+    coordinator = _prior_wait_coordinator(mode='gvg')
+    coordinator.cognitive_graph_identity = CognitiveGraphIdentity(
         3, 'session-a', 'map', 'tile', 2,
         'test:gvg_v1', 3, 'srdr-v310',
     )
-    session._now_ns = 1_100_000_000
-    session._on_priors(_edge_prior_message(
+    coordinator._now_ns = 1_100_000_000
+    coordinator._on_priors(_edge_prior_message(
         request_id=9, stamp_ns=1_100_000_000))
-    session.cognitive_graph_identity = CognitiveGraphIdentity(
+    coordinator.cognitive_graph_identity = CognitiveGraphIdentity(
         3, 'session-b', 'map', 'tile', 2,
         'test:gvg_v1', 3, 'srdr-v310',
     )
-    session.module2_enabled = False
-    session.last_context_publish_ns = session._now_ns
-    session.runtime = SimpleNamespace(tick=lambda _now: False)
-    session.defaults['module2_edge_prior']['active_refresh_period_s'] = 5.0
-    session._runtime_tick()
+    coordinator.module2_enabled = False
+    coordinator.last_context_publish_ns = coordinator._now_ns
+    coordinator.runtime = SimpleNamespace(tick=lambda _now: False)
+    coordinator.defaults['module2_edge_prior']['active_refresh_period_s'] = 5.0
+    coordinator._runtime_tick()
 
-    assert session.latest_priors == {}
-    assert session.prepared == [{7: (1.0, 0.8)}, {}]
+    assert coordinator.latest_priors == {7: (1.0, 0.8)}
+    assert coordinator.prepared == [{7: (1.0, 0.8)}]
 
 
 def test_active_prior_refresh_arms_a_bounded_response_deadline() -> None:
