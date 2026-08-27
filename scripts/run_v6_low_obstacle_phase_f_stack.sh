@@ -7,7 +7,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 usage() {
   echo "usage: $0 M0|M1|M2|M3 --domain ID --run-dir PATH --socket PATH [--module2-root PATH]" >&2
   echo "       [--localization-supervisor-mode shadow|active --candidate-manifest PATH]" >&2
-  echo "       [--enable-route-prior] [--dry-run]" >&2
+  echo "       [--enable-route-prior --route-prior-snapshot PATH] [--dry-run]" >&2
   echo "       BIO_NAV_MODULE2_V310_ROOT or --module2-root must name the canonical Module2 root" >&2
   echo "       $0 stop-producer --run-dir PATH --socket PATH" >&2
 }
@@ -320,6 +320,7 @@ module2_root="${BIO_NAV_MODULE2_V310_ROOT:-}"
 localization_supervisor_mode=""
 candidate_manifest=""
 route_prior_enabled="false"
+route_prior_snapshot=""
 dry_run=false
 integration_root="${BIO_NAV_INTEGRATION_ROOT:-/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration}"
 while (($#)); do
@@ -337,6 +338,10 @@ while (($#)); do
       shift 2
       ;;
     --enable-route-prior) route_prior_enabled="true"; shift ;;
+    --route-prior-snapshot)
+      route_prior_snapshot="${2:?--route-prior-snapshot requires a path}"
+      shift 2
+      ;;
     --dry-run) dry_run=true; shift ;;
     *) usage; echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -366,12 +371,22 @@ if [[ "${route_prior_enabled}" == true ]]; then
     echo "route prior pilot is incompatible with W0/W1 localization recovery" >&2
     exit 2
   }
-fi
-module3_route_prior_deadline_args=()
-bridge_route_prior_deadline_args=()
-if [[ "${route_prior_enabled}" == true ]]; then
-  module3_route_prior_deadline_args=(module2_response_timeout_s:=5.0)
-  bridge_route_prior_deadline_args=(goal_prior_retry_window_s:=4.5)
+  [[ -n "${route_prior_snapshot}" ]] || {
+    echo "--route-prior-snapshot is required with --enable-route-prior" >&2
+    exit 2
+  }
+  [[ -d "${route_prior_snapshot}" ]] || {
+    echo "route prior snapshot directory does not exist: ${route_prior_snapshot}" >&2
+    exit 2
+  }
+  [[ -r "${route_prior_snapshot}/manifest.json" ]] || {
+    echo "route prior snapshot manifest is not readable: ${route_prior_snapshot}/manifest.json" >&2
+    exit 2
+  }
+  route_prior_snapshot="$(cd "${route_prior_snapshot}" && pwd -P)"
+elif [[ -n "${route_prior_snapshot}" ]]; then
+  echo "--route-prior-snapshot requires --enable-route-prior" >&2
+  exit 2
 fi
 [[ "${run_dir}" == /* && "${socket_path}" == /* ]] || {
   echo "run-dir and socket must be absolute" >&2
@@ -391,19 +406,24 @@ if [[ "${dry_run}" == true ]]; then
   printf 'arm=%s\n' "${arm}"
   printf 'graph_mode=gvg\n'
   printf 'route_prior_enabled=%s\n' "${route_prior_enabled}"
+  if [[ "${route_prior_enabled}" == true ]]; then
+    printf 'route_prior_snapshot_path=%s\n' "${route_prior_snapshot}"
+    printf 'route_prior_semantics=frozen_snapshot_main_compatible\n'
+  fi
   printf 'cognitive_profile=%s\n' "${arm}"
   printf 'active_effect_scope=%s\n' "${dry_scope}"
   printf 'cpg_navigation_writes=false\n'
   printf 'module3: %q ros %q route_prior_enabled:=%s' \
     "${script_dir}/run_v6_kujiale_low_obstacles.sh" "${arm}" "${route_prior_enabled}"
-  printf ' %s' "${module3_route_prior_deadline_args[@]}"
   printf '\n'
   if [[ "${arm}" != "M0" ]]; then
     printf 'bridge: ros2 launch bio_nav_ros_bridge v6_cognitive_navigation.launch.py startup_profile:=%q' \
       "${dry_profile}"
     printf ' cognitive_graph_mode:=gvg route_prior_enabled:=%s' \
       "${route_prior_enabled}"
-    printf ' %s' "${bridge_route_prior_deadline_args[@]}"
+    if [[ "${route_prior_enabled}" == true ]]; then
+      printf ' route_prior_snapshot_path:=%q' "${route_prior_snapshot}"
+    fi
     printf ' socket_path:=%q use_sim_time:=true\n' "${socket_path}"
   fi
   exit 0
@@ -618,8 +638,10 @@ bridge_localization_args=()
 bridge_route_args=(
   cognitive_graph_mode:=gvg
   "route_prior_enabled:=${route_prior_enabled}"
-  "${bridge_route_prior_deadline_args[@]}"
 )
+if [[ "${route_prior_enabled}" == true ]]; then
+  bridge_route_args+=("route_prior_snapshot_path:=${route_prior_snapshot}")
+fi
 if [[ -n "${localization_supervisor_mode}" ]]; then
   module3_localization_args=(
     initial_pose_source:=rviz
@@ -635,7 +657,7 @@ fi
 exit_if_terminating
 setsid --wait -- "${script_dir}/run_v6_kujiale_low_obstacles.sh" ros "${arm}" \
   "route_prior_enabled:=${route_prior_enabled}" \
-  "${module3_route_prior_deadline_args[@]}" "${module3_localization_args[@]}" \
+  "${module3_localization_args[@]}" \
   >"${run_dir}/module3_ros.log" 2>&1 &
 module3_pid="$!"
 register_child module3_ros "${module3_pid}"

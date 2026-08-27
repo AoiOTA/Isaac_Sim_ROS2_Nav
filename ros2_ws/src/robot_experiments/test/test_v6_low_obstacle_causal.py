@@ -2971,6 +2971,7 @@ def _start_fake_phase_f_stack(
     producer_ignores_term: bool = False,
     localization_supervisor_mode: str | None = None,
     enable_route_prior: bool = False,
+    route_prior_snapshot: Path | None = None,
 ) -> SimpleNamespace:
     root = PACKAGE.parents[2]
     project = tmp_path / "project"
@@ -3105,6 +3106,10 @@ wait "$!"
     signal_log = tmp_path / "signals.log"
     candidate_manifest = tmp_path / "run4-candidate.json"
     candidate_manifest.touch()
+    if route_prior_snapshot is None:
+        route_prior_snapshot = tmp_path / "route-prior-snapshot"
+    route_prior_snapshot.mkdir(parents=True, exist_ok=True)
+    (route_prior_snapshot / "manifest.json").write_text("{}\n", encoding="utf-8")
     env = os.environ.copy()
     env.update({
         "PATH": f"{fake_bin}:{env['PATH']}",
@@ -3138,7 +3143,10 @@ wait "$!"
             ]
         )
     if enable_route_prior:
-        command.append("--enable-route-prior")
+        command.extend([
+            "--enable-route-prior", "--route-prior-snapshot",
+            str(route_prior_snapshot),
+        ])
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -3174,6 +3182,7 @@ wait "$!"
         module2_argv=module2_argv,
         bridge_argv=bridge_argv,
         candidate_manifest=candidate_manifest,
+        route_prior_snapshot=route_prior_snapshot,
         signal_log=signal_log,
         env=env,
     )
@@ -3223,7 +3232,6 @@ def test_final_route_prior_pilot_forwards_gvg_prior_to_m3_and_bridge(tmp_path):
             "ros",
             "M3",
             "route_prior_enabled:=true",
-            "module2_response_timeout_s:=5.0",
         ]
         module2 = fake.module2_argv.read_text(encoding="utf-8").splitlines()
         assert module2[:4] == [
@@ -3236,7 +3244,7 @@ def test_final_route_prior_pilot_forwards_gvg_prior_to_m3_and_bridge(tmp_path):
         assert "startup_profile:=module2_causal_obstacle_active" in bridge
         assert "cognitive_graph_mode:=gvg" in bridge
         assert "route_prior_enabled:=true" in bridge
-        assert "goal_prior_retry_window_s:=4.5" in bridge
+        assert f"route_prior_snapshot_path:={fake.route_prior_snapshot}" in bridge
     finally:
         _stop_fake_phase_f_stack(fake)
 
@@ -3284,17 +3292,35 @@ def test_final_route_prior_pilot_rejects_recovery_and_has_explicit_dry_run(
     assert recovery.returncode == 2
     assert "incompatible with W0/W1 localization recovery" in recovery.stderr
 
-    dry_run = subprocess.run(
-        [*common, "--dry-run"], capture_output=True, text=True, check=True
-    )
+    snapshot = tmp_path / "route-prior-snapshot"
+    snapshot.mkdir()
+    (snapshot / "manifest.json").write_text("{}\n", encoding="utf-8")
+    dry_run = subprocess.run([
+        *common, "--route-prior-snapshot", str(snapshot), "--dry-run"
+    ], capture_output=True, text=True, check=True)
     assert "graph_mode=gvg" in dry_run.stdout
     assert "route_prior_enabled=true" in dry_run.stdout
     assert "cognitive_profile=M3" in dry_run.stdout
     assert "active_effect_scope=obstacle_only" in dry_run.stdout
     assert "cpg_navigation_writes=false" in dry_run.stdout
     assert "cognitive_graph_mode:=gvg route_prior_enabled:=true" in dry_run.stdout
-    assert "module2_response_timeout_s:=5.0" in dry_run.stdout
-    assert "goal_prior_retry_window_s:=4.5" in dry_run.stdout
+    assert f"route_prior_snapshot_path={snapshot}" in dry_run.stdout
+    assert "route_prior_semantics=frozen_snapshot_main_compatible" in dry_run.stdout
+    assert f"route_prior_snapshot_path:={snapshot}" in dry_run.stdout
+    assert "module2_response_timeout_s" not in dry_run.stdout
+    assert "goal_prior_retry_window_s" not in dry_run.stdout
+
+
+def test_final_route_prior_pilot_requires_snapshot_path(tmp_path):
+    root = PACKAGE.parents[2]
+    result = subprocess.run([
+        str(root / "scripts/run_v6_low_obstacle_phase_f_stack.sh"), "M3",
+        "--run-dir", str(tmp_path / "run"),
+        "--socket", str(tmp_path / "module2.sock"),
+        "--enable-route-prior", "--dry-run",
+    ], capture_output=True, text=True)
+    assert result.returncode == 2
+    assert "--route-prior-snapshot is required" in result.stderr
 
 
 @pytest.mark.parametrize(
