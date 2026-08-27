@@ -97,8 +97,7 @@ prepare_socket_directory() {
 }
 
 wait_for_ros_reset_services() {
-  local timeout_sec deadline service service_list
-  local -a required_services missing
+  local timeout_sec service
   timeout_sec="${BIO_NAV_PHASE_B_ROS_READY_TIMEOUT_SEC:-120}"
   [[ "${timeout_sec}" =~ ^[1-9][0-9]*$ ]] \
     || die "BIO_NAV_PHASE_B_ROS_READY_TIMEOUT_SEC must be a positive integer"
@@ -106,28 +105,12 @@ wait_for_ros_reset_services() {
   # /set_pose.  Pre-Isaac readiness therefore stops at the wheel reset
   # service; Isaac's bootstrap-clock startup reset performs the bounded,
   # required discovery of both wheel and EKF reset services.
-  required_services=(/wheel_odometry/reset)
-  deadline=$((SECONDS + timeout_sec))
-  while true; do
-    service_list="$(
-      timeout 2 ros2 service list -t --no-daemon --spin-time 1 2>/dev/null \
-        || true
-    )"
-    missing=()
-    for service in "${required_services[@]}"; do
-      awk -v service="${service}" \
-        '$1 == service && $2 == "[std_srvs/srv/Empty]" && NF == 2 { found = 1 } END { exit !found }' \
-        <<<"${service_list}" \
-        || missing+=("${service}")
-    done
-    if ((${#missing[@]} == 0)); then
-      log_info "Phase B pre-Isaac ROS reset service is ready; starting Isaac"
-      return 0
-    fi
-    ((SECONDS < deadline)) || die \
-      "Phase B ROS reset services not ready after ${timeout_sec}s: ${missing[*]}; start the ros component first"
-    sleep 1
-  done
+  service="/wheel_odometry/reset"
+  /usr/bin/python3 "${SCRIPT_DIR}/wait_for_empty_service.py" \
+    --service "${service}" \
+    --timeout "${timeout_sec}" \
+    || die "Phase B ROS reset service not ready after ${timeout_sec}s: ${service}; start the ros component first"
+  log_info "Phase B pre-Isaac ROS reset service is ready; starting Isaac"
 }
 
 require_file "${MANIFEST}"
