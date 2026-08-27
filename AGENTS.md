@@ -1,346 +1,294 @@
 # agent.md
 
-## 总目标
+## 1. 目标与默认循环
 
-这是**科研代码**。目标是尽快完成 plan，跑通**可运行、可测量、可复现的端到端闭环**。
+这是**科研性质代码**。第一目标是尽快完成 plan，跑通真实、可测量、可复现的端到端闭环，而不是追求生产级完美。
 
-优先级：
+```text
+最小实现
+  ↓
+focused test
+  ↓
+按需 live runs
+  ↓
+看数据 / 图片 / 日志
+  ↓
+真实 blocker？
+ ├─ 是 → 最小定位 → 最小修复
+ └─ 否 → 下一任务
+```
 
-1. 跑通闭环；
-2. 得到可信实验结果；
-3. 快速定位问题并迭代；
-4. 保持代码足够清晰，方便继续实验。
+不要先建设复杂的 contract、gate、validator、runner、provenance 和大套测试，最后才进入 live。
 
-不追求生产级完美、全面兼容、形式化验证或过度工程化。
+核心原则：
 
-## Multi-Agent V2
+- **闭环优先于完美，真实实验优先于形式流程。**
+- 改动保持小、可逆、易回滚，保护已知可运行 baseline。
+- 只修影响闭环、实验可信度或下一阶段的 `error / fatal / blocker`；`warning` 按影响处理。
+- 不做无真实需求的防御性编程、多层 retry/fallback、兼容层、恢复框架和无关重构。
+- 默认不用 SHA256、checksum、receipt、sealed evidence、大型 Evidence Contract 或形式化 provenance 系统。
+- 次数、阈值、run 数、agent 数和状态示例都只是参考，应按风险、不确定性、证据和资源动态调整。
+- **复杂度必须由已经发生的真实问题证明。**
 
-### master
+---
 
-`master` 只负责：
+## 2. Multi-Agent V2
 
-- 拆解任务与识别依赖；
-- 调度并行子任务；
-- 汇总事实、结果和 handoff；
-- 做阶段决策；
-- 推进 plan。
+### Master
 
-不要让 master 长时间承担探索、编码或审查，避免主上下文膨胀。
+`master` 只负责拆解、调度、汇总、决策和推进，不长期承担探索、编码、长实验或详细 review，避免主对话上下文爆炸。
 
-### 角色
+### 动态角色
 
-角色按任务需要动态分配，**没有固定组合，也没有必选角色**。
+角色按任务需要灵活组合，没有固定编组或必选角色：
 
-#### explorer
+- `explorer`：只读探索代码、接口、配置、根因和最小修改入口。
+- `coder`：唯一允许修改项目代码、运行配置和受版本控制实现的角色。
+- `reviewer`：低频按需，通过代码检查、focused test、live run、日志和视觉证据发现问题；不改实现，可生成实验产物并更新本次验证记录。
 
-用于：
+多个 coder 可并行，但必须使用独立 worktree/branch，或明确互不重叠的写入范围；需要汇总时由 fresh integration coder 集成，master 不直接改代码。
 
-- 阅读代码、接口、配置和 handoff；
-- 定位问题；
-- 比较方案；
-- 找到最小修改入口。
+调度原则：
 
-只读，不修改代码。
+- 大任务拆成边界清晰的原子任务，无依赖任务优先并行。
+- 不重复 spawn 完全相同的任务，除非明确做独立方案比较或交叉验证。
+- 新任务、新假设和重要返修优先使用 fresh agent。
+- agent 完成、失败或废弃后及时留下 handoff 并释放槽位。
+- `wait timeout`、运行时间长或暂时无输出不等于失败；仍在运行时可先推进其他任务。
+- 只有明确 crash、fatal、进程退出、依赖失效或底层长期无活动时才停止。
 
-#### coder
+### 紧凑任务包
 
-用于：
+子代理只接收当前任务必要信息：
 
-- 实现功能；
-- 修复阻塞问题；
-- 修改配置和脚本；
-- 做最小必要重构。
+```text
+目标 / 非目标 / 验收条件
+repo / branch / worktree / 读写范围
+项目规则 / 配置 / 必要接口
+已确认事实 / 前序结论 / 证据路径
+seed / scene / 数据 / 期望输出
+```
 
-**只有 coder 可以修改代码。**
+配置和项目规则完整继承；历史对话最少继承；只传结论和证据，不传完整推理过程。除非任务明确要求，不进入、不搜索、不 diff、不修改范围外的 branch/worktree。
 
-多个 coder 可以并行，但必须使用不同 worktree / branch，或明确互不重叠的写入范围。
+---
 
-#### reviewer
+## 3. 构建、版本与 Installed-Space
 
-低频、可选。
+### 开发阶段
 
-reviewer 不只是看代码，也负责按需通过实际运行发现问题，包括：
+使用：
 
-- 代码、接口和架构检查；
-- smoke / integration / end-to-end 测试；
-- ROS / Isaac Sim / Nav2 运行验证；
-- 指标、日志、bag 和运行状态检查；
-- 地图、轨迹、路径、costmap、TF、激光等视觉校验；
-- baseline / 修改后对比；
-- 判断 `PASS / FAIL / AMBIGUOUS`；
-- 给出问题严重度、证据和最短复现方法。
+```text
+clean worktree
++ 单一明确 underlay
++ 一个 canonical build/install
++ focused test
++ 真实 live 数据
+```
 
-reviewer **只读，不修改代码**。
+避免：
 
-不要把 reviewer 作为每个小任务的默认步骤。仅在以下情况使用：
+- 每轮新建 overlay、临时 underlay 或 `/tmp` build；
+- 连续 source 多个 workspace 的 `setup.bash`；
+- 手工修改 `PYTHONPATH`、`AMENT_PREFIX_PATH` 掩盖安装问题；
+- 让 shell 历史决定包解析顺序；
+- 把临时 build/install 作为后续构建依赖。
 
-- 关键阶段需要确认真实闭环；
-- 高风险跨模块修改；
-- 关键接口、TF、控制或数据链变化；
-- 结果难以判断；
-- 出现异常、回归或指标矛盾；
-- 需要独立检查实验可信度。
+怀疑污染时，回到 clean shell，source 唯一环境入口，确认关键包实际来源；必要时在 canonical workspace clean rebuild，不再叠一层 overlay。
 
-不要机械执行：
+Git HEAD 不能证明实际运行版本。涉及安装、接口或导入问题时，按需检查 package prefix、executable、Python `__file__`、launch/config/message 的 installed-space 来源。
 
-`review → 返修 → review → 再返修`
+局部实现可增量编译；公共消息、接口、ABI、生成代码或依赖变化时，重编受影响依赖闭包，禁止混合新旧 install 继续运行。
 
-## 问题分级
+### 多仓与 Final
 
-reviewer 发现的问题不要求全部修复。
+- 同名 branch、目录名和 worktree 名不代表兼容；关键实验记录各仓具体 commit 组合。
+- 关键依赖使用明确 commit/tag/release，不依赖浮动分支。
+- 公共接口变化时同步更新生产者、消费者和必要测试，并进行联合 build + focused integration。
+- Final 不直接使用频繁切分支和局部编译的开发 `install/`；使用冻结 commit 组合、稳定路径下的 clean isolated build/install、单一 source 链和 installed-space 运行。
+- 强隔离只用于 Final 或真实污染问题，不扩散到日常开发。
 
-### 必须修复
+---
 
-只修复真正阻塞项目推进的问题，例如：
+## 4. 配置、资产与 ROS 环境
 
-- `error`、crash、fatal；
-- 核心功能不能运行；
-- 关键接口断裂；
-- TF / 数据链 / 控制链失效；
-- 实验结果明显错误；
-- 问题会污染后续实验结论；
-- 问题阻塞下一阶段。
+- 不在脚本中写死用户目录；优先 package share、repo-relative path、显式 config root 或参数。
+- 小型关键配置纳入 Git；地图、模型和大型资产记录明确路径、场景/版本和获取方式。
+- 代码、地图、模型、配置和场景作为明确组合使用，不手工临时拼接。
+- 关键配置缺失时明确报错，不静默回退到旧模型、旧地图、旧模式或默认通信域；可选默认值应记录实际值。
+- 开发、Pilot、Final 使用少量明确配置，不扩展成 profile/wrapper/manifest 矩阵。
+- socket、PID、lock 放本机 runtime 目录，不放 NAS；bag、图片、模型和大型实验数据放 NAS。
 
-### 视情况修复
+每次 run 的以下参数只能有一个权威来源，并由子进程继承：
 
-以下通常记录后继续：
+```text
+ROS_DOMAIN_ID
+RMW implementation
+use_sim_time
+关键路径和 config
+```
 
-- warning；
-- 非关键性能波动；
-- 代码风格问题；
-- 低概率边界问题；
-- 不影响当前实验的技术债；
-- 与当前 plan 无关的改进建议。
+父进程、子进程、profile 和 wrapper 不得分别覆盖，也不要在缺失时偷偷使用硬编码默认值。
 
-原则：
+时间语义：
 
-> **error 要修；warning 看是否影响闭环、实验可信度或下一阶段。**
+- 仿真事件、运动、数据对齐和仿真 TTL：ROS/simulation time；
+- 进程等待和 watchdog：monotonic time；
+- 人类记录：wall time。
 
-如果不阻塞当前目标，记录到 handoff / experiment ledger 后继续推进。
+关键 topic 按需检查 QoS、实际消息数、频率、时间戳单调性和数据新鲜度，不能只检查 topic 是否存在。处理速度不足时使用 bounded queue、latest-wins 或丢弃过期帧，不无界 FIFO 积压。
 
-## 动态调度
+---
 
-每个子任务只使用**最小充分角色集合**。
+## 5. 启动、Runner 与生命周期
 
-可以是：
+一个 run 尽量只有：
 
-- 仅 `explorer`
-- 仅 `coder`
-- 仅 `reviewer`
-- 任意两两组合
-- 三者组合
-- 多个同类 agent 并行
-- 多组 agent 并行
+```text
+一个 owner
+一个启动入口
+一个 reset 入口
+一个 cleanup 路径
+```
 
-不为流程完整而强行凑齐角色。
+### Readiness 与 Runner
 
-典型路径：
+- 不用固定 `sleep` 证明就绪；只检查少量核心、可观察条件。
+- 服务返回成功不一定表示下游状态和数据流已稳定。
+- 启动依赖保持单向，避免循环等待。
+- runner/harness 保持薄层，只负责准备环境、启动入口、传 config、收集必要数据和停止 run。
+- 不把算法判断、评估业务、数据转换、身份管理和复杂状态机写进 runner。
+- 优先一个 canonical runner/launcher + 少量 config + 显式参数，避免 `mixed/shadow/active/collection`、phase-specific wrapper 和 `runner_v2/final/safe` 矩阵。
 
-- 问题明确：`coder`
-- 只需调查：`explorer`
-- 简单修改：`coder`
-- 未知复杂问题：`explorer → coder`
-- 关键结果需要确认：`coder → reviewer`
-- 结果矛盾或风险较高：按需加入 reviewer
+实验失败时先用最短直接入口区分：
 
-大任务先拆成多个原子子任务；无依赖任务优先并行。
+```text
+产品逻辑直接运行成功？
+ ├─ 是 → runner/harness 问题，优先简化 runner
+ └─ 否 → 再调查产品逻辑
+```
 
-每个原子子任务、重要返修或新假设尽量使用 fresh agent，避免长期复用同一个子代理导致上下文爆炸。
+### 进程与 Reset
 
-跨任务集成使用 fresh integration coder；master 不直接改代码。
+- 优先 ROS launch 或明确顶层 owner 管理进程树，不用大型 Bash 手工维护 PID/PGID/socket/lock 矩阵。
+- cleanup 只清理由本 run 创建的资源，不使用全局 `pkill`。
+- 停止 owner 后做有界重查，处理晚启动子进程。
+- 正常退出允许必要数据落盘；故障注入按实验定义快速断流，不混用停止语义。
+- 多个组件不能同时拥有 reset 权限；reset owner 协调真正有状态的核心组件。
+- Reset 只做：停止 run → 恢复必要状态 → 确认核心 node/topic/pose/state → 下一 run。
+- 只有真实出现跨 episode 污染、stale event 或并发冲突时，才增加最小 generation/边界标识。
+- 不把停止意图、停止产出数据、socket 断开、进程退出和落盘完成视为同一时刻。
 
-## Gate 原则
+---
 
-**默认不要设置大量 gate。**
+## 6. 状态机、Gate 与接口语义
 
-Gate 只用于真正的硬阻塞条件，例如：
+- 状态只表达真实不同的运行行为；行为相同就合并。
+- 不为每个异常新增 state、generation、flag 和 gate；新增补丁时删除失效旧路径。
+- Feature Flag 只用于 baseline/experimental、必要 A/B 或临时隔离；避免组合矩阵，稳定后删除。
+- Gate 是例外：只有核心进程、必需接口、TF/control/data chain、场景/初始状态或实验可信度失效时才 fail-closed。
+- 非核心 diagnostic、可选 telemetry、辅助 topic、warning 和局部指标异常默认记录后继续。
+- 区分语义身份、接口兼容版本、配置版本和内容 revision；一个字段只表达一种语义。
+- 异步 ROS 消费者不要求完全相同 sequence/revision；普通传播延迟不是 blocker。
+- 不兼容接口明确报错，不允许静默降级产生不可解释结果。
+- 新增 runner、validator、wrapper、state、flag、contract、recovery 或 fallback 前，优先复用、删除、合并或替换现有逻辑。
 
-- 当前结果明显错误，继续开发会污染后续实验；
-- 核心接口未接通，下一阶段无法运行；
-- 基础定位、控制、TF 或数据链已经失效；
-- 当前实现会让后续实验结论失去可信度。
+> **随着项目推进，系统应逐渐收敛，而不是返修越多越复杂。**
 
-除此之外：
+---
 
-- 不为每个子任务设置 PASS gate；
-- 不要求每一步都 review 后才能继续；
-- 不因 warning、小问题或局部指标波动阻塞整个 plan；
-- 不建立层层 `Smoke → Calibration → Review → Heldout` 流程，除非实验本身确实需要；
-- 可并行推进不相互依赖的工作；
-- 达到“足够支持下一步”的证据即可推进。
+## 7. 数据、测试与评估
 
-**Gate 是例外，不是默认流程。**
+### 数据
 
-## 长任务与等待规则
+在数据生成边界做少量高价值检查：
 
-**子代理运行时间长不等于失败。**
+- 必需 topic 到达后才输出样本；
+- 时间戳、同步误差、shape、dtype、标签范围和有效状态正确；
+- 图像、位姿、标签和运动窗口属于同一时刻/episode；
+- reset、episode 和时间不连续处切断序列。
 
-master 的一次等待或轮询超时，只代表当前等待窗口结束，不能据此判断子代理失败。
+连续静止段按需下采样；train/validation/test 按 episode、轨迹、场景或时间块划分，不按相邻帧随机切分；accepted/rejected/train/validation/test 显式分离。检查保持直接、轻量，不建设数据验证平台。
 
-必须遵守：
+### 测试与评估
 
-- 不因 `wait timeout`、长时间无输出或任务耗时较长自动取消子代理；
-- 不因等待超时立即创建重复 agent；
-- 不丢弃仍在运行 agent 的任务所有权；
-- 等待结束后优先重新查询状态；
-- agent 仍在运行时，master 可先推进其他无依赖任务，再回来收集结果；
-- 长时间仿真、编译、训练、bag 回放和端到端实验允许继续运行。
+- mock 只用于局部纯逻辑；跨进程、launch、Python import、消息接口、QoS 和安装路径按需验证真实 installed-space。
+- 公共接口或多仓依赖变化时，做一次联合 build + focused integration smoke。
+- 不要求每个小修改全量测试，也不把 focused test、单次 live、Pilot 和 Final 混为同一证明等级。
+- evaluator 不应比被测系统更复杂；判据在看结果前确定。
+- collision、timeout、unreachable 等业务失败可以是有效结果；只有关键数据缺失、损坏或条件不成立才判实验无效。
+- 一次判别性实验尽量只修改一个主要因素。
+- 产品代码、runner、evaluator 和数据转换工具保持依赖边界；实验工具不成为产品启动的强依赖。
+- 稳定主线只保留少量必要 clean build、focused tests 和跨仓 installed-space smoke，不让实验分支进入重型 CI。
 
-只有出现明确失败证据时才视为失败，例如：
+---
 
-- agent 明确返回失败；
-- 进程退出或崩溃；
-- 命令出现确定 fatal error；
-- 必要依赖失效；
-- 当前方案已被明确废弃；
-- 用户明确要求停止。
+## 8. 验证、视觉与记录
 
-不要仅因为“运行太久”中断子代理。
+`Smoke / Pilot / Final` 是可选验证强度，不是固定流水线。
 
-## 上下文继承
+- **Smoke：能不能跑。** 当前 clean worktree、canonical build、少量 focused checks、最短运行路径。
+- **Pilot：方案是否值得继续。** 按需记录 commit 组合、config、seed/scene、ROS_DOMAIN_ID、NAS 路径、若干 live runs、核心指标和必要截图。
+- **Final：正式结果。** 冻结 commit/config/seed/dataset，使用 clean isolated installed-space 和正式统计；复用 Pilot 已跑通的 runner 和数据路径，不重建证据基础设施。
 
-子代理不继承 master 的完整历史，只接收当前任务需要的紧凑任务包：
+地图、轨迹、路径、costmap、激光和 TF 难以仅靠数字判断时，按需导出 overlay、对比图、costmap、scan-map、TF/pose 或 failure frame，并保留必要 frame、scale、start/goal、run ID 和 legend。
 
-- 目标、非目标、依赖和验收标准；
-- 仓库、branch、worktree 和允许读写范围；
-- 必要配置、项目规则和接口；
-- 已确认事实；
-- 前序 agent 的结论和证据路径；
-- 数据、seed、实验条件；
-- 期望输出。
+Single Source of Truth：
 
-继承原则：
+```text
+实验指标 / run 结论   → docs/handoff/EXPERIMENT_LEDGER.md
+bag / 图片 / 原始数据 → NAS
+阶段结论 / 接手信息   → handoff
+代码 / 配置变化       → Git
+master                → 摘要 + 索引
+```
 
-- 配置：**100%**
-- 项目规则：**100%**
-- 历史对话：尽量少
-- 任务事实：按需
-- 探索结果：只传结论和证据
-- reviewer 结果：只传问题、严重度、指标、命令和证据
-- 角色之间完整推理过程：不继承
+重要任务、关键 live run、agent 切换或上下文压缩前留下简洁 handoff，只记录：
 
-master 只保留任务状态、关键决策、阶段结论和证据索引。
+```text
+branch / worktree / 各仓 commit
+实际环境入口 / build/install 来源
+config / seed / scene
+运行方法
+结果与证据路径
+blocker / warning
+下一步
+```
 
-## 执行原则
+不记录完整推理、终端流水账或 receipt/hash 证明链。
 
-1. master 将 plan 拆成原子任务并标记依赖。
-2. 无依赖任务尽量并行。
-3. 每个任务只分配最小充分角色。
-4. 优先做最小必要修改和最有判别力的实验。
-5. coder 做最小必要修改。
-6. 只有存在实际风险或不确定性时才调用 reviewer。
-7. reviewer 通过代码检查、运行测试和视觉证据发现真正影响结果的问题。
-8. 只要求 coder 修复阻塞推进的问题。
-9. warning 和非阻塞问题按影响决定是否处理。
-10. 达到当前阶段“足够可用”后立即进入下一阶段。
-11. 最终以真实端到端闭环和核心科研指标作为主要完成判据。
+---
 
-避免大量时间耗在静态分析、重复测试和反复审查上，却没有推进实际闭环。
+## 9. 完成与推进
 
-## 视觉校验
+当前任务满足以下条件即可继续：
 
-地图、轨迹、路径、costmap、激光、TF、障碍物关系等空间数据不能只依赖日志判断。
+- 核心功能能运行；
+- 关键接口已接通；
+- 最小充分验证已提供足够证据；
+- 没有真实 blocker；
+- warning 已评估；
+- baseline / rollback 路径明确；
+- fresh agent 能根据 handoff 接手。
 
-结果难以判断时，reviewer 按需导出：
+继续同一路径前问：
 
-- 地图 + 轨迹叠加；
-- baseline / 修改后对比；
-- 全局路径和局部轨迹；
-- costmap；
-- 激光与地图叠加；
-- TF / pose；
-- 失败帧；
-- 障碍物与机器人空间关系。
+> **下一次尝试能否提供新的判别信息？**
 
-充分利用视觉能力检查：
+若连续尝试没有新信息：
 
-- 漂移；
-- 错位；
-- 穿障；
-- 路径异常；
-- 振荡；
-- 定位跳变；
-- 地图质量；
-- costmap 不一致。
+```text
+不是 blocker → 记录 → 下一任务
+是 blocker   → 换假设 / 换方案 / fresh agent
+```
 
-只在视觉证据真正有助于判断时导出，不做形式化证据堆积。
+始终坚持：
 
-## 科研代码约束
+> **最小实现 → focused test → 按需 live runs → 看真实数据 → 只修真实 blocker → 下一任务。**
 
-- **闭环优先于完美。**
-- **实验结果优先于形式流程。**
-- **最小充分实现优先于完整工程化。**
-- 不做无实际需求的防御性编程。
-- 不提前设计复杂兼容层、fallback 链或通用框架。
-- 不做与当前实验无关的大规模重构。
-- 不追求生产级错误处理、覆盖率和边界完美。
-- 不因非关键 warning、代码风格或低概率问题阻塞实验。
-- 不使用 SHA256、receipt、sealed evidence、checksum ceremony 或形式化 provenance。
-- Git、worktree、小提交、handoff、实验日志和必要图片证据足够。
-- 回滚依靠 Git、worktree、配置开关和已有 baseline。
-- 只修复影响闭环、实验可信度或下一阶段的问题。
+> **开发阶段相信 clean worktree + 单一 canonical build + focused test + 真实 live 数据；只有 Final 才按需使用冻结的多仓版本、clean isolated installed-space 和正式统计。**
 
-## Handoff 与实验日志
+> **科研闭环是主任务，基础设施只为闭环服务。**
 
-每个决定性子任务或实验结束后，在 agent 退出、任务切换或上下文压缩前留下简洁 handoff。
-
-记录到现有 handoff 和：
-
-`docs/handoff/EXPERIMENT_LEDGER.md`
-
-最少记录：
-
-- 子任务目标与假设；
-- branch / worktree / commit；
-- 修改文件；
-- 实际运行命令；
-- 关键配置；
-- 数据 / seed / 场景；
-- 核心结果；
-- 必要证据路径；
-- `PASS / FAIL / AMBIGUOUS`；
-- 阻塞问题；
-- 可选 warning / 技术债；
-- 推荐下一步。
-
-只记录后续 fresh agent 接手和复现实验真正需要的信息。
-
-## 完成标准
-
-当前阶段满足以下条件即可推进：
-
-- 核心功能已经运行；
-- 关键接口已经接通；
-- 有足够证据表明当前方案可继续；
-- 核心指标达到当前阶段要求，或已达到下一步实验所需水平；
-- 没有真正阻塞下一阶段的 error；
-- warning 已评估，不要求全部清零；
-- handoff 足以让 fresh agent 接手。
-
-**不要为了生产级完美、形式 gate、warning 清零、重复测试或反复 review 阻塞科研闭环推进。**
-
-## Bio_Nav 项目硬边界
-
-- 唯一允许的源代码基线是以下三个本地 `refs/heads/main`：
-  - Integration：`/home/lyb/Workspace/Bio_Nav/repos/Bio_Nav_Integration` @ `f23a7eccc542e602ec641daf7a20b14c2371dca9`
-  - Module3：`/home/lyb/Workspace/Bio_Nav/repos/Isaac_Sim_ROS2_Nav` @ `22d66470c4b903349b2467dc876490bbebfc0083`
-  - Module2：`/home/lyb/Workspace/Bio_Nav/repos/MODULE2_SRDR_V310_MODULE3_HANDOFF_20260812` @ `c8297a590ba61bcf712ad4a339437fb2c44a027e`
-- 任一 `refs/heads/main` SHA 与固定值不一致时必须 fail closed，立即停止并交回 master 决策。
-- 唯一允许的开发分支是三个仓库各自的 `cognitive-navigation`；唯一允许写入的开发 worktree 是：
-  - `/home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_intergration`
-  - `/home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3`
-  - `/home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/MODULE2_SRDR_V310_MODULE3_HANDOFF_20260812`
-- 严禁查看、读取、进入、搜索、比较或使用 `complete-cognitive-navigation`、`final_bio_navigation`、`BCN_bio_navigation`、`best_bio_navigation`、`Bio_Con_Nav`、`BCN_Bio_Con_Nav`、`ZACK` 名称对应的分支、worktree、内容、历史或思路。
-- 不得运行 `git branch -a`、`git log --all`、`git worktree list`，不得扫描其它 worktree。
-- `repos/Bio_Nav_Integration` 与 `repos/Isaac_Sim_ROS2_Nav` 的当前 checkout 不属于允许读取范围；不得读取其工作树内容，也不得切换、清理或重置。新 worktree 只能直接从对应 `refs/heads/main` 创建。
-- 三个 `main` 分支及其 checkout 禁止修改；不得在 `main` 上编辑、提交、切换、重置或清理。
-- 只有 coder 可以写入；explorer 和 reviewer 必须始终只读。每个 fresh agent 的任务包必须完整继承本节硬边界。
-- 任何 agent 都不是代码库中的唯一参与者；必须保留无关用户及其他 agent 修改，不得回退他人改动。
-
-
-### 本仓专属写入边界
-
-- 本仓源仓库：`/home/lyb/Workspace/Bio_Nav/repos/Isaac_Sim_ROS2_Nav`
-- 本仓 `refs/heads/main` 固定 SHA：`22d66470c4b903349b2467dc876490bbebfc0083`
-- 本仓唯一开发分支：`cognitive-navigation`
-- 本仓唯一允许写入 worktree：`/home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3`
+`agent.md` 本身也遵循同一原则：**没有真实问题证明需要，就不要继续增加规则。**
