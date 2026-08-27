@@ -276,6 +276,27 @@ def test_experiment_launch_forces_run_indices_to_the_runner_string_contract():
     assert 'LaunchConfiguration("run_indices"), value_type=str' in launch_source
 
 
+def test_experiment_launch_exposes_strict_slam_buffer_clear_switch_and_manifest():
+    launch_source = (PACKAGE_ROOT / "launch" / "experiment.launch.py").read_text()
+    runner_source = (
+        PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py"
+    ).read_text()
+
+    assert (
+        '"clear_slam_localization_buffer", default_value="true"'
+        in launch_source
+    )
+    assert 'LaunchConfiguration("clear_slam_localization_buffer")' in launch_source
+    assert '"clear_slam_localization_buffer": ParameterValue(' in launch_source
+    assert "value_type=bool" in launch_source
+    assert '"clear_slam_localization_buffer", True' in runner_source
+    assert "if self._clear_slam_localization_buffer" in runner_source
+    assert (
+        '"clear_slam_localization_buffer": ('
+        in runner_source
+    )
+
+
 def test_attempt30_repeat_diagnostic_is_nonformal_and_pins_its_integration_underlay():
     root = PACKAGE_ROOT.parents[2]
     supervisor = (
