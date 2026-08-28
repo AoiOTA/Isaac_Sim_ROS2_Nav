@@ -37,6 +37,7 @@ properties:
           nav2: {type: string, minLength: 1}
           dynamic_obstacles: {type: string, minLength: 1}
           appearance: {type: string, minLength: 1}
+          optimal_reference: {type: string, minLength: 1}
       simulation:
         type: object
         additionalProperties: false

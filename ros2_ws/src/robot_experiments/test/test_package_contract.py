@@ -246,6 +246,9 @@ def test_package_metadata_declares_runtime_contract():
         "kujiale_dynamic_visual_g2_g3.yaml",
         "kujiale_dynamic_visual_g5_g1.yaml",
         "incremental_mapping.yaml",
+        "final_rivermark_static.yaml",
+        "final_rivermark_dynamic.yaml",
+        "final_rivermark_appearance.yaml",
     ],
 )
 def test_source_examples_validate_against_source_schema(filename):
