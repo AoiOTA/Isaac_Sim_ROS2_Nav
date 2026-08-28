@@ -1554,11 +1554,11 @@ class ExperimentRunner(Node):
                 "edge_id": int(message.edge_id),
                 "edge_index": int(message.edge_index),
                 "arc_length_m": float(message.arc_length_m),
-                "lateral_error_m": float(message.lateral_error_m),
+                "lateral_error_m": _diagnostic_float(message.lateral_error_m),
                 "remaining_m": float(message.remaining_m),
                 "projected_point": [
-                    float(message.projected_point.x),
-                    float(message.projected_point.y),
+                    _diagnostic_float(message.projected_point.x),
+                    _diagnostic_float(message.projected_point.y),
                 ],
                 "lookahead": [
                     float(message.lookahead_goal.pose.position.x),
