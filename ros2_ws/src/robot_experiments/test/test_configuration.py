@@ -202,6 +202,56 @@ def test_v6_pilot_kujiale_dynamic_hotreset_v1_matches_final_contract():
     )
 
 
+def test_v6_pilot_kujiale_static_hotreset_matches_final_contract():
+    pilot_path = CONFIG / "v6_pilot_kujiale_static_hotreset.yaml"
+    final_path = CONFIG / "v6_final_kujiale_static.yaml"
+    pilot_document = yaml.safe_load(pilot_path.read_text(encoding="utf-8"))
+    final_document = yaml.safe_load(final_path.read_text(encoding="utf-8"))
+    pilot_scenario = pilot_document["scenario"]
+    final_scenario = final_document["scenario"]
+
+    pilot = load_scenario(pilot_path)
+    final = load_scenario(final_path)
+    assert pilot.scenario_id == "v6_pilot_kujiale_static_hotreset"
+    assert [
+        (row.seed, row.case_id, row.variant_id, row.condition_id)
+        for row in pilot.run_matrix
+    ] == [
+        (8601, "v6_low_box_solo", "baseline", "static_hotreset_cold"),
+        (8601, "v6_low_box_solo", "baseline", "static_hotreset_hot"),
+    ]
+    # case_id and variant_id are schema-required row identities. The static
+    # scenario keeps its frozen actor in obstacles.static and has no dynamic
+    # trajectories for those identities to select or trigger.
+    assert pilot.scenario_type == "static"
+    assert pilot.obstacles["static"] == [{"id": "v6_low_box_solo"}]
+    assert pilot.obstacle_trajectories == ()
+    assert [row.seed for row in final.run_matrix] == [8601]
+    assert final_document["scenario"]["runs"] == {
+        "seeds": [8601],
+        "timeout_sec": 600.0,
+        "leg_timeout_sec": 180.0,
+    }
+
+    assert pilot_document["schema_version"] == final_document["schema_version"]
+    assert {
+        key: value
+        for key, value in pilot_scenario.items()
+        if key not in {"id", "runs"}
+    } == {
+        key: value
+        for key, value in final_scenario.items()
+        if key not in {"id", "runs"}
+    }
+    assert pilot.timeout_sec == final.timeout_sec
+    assert pilot.leg_timeout_sec == final.leg_timeout_sec
+    assert pilot.dynamic_config_file == final.dynamic_config_file
+    assert pilot.resolve_path(pilot.dynamic_config_file).is_file()
+    assert pilot.obstacles == final.obstacles
+    assert pilot.route == final.route
+    assert pilot.success == final.success
+
+
 def test_v6_final_kujiale_physical_geometry_variants_and_appearance_profiles():
     static = yaml.safe_load((
         REPOSITORY_ROOT
