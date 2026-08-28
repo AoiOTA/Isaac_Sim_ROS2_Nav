@@ -2390,3 +2390,13 @@
   AMCL round-2+M1 shadow 全量验证。
 - Next: live run 验证柜-桌走廊（0.63 m 净宽、瓶颈 0.30 m）AMCL round-2 表现；
   Phase 2/3 再做 module2 侧新 graph_id 先验登记。
+
+## 2026-08-28 — Module3 generated-report storage
+
+- Source HEAD: `09c3ae80a5766ccf37fd244421e4c5f50afe7e91`; generated source tree:
+  `docs/reports/`.
+- Storage: `/mnt/nas_home/Bio_Nav_Data/experiments/visualizations/module3_repo_generated_09c3ae80a5766ccf37fd244421e4c5f50afe7e91/docs/reports/`;
+  9 files, 512198 bytes, with per-file `cmp` PASS.
+- Evidence boundary: storage-only move; no evidence promotion.
+- `docs/report_assets/`, `docs/videos/`, and `docs/figures/` remain tracked
+  because repository callers still reference them.

@@ -60,6 +60,15 @@ current V6 line or close the P2 items below. Detailed cross-repository metrics
 remain in the Integration current-state record rather than being duplicated
 here.
 
+## Generated-report storage
+
+The generated `docs/reports/` tree from source HEAD
+`09c3ae80a5766ccf37fd244421e4c5f50afe7e91` is stored at
+`/mnt/nas_home/Bio_Nav_Data/experiments/visualizations/module3_repo_generated_09c3ae80a5766ccf37fd244421e4c5f50afe7e91/docs/reports/`:
+9 files, 512198 bytes, with per-file `cmp` PASS. This storage move does not
+promote any evidence. `docs/report_assets/`, `docs/videos/`, and `docs/figures/`
+remain tracked because repository callers still reference them.
+
 ## Known P2 work
 
 - Hot-reset and dynamic evidence is mixed across prior runs and has not been

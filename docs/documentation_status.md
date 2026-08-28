@@ -28,6 +28,15 @@ Historical Rivermark, Attempt21-32, 4x20, and dated V6 handoffs remain useful
 for their original runs. They are not current commands or proof that the V6
 baseline has completed outdoor, appearance, or formal qualification.
 
+## Generated-report storage
+
+The generated `docs/reports/` tree at source HEAD
+`09c3ae80a5766ccf37fd244421e4c5f50afe7e91` is stored at
+`/mnt/nas_home/Bio_Nav_Data/experiments/visualizations/module3_repo_generated_09c3ae80a5766ccf37fd244421e4c5f50afe7e91/docs/reports/`:
+9 files, 512198 bytes, with per-file `cmp` PASS. The move does not promote its
+evidence classification. `docs/report_assets/`, `docs/videos/`, and
+`docs/figures/` remain tracked because repository callers still reference them.
+
 ## Maintenance boundary
 
 - Runtime command changes update `README.md` and `RUNBOOK.md`.

@@ -57,7 +57,12 @@ checked out as siblings in the canonical V6 worktree.
   `/mnt/nas_home/Bio_Nav_Data/experiments/runs/`.
 - `docs/handoff/EXPERIMENT_LEDGER.md` and `docs/handoff/` retain historical
   engineering context without changing its evidence classification.
-- `docs/report_assets/`, `docs/reports/`, and `docs/videos/` are retained
-  historical presentation assets. They do not establish current-V6 closure.
+- Generated `docs/reports/` from source HEAD
+  `09c3ae80a5766ccf37fd244421e4c5f50afe7e91` is stored at
+  `/mnt/nas_home/Bio_Nav_Data/experiments/visualizations/module3_repo_generated_09c3ae80a5766ccf37fd244421e4c5f50afe7e91/docs/reports/`:
+  9 files, 512198 bytes, with per-file `cmp` PASS. This storage move does not
+  promote the reports' evidence classification.
+- `docs/report_assets/`, `docs/videos/`, and `docs/figures/` remain tracked
+  because repository callers still reference them.
 - Do not commit `build/`, `install/`, `log/`, local runtime roots, or new live
   output into the repository.
