@@ -158,6 +158,50 @@ def test_v6_final_dynamic_scenarios_match_one_physical_actor(filename, spawn_fil
     )
 
 
+def test_v6_pilot_kujiale_dynamic_hotreset_v1_matches_final_contract():
+    pilot_path = CONFIG / "v6_pilot_kujiale_dynamic_hotreset_v1.yaml"
+    final_path = CONFIG / "v6_final_kujiale_dynamic.yaml"
+    pilot_document = yaml.safe_load(pilot_path.read_text(encoding="utf-8"))
+    final_document = yaml.safe_load(final_path.read_text(encoding="utf-8"))
+    pilot_scenario = pilot_document["scenario"]
+    final_scenario = final_document["scenario"]
+
+    pilot = load_scenario(pilot_path)
+    final = load_scenario(final_path)
+    assert pilot.scenario_id == "v6_pilot_kujiale_dynamic_hotreset_v1"
+    assert [
+        (row.seed, row.case_id, row.variant_id, row.condition_id)
+        for row in pilot.run_matrix
+    ] == [
+        (8601, "single_dynamic_low_box", "v1", "dynamic_hotreset_cold"),
+        (8601, "single_dynamic_low_box", "v1", "dynamic_hotreset_hot"),
+    ]
+    assert tuple(row.variant_id for row in final.run_matrix) == (
+        "v1", "v2", "v3", "v4", "v5",
+    )
+
+    assert pilot_document["schema_version"] == final_document["schema_version"]
+    assert {
+        **pilot_scenario,
+        "id": final_scenario["id"],
+        "runs": {
+            **pilot_scenario["runs"],
+            "matrix": final_scenario["runs"]["matrix"],
+        },
+    } == final_scenario
+
+    spawn_file = (
+        REPOSITORY_ROOT
+        / "isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml"
+    )
+    spawn_pose = load_spawn_pose(spawn_file, pilot.spawn_pose_name)
+    validate_dynamic_physical_contract(
+        pilot,
+        spawn_pose,
+        pilot.resolve_path(pilot.dynamic_config_file),
+    )
+
+
 def test_v6_final_kujiale_physical_geometry_variants_and_appearance_profiles():
     static = yaml.safe_load((
         REPOSITORY_ROOT
