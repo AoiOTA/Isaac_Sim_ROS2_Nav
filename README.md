@@ -8,8 +8,8 @@ historical material; they are not the current runtime baseline.
 
 ## Start here
 
-- [Current state](docs/CURRENT_STATE.md): pinned repository combination,
-  evidence boundary, and open P2 work.
+- [Current state](docs/CURRENT_STATE.md): current implementation boundary,
+  Pilot index, evidence boundary, and open work.
 - [Runbook](docs/RUNBOOK.md): clean-shell setup, current Phase B and Phase F
   commands, NAS output, and owned shutdown order.
 - [Runtime interfaces](docs/interfaces.md): current topic, TF, reset, and control
@@ -17,19 +17,26 @@ historical material; they are not the current runtime baseline.
 - [Repository index](docs/repository_index.md): current wrappers, assets,
   configs, and implementation locations.
 
-## Current baseline
+## Current implementation boundary
 
 | Repository | Commit |
 | --- | --- |
-| Module3 | `4e9030f3413214c8a4cc0cf0f5e1a16b3785ee91` |
-| Integration | `14594f38` |
-| Module2 | `7f4fbae` |
+| Integration | `ea157871` |
+| Module3 | `ec3c8326` |
+| Module2 | `a6b1b216` |
 
-Use the canonical V6 worktrees and one environment source:
+`ec3c8326` is the Module3 implementation/runtime head validated by the current
+cleanup Pilot; this documentation commit is its descendant. The authoritative
+final three-repository tuple and detailed experiment ledger live in
+Integration `docs/CURRENT_STATE.md` and `docs/handoff/EXPERIMENT_LEDGER.md`.
+
+Use the paired cleanup worktrees and one environment source:
 
 ```bash
-cd /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3
-source ../bio_nav_integration/env/v6_pilot_setup.sh
+export BIO_NAV_INTEGRATION_ROOT=/home/lyb/Workspace/Bio_Nav/worktrees/cleanup-v6-integration-convergence/bio_nav_integration
+export BIO_NAV_MODULE3_ROOT=/home/lyb/Workspace/Bio_Nav/worktrees/cleanup-v6-module3-convergence/bio_nav_module3
+source "${BIO_NAV_INTEGRATION_ROOT}/env/v6_pilot_setup.sh" "${ROS_DOMAIN_ID}"
+cd "${BIO_NAV_MODULE3_ROOT}"
 ```
 
 The Phase B exact-scene baseline is selected through the wrapper; do not bypass
@@ -41,8 +48,8 @@ it with hand-written launch arguments:
 ./scripts/run_v6_r5_phase_b_kujiale.sh --domain "${ROS_DOMAIN_ID}" isaac
 ```
 
-Phase F keeps the same scene/localization substrate and selects the frozen
-low-obstacle/Nav2 isolation entrypoints:
+The current Pilot composition keeps the same scene/localization substrate and
+selects the frozen low-obstacle/Nav2 isolation entrypoints:
 
 ```bash
 ./scripts/run_v6_kujiale_low_obstacles.sh --condition static isaac

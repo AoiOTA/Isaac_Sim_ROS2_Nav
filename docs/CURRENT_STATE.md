@@ -1,6 +1,6 @@
 # Current V6 state
 
-Date: 2026-08-28
+Date: 2026-08-29
 
 ## Current cleanup starting heads
 
@@ -16,6 +16,34 @@ These are cleanup starting heads, not pins for the 5/5 run below. This cleanup
 and its subsequent documentation-only commits have not been live-revalidated.
 Do not substitute a similarly named historical branch, stale install, or an
 unrecorded three-repository combination for a live result.
+
+## Current implementation and Pilot boundary
+
+The current cleanup Pilot used this implementation tuple:
+
+| Repository | Commit |
+| --- | --- |
+| Integration | `ea157871` |
+| Module3 | `ec3c8326` |
+| Module2 | `a6b1b216` |
+
+`ec3c8326` includes the Jackal asset hydration fix needed before Isaac startup;
+this documentation-only commit is its descendant. Across one static smoke, a
+two-episode static pair, and a two-episode dynamic pair, all five episodes
+completed the full route: `25/25` legs were strict-success and collision-free.
+The compact evidence roots are:
+
+- static smoke:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/pilots/v6_cleanup_static_cold_master_20260828T182058Z_d212`;
+- static pair:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/pilots/v6_cleanup_static_pair_master_20260828T183756Z_d213`;
+- dynamic pair:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/pilots/v6_cleanup_dynamic_pair_master_20260828T185156Z_d214`.
+
+This is current engineering Pilot evidence, not formal qualification. The
+authoritative cross-repository state and detailed metrics remain in Integration
+`docs/CURRENT_STATE.md` and `docs/handoff/EXPERIMENT_LEDGER.md`; this page only
+indexes the Module3 boundary.
 
 ## Current runtime
 
@@ -71,8 +99,8 @@ remain tracked because repository callers still reference them.
 
 ## Known P2 work
 
-- Hot-reset and dynamic evidence is mixed across prior runs and has not been
-  closed as one current pinned campaign.
+- The five-episode cleanup Pilot closes only its static/dynamic engineering
+  boundary; it does not replace the planned formal campaign.
 - Precise terminal command-to-actuator zero latency was not closed in this
   documentation amendment. Terminal safety behavior must not be described as
   qualified from code inspection or historical timing alone.
@@ -83,7 +111,7 @@ remain tracked because repository callers still reference them.
   path before a live run.
 - Outdoor navigation and appearance coverage are not complete on the current
   V6 baseline.
-- Formal qualification is not complete. No current result may be labeled
+- Formal qualification is not complete. No Pilot result above may be labeled
   `FORMAL_QUALIFICATION_PASS`.
 
 ## Boundary
