@@ -100,6 +100,10 @@ def test_graph_arms_have_one_exact_stack_contract(
         )
         for name in ("module3", "module2", "bridge")
     }
+    asset_arg = f"module2_asset_root:={tmp_path / 'module2-assets'}"
+    assert commands["bridge"].count(asset_arg) == 1
+    assert asset_arg not in commands["module3"]
+    assert asset_arg not in commands["module2"]
     snapshot_arg = f"route_prior_snapshot_path:={tmp_path / 'route prior snapshot'}"
     if route_prior == "true":
         assert commands["module3"].count(snapshot_arg) == 1

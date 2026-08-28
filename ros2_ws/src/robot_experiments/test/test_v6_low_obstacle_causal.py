@@ -3249,6 +3249,9 @@ def test_phase_f_stack_explicitly_disables_route_prior_for_module2_arms(
             "configs/kujiale_0026_module1_visual_shadow_v310.yaml"
         )
         assert "--candidate-manifest" not in module2
+        bridge = fake.bridge_argv.read_text(encoding="utf-8").splitlines()
+        asset_arg = f"module2_asset_root:={tmp_path / 'module2-assets'}"
+        assert bridge.count(asset_arg) == 1
     finally:
         _stop_fake_phase_f_stack(fake)
 
@@ -3338,6 +3341,8 @@ def test_final_route_prior_pilot_forwards_gvg_prior_to_m3_and_bridge(tmp_path):
             "obstacle_only",
         ]
         bridge = fake.bridge_argv.read_text(encoding="utf-8").splitlines()
+        asset_arg = f"module2_asset_root:={tmp_path / 'module2-assets'}"
+        assert bridge.count(asset_arg) == 1
         assert "startup_profile:=module2_causal_obstacle_active" in bridge
         assert "cognitive_graph_mode:=gvg" in bridge
         assert "route_prior_enabled:=true" in bridge

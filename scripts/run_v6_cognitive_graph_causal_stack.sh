@@ -187,6 +187,7 @@ bridge_command=(
   "startup_profile:=${startup_profile}"
   "cognitive_graph_mode:=${integration_graph_mode}"
   "route_prior_enabled:=${route_prior_enabled}"
+  "module2_asset_root:=${module2_asset_root}"
   "socket_path:=${socket_path}"
   "localization_candidate_manifest:=${candidate_manifest}"
   "localization_supervisor_mode:=${localization_supervisor_mode}"

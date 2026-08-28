@@ -449,6 +449,7 @@ if [[ "${dry_run}" == true ]]; then
       "${dry_profile}"
     printf ' cognitive_graph_mode:=gvg route_prior_enabled:=%s' \
       "${route_prior_enabled}"
+    printf ' module2_asset_root:=%q' "${module2_asset_root}"
     if [[ "${route_prior_enabled}" == true ]]; then
       printf ' route_prior_snapshot_path:=%q' "${route_prior_snapshot}"
     fi
@@ -724,6 +725,7 @@ if [[ "${arm}" != "M0" ]]; then
   exit_if_terminating
   setsid --wait -- ros2 launch bio_nav_ros_bridge v6_cognitive_navigation.launch.py \
     startup_profile:="${startup_profile}" \
+    module2_asset_root:="${module2_asset_root}" \
     socket_path:="${socket_path}" \
     use_sim_time:=true \
     trajectory_topic:=/ground_truth/odom \
