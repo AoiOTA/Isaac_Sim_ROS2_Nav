@@ -158,12 +158,140 @@ def test_common_resolves_project_root_from_unrelated_temporary_directory(tmp_pat
     assert result.stdout == str(REPOSITORY_ROOT)
 
 
-def test_common_requires_only_the_allowed_v6_integration_underlay():
-    source = COMMON.read_text(encoding='utf-8')
-    assert (
-        '/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration'
-        in source
+def test_common_defaults_integration_root_to_module3_worktree_sibling():
+    environment = _environment()
+    environment.pop('BIO_NAV_INTEGRATION_ROOT', None)
+    environment.pop('BIO_NAV_INTEGRATION_SETUP', None)
+    result = _run_bash(
+        f'''source "{COMMON}"
+        printf '%s|%s' "$BIO_NAV_INTEGRATION_ROOT" \
+          "$BIO_NAV_INTEGRATION_SETUP"
+        ''',
+        cwd=REPOSITORY_ROOT,
+        environment=environment,
     )
+    integration_root = REPOSITORY_ROOT.parent / 'bio_nav_integration'
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        f'{integration_root}|'
+        f'{integration_root}/ros2_ws/install/local_setup.bash')
+
+
+def _fake_v6_integration_underlay(tmp_path: Path):
+    integration_root = tmp_path / 'cleanup-v6-integration'
+    install = integration_root / 'ros2_ws' / 'install'
+    setup = install / 'local_setup.bash'
+    setup.parent.mkdir(parents=True)
+    setup.write_text('export EXPLICIT_INTEGRATION_SETUP=1\n', encoding='utf-8')
+
+    bridge_prefix = install / 'bio_nav_ros_bridge'
+    (bridge_prefix / 'share' / 'bio_nav_ros_bridge' / 'config').mkdir(
+        parents=True)
+    (bridge_prefix / 'share' / 'bio_nav_ros_bridge' / 'config'
+     / 'engineering_defaults.yaml').touch()
+
+    interfaces_prefix = install / 'bio_nav_interfaces'
+    include = (interfaces_prefix / 'include' / 'bio_nav_interfaces'
+               / 'bio_nav_interfaces' / 'msg')
+    (include / 'detail').mkdir(parents=True)
+    (include / 'local_risk_grid.hpp').touch()
+    (include / 'detail' / 'cognitive_obstacle_array__struct.hpp').write_text(
+        'bool observation_valid;\n', encoding='utf-8')
+    (include / 'detail' / 'planning_prior__struct.hpp').write_text(
+        'int local_direction_schema_version;\n', encoding='utf-8')
+
+    fake_bin = tmp_path / 'bin'
+    fake_bin.mkdir()
+    fake_ros2 = fake_bin / 'ros2'
+    fake_ros2.write_text(
+        '''#!/usr/bin/env bash
+case "$3" in
+  bio_nav_ros_bridge) printf '%s\\n' "$FAKE_BRIDGE_PREFIX" ;;
+  bio_nav_interfaces) printf '%s\\n' "$FAKE_INTERFACES_PREFIX" ;;
+  *) exit 1 ;;
+esac
+''',
+        encoding='utf-8',
+    )
+    fake_ros2.chmod(0o755)
+    environment = _environment(
+        BIO_NAV_INTEGRATION_ROOT=str(integration_root),
+        BIO_NAV_INTEGRATION_SETUP=str(setup),
+        FAKE_BRIDGE_PREFIX=str(bridge_prefix),
+        FAKE_INTERFACES_PREFIX=str(interfaces_prefix),
+        PATH=f'{fake_bin}:{os.environ["PATH"]}',
+    )
+    return integration_root, setup, fake_bin, environment
+
+
+def test_common_accepts_explicit_integration_root_and_setup(tmp_path):
+    integration_root, setup, _, environment = _fake_v6_integration_underlay(
+        tmp_path)
+    result = _run_bash(
+        f'''source "{COMMON}"
+        source_v6_integration_underlay >/dev/null
+        printf '%s|%s|%s' "$BIO_NAV_INTEGRATION_ROOT" \
+          "$BIO_NAV_INTEGRATION_SETUP" "$EXPLICIT_INTEGRATION_SETUP"
+        ''',
+        cwd=tmp_path,
+        environment=environment,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == f'{integration_root}|{setup}|1'
+
+
+def test_common_rejects_setup_outside_chosen_integration_root(tmp_path):
+    integration_root = tmp_path / 'chosen-integration'
+    integration_root.mkdir()
+    setup = tmp_path / 'outside' / 'setup.bash'
+    setup.parent.mkdir()
+    setup.touch()
+    result = _run_bash(
+        f'source "{COMMON}"; validate_v6_integration_underlay',
+        cwd=tmp_path,
+        environment=_environment(
+            BIO_NAV_INTEGRATION_ROOT=str(integration_root),
+            BIO_NAV_INTEGRATION_SETUP=str(setup),
+        ),
+    )
+    assert result.returncode != 0
+    assert 'must resolve inside' in result.stderr
+    assert str(integration_root) in result.stderr
+
+
+def test_build_ros2_sources_explicit_integration_root(tmp_path):
+    integration_root, _, fake_bin, environment = (
+        _fake_v6_integration_underlay(tmp_path))
+    ros_setup = tmp_path / 'ros_setup.bash'
+    ros_setup.write_text('export ROS_DISTRO=jazzy\n', encoding='utf-8')
+    fake_colcon = fake_bin / 'colcon'
+    fake_colcon.write_text(
+        '#!/usr/bin/env bash\nprintf "%s|%s" '
+        '"$EXPLICIT_INTEGRATION_SETUP" "$BIO_NAV_INTEGRATION_ROOT"\n',
+        encoding='utf-8',
+    )
+    fake_colcon.chmod(0o755)
+    environment.update({
+        'ROS_SETUP': str(ros_setup),
+        'ISAAC_NAV_FASTDDS_PROFILE': str(
+            REPOSITORY_ROOT
+            / 'isaac_sim/configs/ros2_bridge/fastdds_udp_only.xml'),
+    })
+    result = subprocess.run(
+        [str(BUILD_ROS2)],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.endswith(f'1|{integration_root}')
+
+
+def test_common_requires_v6_integration_underlay_interfaces():
+    source = COMMON.read_text(encoding='utf-8')
+    assert '/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration' not in source
     assert '/repos/' not in source
     assert 'validate_v6_integration_underlay' in source
     assert 'engineering_defaults.yaml' in source

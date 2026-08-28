@@ -8,11 +8,12 @@ export ISAAC_ASSET_ROOT="${ISAAC_ASSET_ROOT:-/home/lyb/isaacsim_assets/Assets/Is
 export ROS_SETUP="${ROS_SETUP:-/opt/ros/jazzy/setup.bash}"
 export ISAAC_NAV_RUNTIME_DIR="${ISAAC_NAV_RUNTIME_DIR:-/tmp/isaac_sim_ros2_nav_${UID}}"
 export ISAAC_NAV_FASTDDS_PROFILE="${ISAAC_NAV_FASTDDS_PROFILE:-${PROJECT_ROOT}/isaac_sim/configs/ros2_bridge/fastdds_udp_only.xml}"
-export BIO_NAV_INTEGRATION_SETUP="${BIO_NAV_INTEGRATION_SETUP:-/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration/ros2_ws/install/setup.bash}"
+export BIO_NAV_INTEGRATION_ROOT="$(readlink -m "${BIO_NAV_INTEGRATION_ROOT:-${PROJECT_ROOT}/../bio_nav_integration}")"
+export BIO_NAV_INTEGRATION_SETUP="${BIO_NAV_INTEGRATION_SETUP:-${BIO_NAV_INTEGRATION_ROOT}/ros2_ws/install/local_setup.bash}"
 export BIO_NAV_MODULE3_INSTALL="${BIO_NAV_MODULE3_INSTALL:-${PROJECT_ROOT}/ros2_ws/install}"
 
 readonly ISAAC_NAV_EXPECTED_ROS_DISTRO="jazzy"
-readonly BIO_NAV_ALLOWED_INTEGRATION_ROOT="/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration"
+readonly BIO_NAV_ALLOWED_INTEGRATION_ROOT="$(readlink -m "${BIO_NAV_INTEGRATION_ROOT}")"
 # Domain 42 remains the normal default.  Engineering runs may select another
 # domain to avoid an already-running ROS graph without stopping that graph.
 readonly ISAAC_NAV_EXPECTED_DOMAIN_ID="${ISAAC_NAV_EXPECTED_DOMAIN_ID:-42}"
@@ -70,6 +71,7 @@ reset_ros_overlay_environment() {
 validate_v6_integration_underlay() {
   local setup_path setup_real allowed_real bridge_prefix interfaces_prefix
   setup_path="${BIO_NAV_INTEGRATION_SETUP}"
+  require_directory "${BIO_NAV_ALLOWED_INTEGRATION_ROOT}"
   require_file "${setup_path}"
   setup_real="$(readlink -f "${setup_path}")"
   allowed_real="$(readlink -f "${BIO_NAV_ALLOWED_INTEGRATION_ROOT}")"
