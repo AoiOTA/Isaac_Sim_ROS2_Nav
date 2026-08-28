@@ -2113,6 +2113,46 @@ def test_plan_dispatch_requires_all_three_adapters_and_constructs_commands(tmp_p
     assert stack[stack.index("--module2-asset-root") + 1] == str(
         tmp_path / "module2-assets"
     )
+    assert "--module2-asset-root" not in exact["runs"][0]["commands"]["stack"]
+
+
+def test_exact_plan_requires_explicit_asset_root_and_preserves_spaces(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("BIO_NAV_MODULE2_ASSET_ROOT", "/fake/env/fallback")
+    assert cli([
+        "plan", "--config", str(CONFIG), "--exact-adapters",
+    ]) == 2
+    assert "--module2-asset-root is required with --exact-adapters" in (
+        capsys.readouterr().err
+    )
+
+    asset_root = tmp_path / "module2 assets with spaces"
+    assert cli([
+        "plan", "--config", str(CONFIG), "--exact-adapters",
+        "--module2-asset-root", str(asset_root), "--pilot",
+        "--output-root", str(tmp_path / "plan"),
+    ]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    manifest = load_manifest(CONFIG)
+    integration_contract = plan["integration_cli_contract"]
+    stack_templates = plan["recommended_adapter_templates"]["stack"]
+    assert integration_contract["M0"].count("--module2-asset-root") == 0
+    assert stack_templates["M0"].count("--module2-asset-root") == 0
+    for arm in ("M1", "M2", "M3"):
+        assert integration_contract[arm].count("--module2-asset-root") == 1
+        assert stack_templates[arm].count("--module2-asset-root") == 1
+        values = causal._adapter_values(
+            manifest,
+            next(row for row in manifest.runs if row.arm == arm),
+            tmp_path / "plan",
+        )
+        command = causal.render_adapter_command(stack_templates[arm], values)
+        assert command[command.index("--module2-asset-root") + 1] == str(asset_root)
+        dry_run = subprocess.run(
+            [*command, "--dry-run"], capture_output=True, text=True, check=False
+        )
+        assert dry_run.returncode == 0, dry_run.stderr
 
 
 def test_copy_installed_manifest_resolves_phase_f_assets_without_cwd(
@@ -4325,7 +4365,5 @@ def test_legacy_shadow_preserves_caller_map_context_argument(tmp_path):
 @pytest.mark.parametrize("command", ["manifest", "plan"])
 def test_non_runtime_cli_commands_emit_json(command, capsys, tmp_path):
     argv = [command, "--config", str(CONFIG)]
-    if command == "plan":
-        argv.extend(["--module2-asset-root", str(tmp_path / "module2-assets")])
     assert cli(argv) == 0
     assert json.loads(capsys.readouterr().out)

@@ -161,6 +161,7 @@ class AdapterTemplates:
     stack: str
     episode: str
     producer_stop: str | None = None
+    module2_asset_root: str | None = None
 
 
 @dataclass(frozen=True)
@@ -191,8 +192,7 @@ def exact_adapter_templates(
         stack=(
             f"{root}/scripts/run_v6_low_obstacle_phase_f_stack.sh "
             "{arm} --domain {ros_domain_id} --run-dir {run_dir} "
-            "--socket {module2_socket} --module2-asset-root "
-            f"{shlex.quote(asset_root)}"
+            "--socket {module2_socket} {module2_asset_root_arg}"
         ),
         episode=(
             f"{root}/scripts/run_v6_low_obstacle_causal.sh dispatch-episode "
@@ -202,6 +202,7 @@ def exact_adapter_templates(
             f"{root}/scripts/run_v6_low_obstacle_phase_f_stack.sh "
             "stop-producer --run-dir {run_dir} --socket {module2_socket}"
         ),
+        module2_asset_root=asset_root,
     )
 
 
@@ -1932,6 +1933,13 @@ def build_plan(
     for run in selected_runs(manifest, pilot=pilot):
         arm = manifest.arms[run.arm]
         values = _adapter_values(manifest, run, root)
+        values["module2_asset_root_arg"] = (
+            "--module2-asset-root " + shlex.quote(adapters.module2_asset_root)
+            if adapters is not None
+            and adapters.module2_asset_root is not None
+            and run.arm != "M0"
+            else ""
+        )
         row = {
             "run_id": run.run_id,
             "repeat": run.repeat,
@@ -2001,28 +2009,73 @@ def build_plan(
                     adapters.producer_stop, values
                 )
         rows.append(row)
+    integration_cli_contract: dict[str, str] = {
+        "M0": "no Module2 server or Bridge",
+        "M1": "estimated_shadow; no navigation write",
+        "M2_M3_server": (
+            "scripts/run_v6_module2_causal_obstacle_server.sh "
+            "--startup-profile module2_causal_obstacle_active "
+            "--active-effect-scope obstacle_only --socket {module2_socket} "
+            "--module2-root <MODULE2_ROOT> --shadow-config "
+            "configs/kujiale_0026_module1_visual_shadow_v310.yaml"
+        ),
+        "planning_prior": "untrusted",
+        "obstacle_transport": "trusted",
+        "edge_prior": "off",
+        "cognitive_place_graph": "off",
+        "module1_initialpose_writer": "off",
+    }
+    recommended_stack: str | dict[str, str] = (
+        "{module3_root}/scripts/run_v6_low_obstacle_phase_f_stack.sh "
+        "{arm} --domain {ros_domain_id} --run-dir {run_dir} "
+        "--socket {module2_socket}"
+    )
+    if adapters is not None and adapters.module2_asset_root is not None:
+        asset_option = (
+            "--module2-asset-root " + shlex.quote(adapters.module2_asset_root)
+        )
+        active_server = (
+            "scripts/run_v6_module2_causal_obstacle_server.sh "
+            "--startup-profile module2_causal_obstacle_active "
+            "--active-effect-scope obstacle_only --socket {module2_socket} "
+            "--module2-root <MODULE2_ROOT> " + asset_option + " --shadow-config "
+            "configs/kujiale_0026_module1_visual_shadow_v310.yaml"
+        )
+        integration_cli_contract = {
+            **integration_cli_contract,
+            "M1": (
+                "scripts/run_module2_v310_server.sh "
+                "--module2-root <MODULE2_ROOT> " + asset_option + " --shadow-config "
+                "configs/kujiale_0026_module1_visual_shadow_v310.yaml "
+                "--socket {module2_socket}"
+            ),
+            "M2": active_server,
+            "M3": active_server,
+        }
+        integration_cli_contract.pop("M2_M3_server")
+        stack_prefix = (
+            "{module3_root}/scripts/run_v6_low_obstacle_phase_f_stack.sh "
+        )
+        stack_suffix = (
+            " --domain {ros_domain_id} --run-dir {run_dir} "
+            "--socket {module2_socket}"
+        )
+        recommended_stack = {
+            "M0": stack_prefix + "M0" + stack_suffix,
+            **{
+                arm_name: (
+                    stack_prefix + arm_name + stack_suffix + " " + asset_option
+                )
+                for arm_name in ("M1", "M2", "M3")
+            },
+        }
     return {
         "qualification": QUALIFICATION,
         "mode": "pilot" if pilot else "formal_12",
         "dispatch": adapters is not None,
         "reason": None if adapters is not None else "external_scene_stack_episode_adapters_required",
         "exactly_once_reset_contract": "reuse_v6_formal_episode_guard",
-        "integration_cli_contract": {
-            "M0": "no Module2 server or Bridge",
-            "M1": "estimated_shadow; no navigation write",
-            "M2_M3_server": (
-                "scripts/run_v6_module2_causal_obstacle_server.sh "
-                "--startup-profile module2_causal_obstacle_active "
-                "--active-effect-scope obstacle_only --socket {module2_socket} "
-                "--module2-root <MODULE2_ROOT> --shadow-config "
-                "configs/kujiale_0026_module1_visual_shadow_v310.yaml"
-            ),
-            "planning_prior": "untrusted",
-            "obstacle_transport": "trusted",
-            "edge_prior": "off",
-            "cognitive_place_graph": "off",
-            "module1_initialpose_writer": "off",
-        },
+        "integration_cli_contract": integration_cli_contract,
         "episode_adapter_contract": (
             "{module3_root}/scripts/run_v6_low_obstacle_causal.sh dispatch-episode "
             "--run-id {run_id} --output-jsonl {episode_jsonl}"
@@ -2033,11 +2086,7 @@ def build_plan(
                 "--domain {ros_domain_id} isaac --dynamic-obstacle-config "
                 "{obstacle_config} --dynamic-obstacles"
             ),
-            "stack": (
-                "{module3_root}/scripts/run_v6_low_obstacle_phase_f_stack.sh "
-                "{arm} --domain {ros_domain_id} --run-dir {run_dir} "
-                "--socket {module2_socket}"
-            ),
+            "stack": recommended_stack,
             "episode": (
                 "{module3_root}/scripts/run_v6_low_obstacle_causal.sh "
                 "dispatch-episode --run-id {run_id} --output-jsonl {episode_jsonl}"
@@ -4532,7 +4581,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan_parser.add_argument("--output-root", default="v6r5_module2_causal")
     plan_parser.add_argument("--pilot", action="store_true")
     plan_parser.add_argument("--exact-adapters", action="store_true")
-    plan_parser.add_argument("--module2-asset-root", required=True)
+    plan_parser.add_argument("--module2-asset-root")
     for option in (
         "scene-adapter", "reset-adapter", "live-adapter", "producer-stop-adapter",
     ):
@@ -4591,6 +4640,10 @@ def cli(argv: list[str] | None = None) -> int:
             supplied = [value is not None for value in raw_adapters]
             if args.exact_adapters and any(supplied):
                 raise CausalContractError("--exact-adapters cannot be combined with custom adapters")
+            if args.exact_adapters and args.module2_asset_root is None:
+                raise CausalContractError(
+                    "--module2-asset-root is required with --exact-adapters"
+                )
             if any(supplied) and not all(supplied):
                 raise CausalContractError("plan adapters must be supplied together")
             adapters = (
