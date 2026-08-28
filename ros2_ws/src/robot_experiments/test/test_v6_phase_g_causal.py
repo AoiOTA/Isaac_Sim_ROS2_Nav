@@ -628,6 +628,7 @@ def test_wrapper_cli_matches_stack_contract_and_mcap_reuse() -> None:
         '--run-root "${run_root}/stack/${arm,,}"',
         '--obstacle-arm "${obstacle_arm}"',
         '--module2-asset-root "${module2_asset_root}"',
+        '--route-prior-snapshot "${route_prior_snapshot}"',
         "phase_b_observability --print-recorder-topics",
         "--storage mcap",
         "--qos-profile-overrides-path",
@@ -650,10 +651,12 @@ def test_stack_component_requires_and_forwards_asset_root_once(tmp_path: Path) -
     assert "--module2-asset-root is required for stack" in missing.stderr
 
     asset_root = tmp_path / "module2-assets"
+    snapshot = tmp_path / "route prior snapshot"
     valid = subprocess.run(
         [
             "bash", str(WRAPPER), "--dry-run", "--run-root", str(tmp_path / "run"),
-            "--arm", "G2", "--module2-asset-root", str(asset_root), "stack",
+            "--arm", "G2", "--module2-asset-root", str(asset_root),
+            "--route-prior-snapshot", str(snapshot), "stack",
         ],
         capture_output=True,
         text=True,
@@ -662,17 +665,80 @@ def test_stack_component_requires_and_forwards_asset_root_once(tmp_path: Path) -
     argv = shlex.split(valid.stdout)
     assert argv.count("--module2-asset-root") == 1
     assert argv[argv.index("--module2-asset-root") + 1] == str(asset_root)
+    assert argv.count("--route-prior-snapshot") == 1
+    assert argv[argv.index("--route-prior-snapshot") + 1] == str(snapshot)
 
     nonstack = subprocess.run(
         [
             "bash", str(WRAPPER), "--dry-run", "--run-root", str(tmp_path / "run"),
-            "--arm", "G2", "isaac",
+            "--arm", "G2", "--route-prior-snapshot", str(snapshot), "isaac",
         ],
         capture_output=True,
         text=True,
         check=True,
     )
     assert "--module2-asset-root" not in nonstack.stdout
+    assert "--route-prior-snapshot" not in nonstack.stdout
+
+
+@pytest.mark.parametrize("arm", ("G2", "G3"))
+def test_stack_component_requires_explicit_snapshot_without_env_fallback(
+    tmp_path: Path, arm: str
+) -> None:
+    env = os.environ.copy()
+    env.update(
+        {
+            "BIO_NAV_PHASE_G_ROUTE_PRIOR_SNAPSHOT": str(tmp_path / "fake-phase-g"),
+            "BIO_NAV_ROUTE_PRIOR_SNAPSHOT": str(tmp_path / "fake-route-prior"),
+        }
+    )
+    result = subprocess.run(
+        [
+            "bash", str(WRAPPER), "--dry-run", "--run-root", str(tmp_path / "run"),
+            "--arm", arm,
+            "--module2-asset-root", str(tmp_path / "module2-assets"),
+            "stack",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert result.returncode == 2
+    assert f"--route-prior-snapshot is required for {arm} stack" in result.stderr
+
+
+@pytest.mark.parametrize("arm", ("G0", "G1"))
+def test_prior_off_stack_components_do_not_require_or_forward_snapshot(
+    tmp_path: Path, arm: str
+) -> None:
+    result = subprocess.run(
+        [
+            "bash", str(WRAPPER), "--dry-run", "--run-root", str(tmp_path / "run"),
+            "--arm", arm,
+            "--module2-asset-root", str(tmp_path / "module2-assets"),
+            "stack",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "--route-prior-snapshot" not in result.stdout
+
+
+def test_graph_only_stack_does_not_require_or_forward_snapshot(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [
+            "bash", str(WRAPPER), "--dry-run", "--run-root", str(tmp_path / "run"),
+            "--arm", "G3",
+            "--module2-asset-root", str(tmp_path / "module2-assets"),
+            "--graph-only-no-box", "stack",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "--route-prior-snapshot" not in result.stdout
 
 
 def test_isaac_dry_run_exposes_selected_phase_b_domain_and_argv(
@@ -806,6 +872,9 @@ while :; do sleep 0.05; done
     )
     module2_config.parent.mkdir(parents=True)
     module2_config.touch()
+    route_prior_snapshot = tmp_path / "route prior snapshot"
+    route_prior_snapshot.mkdir()
+    (route_prior_snapshot / "manifest.json").touch()
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -842,6 +911,7 @@ wait "$!"
             "--run-dir", str(run_dir),
             "--socket", str(socket_path),
             "--module2-asset-root", str(tmp_path / "module2-assets"),
+            "--route-prior-snapshot", str(route_prior_snapshot),
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,

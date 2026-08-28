@@ -13,7 +13,7 @@ usage() {
   cat >&2 <<'USAGE'
 usage: run_v6_phase_g_causal.sh [--run-root PATH] [--domain ID]
        [--arm G0|G1|G2|G3] [--obstacle-arm M3|M2] [--socket PATH] [--dry-run]
-       [--module2-asset-root PATH]
+       [--module2-asset-root PATH] [--route-prior-snapshot PATH]
        [--graph-only-no-box]
        config|plan|isaac|stack|record|runner|evaluate [arguments...]
 
@@ -36,6 +36,7 @@ socket_path="${BIO_NAV_PHASE_G_SOCKET_PATH:-}"
 dry_run=false
 graph_only_no_box=false
 module2_asset_root=""
+route_prior_snapshot=""
 while (($# > 0)); do
   case "$1" in
     --run-root)
@@ -66,6 +67,11 @@ while (($# > 0)); do
     --module2-asset-root)
       (($# >= 2)) || { usage; exit 2; }
       module2_asset_root="$2"
+      shift 2
+      ;;
+    --route-prior-snapshot)
+      (($# >= 2)) || { usage; exit 2; }
+      route_prior_snapshot="$2"
       shift 2
       ;;
     --dry-run)
@@ -106,6 +112,17 @@ if [[ "${graph_only_no_box}" == true \
     && ! "${arm}" =~ ^(G1|G2|G3)$ ]]; then
   echo "--graph-only-no-box requires --arm G1|G2|G3 for ${component}" >&2
   exit 2
+fi
+if [[ "${component}" == "stack" && "${graph_only_no_box}" == false \
+    && "${arm}" =~ ^(G2|G3)$ ]]; then
+  [[ -n "${route_prior_snapshot}" ]] || {
+    echo "--route-prior-snapshot is required for ${arm} stack" >&2
+    exit 2
+  }
+  [[ "${route_prior_snapshot}" == /* ]] || {
+    echo "route prior snapshot must be absolute: ${route_prior_snapshot}" >&2
+    exit 2
+  }
 fi
 
 if [[ -z "${socket_path}" ]]; then
@@ -168,6 +185,9 @@ case "${component}" in
       --run-root "${run_root}/stack/${arm,,}" --socket "${socket_path}"
       --obstacle-arm "${obstacle_arm}"
       --module2-asset-root "${module2_asset_root}")
+    if [[ "${graph_only_no_box}" == false && "${arm}" =~ ^(G2|G3)$ ]]; then
+      command+=(--route-prior-snapshot "${route_prior_snapshot}")
+    fi
     [[ "${graph_only_no_box}" == true ]] && command+=(--graph-only-no-box)
     run_command "${command[@]}" "$@"
     ;;

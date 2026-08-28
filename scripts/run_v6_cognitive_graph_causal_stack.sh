@@ -11,6 +11,7 @@ usage() {
 usage: run_v6_cognitive_graph_causal_stack.sh --arm G0|G1|G2|G3 \
   --domain ID --run-dir PATH --socket PATH [--obstacle-arm M3|M2] \
   [--module2-root PATH] --module2-asset-root PATH \
+  [--route-prior-snapshot PATH] \
   [--localization-supervisor-mode shadow|startup] \
   [--graph-only-no-box] [--dry-run]
 
@@ -29,6 +30,7 @@ socket_path=""
 obstacle_arm="M3"
 module2_root="${BIO_NAV_MODULE2_V310_ROOT:-}"
 module2_asset_root=""
+route_prior_snapshot=""
 integration_root="${BIO_NAV_INTEGRATION_ROOT:-/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration}"
 candidate_manifest="${integration_root}/ros2_ws/src/bio_nav_ros_bridge/config/kujiale_0026_run4_read_only_shadow_candidate.json"
 localization_supervisor_mode="${BIO_NAV_PHASE_G_LOCALIZATION_SUPERVISOR_MODE:-shadow}"
@@ -45,6 +47,10 @@ while (($#)); do
     --module2-root) module2_root="${2:?--module2-root requires a path}"; shift 2 ;;
     --module2-asset-root)
       module2_asset_root="${2:?--module2-asset-root requires a path}"
+      shift 2
+      ;;
+    --route-prior-snapshot)
+      route_prior_snapshot="${2:?--route-prior-snapshot requires a path}"
       shift 2
       ;;
     --localization-supervisor-mode)
@@ -126,6 +132,29 @@ if [[ "${graph_only_no_box}" == true ]]; then
   integration_graph_mode="shadow"
 fi
 
+if [[ "${route_prior_enabled}" == true ]]; then
+  [[ -n "${route_prior_snapshot}" ]] || {
+    echo "--route-prior-snapshot is required for ${arm}" >&2
+    exit 2
+  }
+  [[ "${route_prior_snapshot}" == /* ]] || {
+    echo "route prior snapshot must be absolute: ${route_prior_snapshot}" >&2
+    exit 2
+  }
+  if [[ "${dry_run}" == false ]]; then
+    [[ -d "${route_prior_snapshot}" ]] || {
+      echo "route prior snapshot directory does not exist: ${route_prior_snapshot}" >&2
+      exit 2
+    }
+    [[ -f "${route_prior_snapshot}/manifest.json" \
+        && -r "${route_prior_snapshot}/manifest.json" ]] || {
+      echo "route prior snapshot manifest is not readable: ${route_prior_snapshot}/manifest.json" >&2
+      exit 2
+    }
+    route_prior_snapshot="$(cd "${route_prior_snapshot}" && pwd -P)"
+  fi
+fi
+
 module3_command=(
   env "V6_COGNITIVE_PROFILE=${cognitive_profile}"
   "${script_dir}/run_v6_kujiale_low_obstacles.sh"
@@ -136,6 +165,9 @@ else
   module3_command+=(ros-d "${graph_mode}")
 fi
 module3_command+=("route_prior_enabled:=${route_prior_enabled}")
+if [[ "${route_prior_enabled}" == true ]]; then
+  module3_command+=("route_prior_snapshot_path:=${route_prior_snapshot}")
+fi
 
 module2_command=(
   "${integration_root}/scripts/run_v6_module2_graph_causal_server.sh"
@@ -160,6 +192,9 @@ bridge_command=(
   "localization_supervisor_mode:=${localization_supervisor_mode}"
   use_sim_time:=true
 )
+if [[ "${route_prior_enabled}" == true ]]; then
+  bridge_command+=("route_prior_snapshot_path:=${route_prior_snapshot}")
+fi
 
 if [[ "${dry_run}" == true ]]; then
   printf 'arm=%s\n' "${arm}"

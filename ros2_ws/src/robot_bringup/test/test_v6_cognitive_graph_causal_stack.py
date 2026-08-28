@@ -1,4 +1,5 @@
 import os
+import shlex
 import socket
 import subprocess
 from pathlib import Path
@@ -16,6 +17,8 @@ def _dry_run(
     *,
     obstacle_arm: str = "M3",
     graph_only_no_box: bool = False,
+    route_prior_snapshot: Path | None = None,
+    include_route_prior_snapshot: bool = True,
 ):
     command = [
         str(STACK),
@@ -27,6 +30,15 @@ def _dry_run(
         "--module2-asset-root", str(tmp_path / "module2-assets"),
         "--obstacle-arm", obstacle_arm,
     ]
+    if (
+        route_prior_snapshot is None
+        and include_route_prior_snapshot
+        and arm in {"G2", "G3"}
+        and not graph_only_no_box
+    ):
+        route_prior_snapshot = tmp_path / "route prior snapshot"
+    if route_prior_snapshot is not None:
+        command.extend(["--route-prior-snapshot", str(route_prior_snapshot)])
     if graph_only_no_box:
         command.append("--graph-only-no-box")
     command.append("--dry-run")
@@ -81,6 +93,113 @@ def test_graph_arms_have_one_exact_stack_contract(
     assert "kujiale_0026_run4_read_only_shadow_candidate.json" in argv
     assert "localization_candidate_manifest:=" in argv
     assert "localization_supervisor_mode:=shadow" in argv
+    commands = {
+        name: shlex.split(
+            next(line for line in argv.splitlines() if line.startswith(f"{name}:"))
+            .split(":", 1)[1]
+        )
+        for name in ("module3", "module2", "bridge")
+    }
+    snapshot_arg = f"route_prior_snapshot_path:={tmp_path / 'route prior snapshot'}"
+    if route_prior == "true":
+        assert commands["module3"].count(snapshot_arg) == 1
+        assert commands["bridge"].count(snapshot_arg) == 1
+        assert snapshot_arg not in commands["module2"]
+    else:
+        assert all(
+            not any(item.startswith("route_prior_snapshot_path:=") for item in command)
+            for command in commands.values()
+        )
+
+
+@pytest.mark.parametrize("arm", ("G2", "G3"))
+def test_route_prior_arms_require_explicit_snapshot_without_env_fallback(
+    tmp_path, arm
+):
+    env = os.environ.copy()
+    env.update(
+        {
+            "BIO_NAV_PHASE_G_ROUTE_PRIOR_SNAPSHOT": str(tmp_path / "fake-phase-g"),
+            "BIO_NAV_ROUTE_PRIOR_SNAPSHOT": str(tmp_path / "fake-route-prior"),
+        }
+    )
+    result = subprocess.run(
+        [
+            str(STACK),
+            "--arm", arm,
+            "--domain", "151",
+            "--run-dir", str(tmp_path / "run"),
+            "--socket", str(tmp_path / "module2.sock"),
+            "--module2-root", str(tmp_path / "module2"),
+            "--module2-asset-root", str(tmp_path / "module2-assets"),
+            "--dry-run",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 2
+    assert f"--route-prior-snapshot is required for {arm}" in result.stderr
+
+
+def test_route_prior_snapshot_must_be_absolute_and_runtime_readable(tmp_path):
+    relative = subprocess.run(
+        [
+            str(STACK),
+            "--arm", "G2",
+            "--domain", "151",
+            "--run-dir", str(tmp_path / "run"),
+            "--socket", str(tmp_path / "module2.sock"),
+            "--module2-root", str(tmp_path / "module2"),
+            "--module2-asset-root", str(tmp_path / "module2-assets"),
+            "--route-prior-snapshot", "relative-snapshot",
+            "--dry-run",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert relative.returncode == 2
+    assert "route prior snapshot must be absolute" in relative.stderr
+
+    snapshot = tmp_path / "missing snapshot"
+    missing_directory = subprocess.run(
+        [
+            str(STACK),
+            "--arm", "G2",
+            "--domain", "151",
+            "--run-dir", str(tmp_path / "run"),
+            "--socket", str(tmp_path / "module2.sock"),
+            "--module2-root", str(tmp_path / "module2"),
+            "--module2-asset-root", str(tmp_path / "module2-assets"),
+            "--route-prior-snapshot", str(snapshot),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert missing_directory.returncode == 2
+    assert "route prior snapshot directory does not exist" in missing_directory.stderr
+
+    snapshot.mkdir()
+    missing_manifest = subprocess.run(
+        [
+            str(STACK),
+            "--arm", "G2",
+            "--domain", "151",
+            "--run-dir", str(tmp_path / "run"),
+            "--socket", str(tmp_path / "module2.sock"),
+            "--module2-root", str(tmp_path / "module2"),
+            "--module2-asset-root", str(tmp_path / "module2-assets"),
+            "--route-prior-snapshot", str(snapshot),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert missing_manifest.returncode == 2
+    assert "route prior snapshot manifest is not readable" in missing_manifest.stderr
 
 
 def test_obstacle_arm_is_held_m3_or_whole_group_m2_fallback(tmp_path):
@@ -117,6 +236,7 @@ def test_graph_only_no_box_keeps_graph_modes_but_disables_safety_and_prior(
     assert f" ros-d {mode} route_prior_enabled:=false" in argv
     assert "--cognitive-graph-mode shadow" in argv
     assert "cognitive_graph_mode:=shadow" in argv
+    assert "route_prior_snapshot_path:=" not in argv
 
 
 def test_graph_only_no_box_rejects_g0(tmp_path):
@@ -261,6 +381,6 @@ def test_phase_f_disables_route_prior_without_changing_legacy_default():
         REPOSITORY_ROOT
         / "ros2_ws/src/robot_bringup/launch/ros_stack.launch.py"
     ).read_text(encoding="utf-8")
-    assert "route_prior_enabled:=false" in phase_f
+    assert 'route_prior_enabled="false"' in phase_f
     assert "'route_prior_enabled', default_value='auto'" in core
     assert "resolve_route_prior_enabled(" in core
