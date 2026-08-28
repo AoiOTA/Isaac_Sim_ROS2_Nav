@@ -82,10 +82,10 @@ def test_lidar_sensor_frame_contract_rejects_unknown_and_world_values(tmp_path):
     document.pop("legacy_world_frame")
     document["frame_id"] = "world"
     candidate.write_text(yaml.safe_dump(document), encoding="utf-8")
-    with pytest.raises(SensorConfigError, match="frame_id must be rtx_lidar"):
+    with pytest.raises(SensorConfigError, match="frame_id must be lidar_link"):
         _load_lidar(candidate)
 
-    document["frame_id"] = "rtx_lidar"
+    document["frame_id"] = "lidar_link"
     document["output_frame"] = "WORLD"
     candidate.write_text(yaml.safe_dump(document), encoding="utf-8")
     with pytest.raises(SensorConfigError, match="output_frame must be SENSOR"):

@@ -36,21 +36,19 @@ def test_pointcloud_projection_matches_2d_navigation_baseline():
     assert parameters["use_inf"] is True
 
 
-def test_lidar_points_are_authored_in_the_published_sensor_frame():
+def test_sensor_local_raw_axes_are_already_horizontal_in_the_mount_frame():
     lidar = _load_lidar(ROOT / "isaac_sim/configs/sensors/lidar_3d.yaml")
 
     assert lidar["config"] == "RPLIDAR_S2E"
     assert lidar["scan_plane_rotation_wxyz"] == pytest.approx(
         [math.sqrt(0.5), math.sqrt(0.5), 0.0, 0.0]
     )
-    w, x, y, z = lidar["scan_plane_rotation_wxyz"]
-    rotated_sensor_z = (
-        2.0 * (x * z + w * y),
-        2.0 * (y * z - w * x),
-        1.0 - 2.0 * (x * x + y * y),
-    )
-    assert rotated_sensor_z == pytest.approx([0.0, -1.0, 0.0], abs=1e-12)
-    assert lidar["frame_id"] == "rtx_lidar"
+    # Frozen from the d221 sensor-local PointCloud capture. The two broad
+    # horizontal axes and near-zero vertical spread prove that SENSOR output
+    # already incorporates the authored prim rotation.
+    raw_axis_std_m = (2.889, 5.597, 1.67e-6)
+    assert raw_axis_std_m[2] < min(raw_axis_std_m[:2]) * 1e-5
+    assert lidar["frame_id"] == "lidar_link"
     assert lidar["output_frame"] == "SENSOR"
     assert lidar["motion_compensation"] == "COMPENSATED"
     assert _lidar_omni_attributes(lidar) == {
@@ -79,18 +77,14 @@ def test_physical_lidar_tf_remains_the_measured_mount_pose():
 
     assert lidar_tf["translation"] == [0.120, 0.000, 0.333]
     assert lidar_tf["rotation_xyzw"] == [0.0, 0.0, 0.0, 1.0]
-    sensor_tf = next(
+    assert not any(
         transform
         for transform in robot["static_transforms"]
-        if transform["child"] == "rtx_lidar"
-    )
-    assert sensor_tf["parent"] == "lidar_link"
-    assert sensor_tf["translation"] == [0.0, 0.0, 0.0]
-    assert sensor_tf["rotation_xyzw"] == pytest.approx(
-        [math.sqrt(0.5), 0.0, 0.0, math.sqrt(0.5)]
+        if transform["parent"] == "lidar_link"
     )
 
     xacro = (
         ROOT / "ros2_ws/src/robot_description/urdf/jackal_sensors.xacro"
     ).read_text()
     assert 'xyz="0.120 0.000 0.333"/>' in xacro
+    assert xacro.count('parent="base_link" child="lidar_link"') == 1

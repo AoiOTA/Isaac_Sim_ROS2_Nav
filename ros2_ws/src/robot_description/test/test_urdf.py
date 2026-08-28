@@ -26,7 +26,6 @@ def test_required_links_and_joints_are_present():
         'rear_left_wheel_link',
         'rear_right_wheel_link',
         'lidar_link',
-        'rtx_lidar',
         'imu_link',
         'camera_link',
         'camera_front_link',
@@ -68,7 +67,6 @@ def test_sensor_and_optical_joints_are_fixed():
     joints = {element.attrib['name']: element for element in root.findall('joint')}
     expected = {
         'lidar_link_joint',
-        'rtx_lidar_joint',
         'imu_link_joint',
         'camera_link_joint',
         'camera_front_link_joint',
@@ -88,29 +86,29 @@ def test_sensor_and_optical_joints_are_fixed():
         assert origin.attrib['rpy'] == '-1.57079632679 0 -1.57079632679'
 
 
-def test_rtx_lidar_has_one_parent_and_is_reachable_from_base():
+def test_lidar_mount_has_one_parent_and_is_reachable_from_base():
     for prefix in ('', 'robot_'):
         root = _robot_root(prefix)
         joints = root.findall('joint')
-        rtx_joint = [
+        lidar_joint = [
             joint for joint in joints
-            if joint.find('child').attrib['link'] == f'{prefix}rtx_lidar'
+            if joint.find('child').attrib['link'] == f'{prefix}lidar_link'
         ]
 
-        assert len(rtx_joint) == 1
-        assert rtx_joint[0].attrib['type'] == 'fixed'
-        assert rtx_joint[0].find('parent').attrib['link'] \
-            == f'{prefix}lidar_link'
-        origin = rtx_joint[0].find('origin')
-        assert origin.attrib['xyz'] == '0 0 0'
-        assert origin.attrib['rpy'] == '1.5707963267948966 0 0'
+        assert len(lidar_joint) == 1
+        assert lidar_joint[0].attrib['type'] == 'fixed'
+        assert lidar_joint[0].find('parent').attrib['link'] \
+            == f'{prefix}base_link'
+        origin = lidar_joint[0].find('origin')
+        assert origin.attrib['xyz'] == '0.120 0.000 0.333'
+        assert origin.attrib['rpy'] == '0 0 0'
 
         parent_by_child = {
             joint.find('child').attrib['link']:
             joint.find('parent').attrib['link']
             for joint in joints
         }
-        frame = f'{prefix}rtx_lidar'
+        frame = f'{prefix}lidar_link'
         while frame != f'{prefix}base_link':
             frame = parent_by_child[frame]
 

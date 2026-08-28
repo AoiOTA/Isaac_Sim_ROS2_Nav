@@ -14,10 +14,10 @@ tick_rate: 20.0
 accumulate_outputs: true
 render_product_resolution: [1, 1]
 topic_name: /lidar/points_raw
-frame_id: rtx_lidar
-# Publish sensor-local coordinates. The fixed lidar_link -> rtx_lidar TF below
-# represents the internal scan-plane rotation without coupling measurements to
-# odometry, map localization, or ground truth.
+frame_id: lidar_link
+# SENSOR output already includes the authored scan-plane rotation. Label those
+# sensor-local coordinates directly with the physical mount frame; do not add
+# another ROS-frame rotation or couple measurements to navigation/truth frames.
 output_frame: SENSOR
 # A full rotary scan spans one sensor period. Compensate returns into one
 # sensor pose so simultaneous translation and rotation do not bend walls.

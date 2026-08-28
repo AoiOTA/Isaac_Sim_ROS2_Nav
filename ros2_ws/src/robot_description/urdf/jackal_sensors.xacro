@@ -14,9 +14,6 @@
       prefix="${prefix}" parent="base_link" child="lidar_link"
       xyz="0.120 0.000 0.333"/>
     <xacro:fixed_frame
-      prefix="${prefix}" parent="lidar_link" child="rtx_lidar"
-      xyz="0 0 0" rpy="1.5707963267948966 0 0"/>
-    <xacro:fixed_frame
       prefix="${prefix}" parent="base_link" child="imu_link"
       xyz="0.012 0.002 0.067"/>
 
