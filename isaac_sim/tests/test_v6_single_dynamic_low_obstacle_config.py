@@ -26,6 +26,13 @@ def test_single_dynamic_low_box_geometry_motion_and_visibility_contract():
     assert case.max_acceleration == pytest.approx(0.50)
     assert actor.post_motion == "park"
     assert case.variant("v1").seed == 8601
+    assert tuple(item.variant_id for item in case.variants) == (
+        "v1", "v2", "v3", "v4", "v5",
+    )
+    assert tuple(item.seed for item in case.variants) == (8601,) * 5
+    assert tuple(item.start_delay_sec for item in case.variants) == pytest.approx(
+        (0.0, 0.15, 0.30, 0.45, 0.60)
+    )
     lower = actor.start[2] - actor.size[2] / 2.0
     upper = actor.start[2] + actor.size[2] / 2.0
     assert lower == pytest.approx(0.0)

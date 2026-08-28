@@ -270,6 +270,30 @@ def test_rivermark_appearance_profiles_change_light_and_colour_only():
     assert '--appearance-config "${demo_dir}/rivermark_appearance_profiles.yaml"' in source
 
 
+def test_v6_single_rivermark_physical_profiles_parse_with_one_actor_each():
+    static = load_dynamic_scenario(
+        DEMO_ROOT / "v6_rivermark_single_static_arc44.yaml"
+    )
+    assert len(static.obstacles) == 1
+    assert static.obstacles[0].obstacle_id == "rivermark_static_arc44"
+    assert static.obstacles[0].start == pytest.approx((-15.087, 134.984, 6.33))
+    assert static.obstacles[0].size == pytest.approx((0.70, 0.70, 0.80))
+
+    dynamic = load_dynamic_scenario(
+        DEMO_ROOT / "v6_rivermark_single_dynamic_crossing.yaml"
+    )
+    assert len(dynamic.obstacles) == 1
+    case = dynamic.case("crossing")
+    assert case.trigger_group == "G3"
+    assert case.waypoints[0] == pytest.approx((-16.9516, 150.855, 6.60))
+    assert case.waypoints[1] == pytest.approx((-20.469, 148.3825, 6.49))
+    assert case.obstacle.size == pytest.approx((0.8, 0.6, 1.0))
+    assert case.obstacle.speed == pytest.approx(0.55)
+    assert tuple(item.start_delay_sec for item in case.variants) == pytest.approx(
+        (0.0, 0.15, 0.30, 0.45, 0.60)
+    )
+
+
 def test_outdoor_initial_pose_accepts_best_effort_clock_and_scan():
     source = (
         PROJECT_ROOT

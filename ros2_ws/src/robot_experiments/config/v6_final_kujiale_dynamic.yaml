@@ -1,59 +1,42 @@
-schema_version: bio_nav_v6_single_episode_manifest_v1
-scene_contract_frozen: false
-scene: {id: v6_final_kujiale_dynamic, world: kujiale, category: dynamic}
-runtime:
-  startup_profile: estimated_autonomy
-  cognitive_mode: active
-  causal_level: L3
-  module_level: M3
-  route_backend: primary
-  structure_tf_source: isaac
-  ground_truth_policy: evaluator_only
-  direct_rgbd_costmap_enabled: false
-  localization_seed_source: b5_cognitive
-  ekf_profile: wheel_imu
-  lidar_odometry_backend: "off"
-  lidar_odometry_validated: false
-  rf2o_decision: not_validated_off
-  imu_calibration_profile: isaac_v6_calibrated
-required_runtime_values:
-  scene_asset: /home/lyb/kujiale_usd_rooms_20260717/kujiale_0026/kujiale_0026_A_to_B_door_open.usd
-  occupancy_map: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml
-  posegraph_required: true
-  posegraph_file: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/data/maps/posegraphs/v6_kujiale_isaacgen_v1.posegraph
-  spawn_manifest: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml
-  reset_pose_name: long_route_start_g1
-  route_graph: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/ros2_ws/src/robot_route_planner/config/v6_kujiale_isaacgen_v1_gvg_v1.geojson
-  navigation_config: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/ros2_ws/src/robot_navigation/config/nav2_dynamic_avoidance.yaml
-  frozen_obstacle_manifest: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen_manifest.yaml
-  active_obstacle_config: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/isaac_sim/configs/experiments/kujiale_long_range_dynamic.yaml
-  physical_obstacles_enabled: true
-mission:
-  reset_pose: {id: G1, frame_id: map, x: 0.45, y: -5.35, yaw_deg: 90.0}
-  legs:
-    - {id: G2, frame_id: map, x: 0.80, y: 4.80, yaw_deg: -160.0, dynamic_trigger_group: G2}
-    - {id: G3, frame_id: map, x: -2.20, y: 3.25, yaw_deg: -105.0, dynamic_trigger_group: G3}
-    - {id: G4, frame_id: map, x: -3.00, y: -0.45, yaw_deg: -68.0}
-    - {id: G5, frame_id: map, x: -2.20, y: -2.95, yaw_deg: -42.0}
-    - {id: G1, frame_id: map, x: 0.45, y: -5.35, yaw_deg: 90.0, dynamic_trigger_group: G1}
-episodes:
-  - {seed: 7301, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
-  - {seed: 7302, variant_id: v2, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
-  - {seed: 7303, variant_id: v3, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
-  - {seed: 7304, variant_id: v4, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
-  - {seed: 7305, variant_id: v5, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
-  - {seed: 7306, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
-  - {seed: 7307, variant_id: v2, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
-  - {seed: 7308, variant_id: v3, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
-  - {seed: 7309, variant_id: v4, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
-  - {seed: 7310, variant_id: v5, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
-  - {seed: 7311, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
-  - {seed: 7312, variant_id: v2, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
-  - {seed: 7313, variant_id: v3, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
-  - {seed: 7314, variant_id: v4, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
-  - {seed: 7315, variant_id: v5, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
-  - {seed: 7316, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
-  - {seed: 7317, variant_id: v2, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
-  - {seed: 7318, variant_id: v3, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
-  - {seed: 7319, variant_id: v4, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
-  - {seed: 7320, variant_id: v5, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
+schema_version: 1
+scenario:
+  id: v6_final_kujiale_dynamic
+  type: dynamic
+  spawn_pose_name: long_route_start_g1
+  map_version: v6_kujiale_isaacgen_v1
+  posegraph_version: v6_kujiale_isaacgen_v1
+  configs:
+    robot: ../../../../isaac_sim/configs/robots/jackal.yaml
+    nav2: ../../robot_navigation/config/nav2_dynamic_avoidance.yaml
+    dynamic_obstacles: ../../../../isaac_sim/configs/experiments/v6_single_dynamic_low_obstacle.yaml
+  simulation: {physics_dt: 0.016666666666666666, rtf: 1.0}
+  runs:
+    matrix:
+      - {seed: 8601, case_id: single_dynamic_low_box, variant_id: v1, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8601, case_id: single_dynamic_low_box, variant_id: v2, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8601, case_id: single_dynamic_low_box, variant_id: v3, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8601, case_id: single_dynamic_low_box, variant_id: v4, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8601, case_id: single_dynamic_low_box, variant_id: v5, condition_id: v6_final_kujiale_dynamic}
+    timeout_sec: 600.0
+    leg_timeout_sec: 180.0
+  goal: {id: G1, frame_id: map, position: [0.45, -5.35], yaw_deg: 90.0, require_orientation: false}
+  route:
+    - {id: G2, frame_id: map, position: [0.80, 4.80], yaw_deg: -160.0, require_orientation: false}
+    - {id: G3, frame_id: map, position: [-2.20, 3.25], yaw_deg: -105.0, require_orientation: false}
+    - {id: G4, frame_id: map, position: [-3.00, -0.45], yaw_deg: -68.0, require_orientation: false}
+    - {id: G5, frame_id: map, position: [-2.20, -2.95], yaw_deg: -42.0, require_orientation: false}
+    - {id: G1, frame_id: map, position: [0.45, -5.35], yaw_deg: 90.0, require_orientation: false}
+  success: {position_tolerance_m: 0.25, orientation_tolerance_deg: 10.0, final_linear_speed_mps: 0.02, final_angular_speed_radps: 0.05, final_still_duration_sec: 1.0, final_still_timeout_sec: 20.0, require_safety_observations: true, minimum_ground_truth_path_length_m: 20.0}
+  obstacles:
+    layout_id: kujiale_v6_single_dynamic_low_box_v1
+    static: []
+    trajectories:
+      - id: v6_dynamic_low_box_solo
+        trigger_group: G2
+        motion: crossing
+        shape: box
+        repeat: false
+        dimensions: [0.30, 0.30]
+        waypoints:
+          - {time_sec: 0.0, position: [-1.25, -0.35]}
+          - {time_sec: 3.2, position: [-0.45, -0.35]}

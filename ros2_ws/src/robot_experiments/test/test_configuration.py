@@ -21,8 +21,15 @@ from robot_experiments.spawn_poses import (
 
 
 PACKAGE_ROOT = Path(__file__).parents[1]
+REPOSITORY_ROOT = PACKAGE_ROOT.parents[2]
 CONFIG = PACKAGE_ROOT / "config"
 FIXTURES = Path(__file__).parent / "fixtures"
+
+V6_FINAL_SCENARIOS = tuple(
+    f"v6_final_{world}_{category}.yaml"
+    for world in ("kujiale", "rivermark")
+    for category in ("static", "dynamic", "appearance")
+)
 
 
 @pytest.mark.parametrize(
@@ -93,6 +100,153 @@ def test_v6_low_obstacle_scenario_selects_only_the_frozen_layout():
         "speed": 0.0, "delay_sec": 0.0, "jitter_sec": 0.0,
         "post_motion": "hold",
     }]
+
+
+@pytest.mark.parametrize("filename", V6_FINAL_SCENARIOS)
+def test_v6_final_scenarios_are_canonical_single_obstacle_routes(filename):
+    scenario = load_scenario(CONFIG / filename)
+    world = "kujiale" if "kujiale" in filename else "rivermark"
+    category = filename.removeprefix(f"v6_final_{world}_").removesuffix(".yaml")
+
+    assert scenario.scenario_id == filename.removesuffix(".yaml")
+    assert scenario.scenario_type == ("dynamic" if category == "dynamic" else "static")
+    assert len(scenario.route) == 5
+    assert tuple(goal.goal_id for goal in scenario.route) == (
+        ("G2", "G3", "G4", "G5", "G1")
+        if world == "kujiale"
+        else ("G1", "G2", "G3", "G4", "G5")
+    )
+    assert (
+        len(scenario.obstacles["static"]) + len(scenario.obstacle_trajectories)
+    ) == 1
+    assert scenario.dynamic_config_file is not None
+    assert scenario.resolve_path(scenario.dynamic_config_file).is_file()
+    for configured in (
+        scenario.robot_config_file,
+        scenario.nav2_config_file,
+        scenario.dynamic_config_file,
+        scenario.appearance_config_file,
+    ):
+        if configured is not None:
+            assert not Path(configured).is_absolute()
+
+
+@pytest.mark.parametrize(
+    ("filename", "spawn_file"),
+    [
+        (
+            "v6_final_kujiale_dynamic.yaml",
+            REPOSITORY_ROOT
+            / "isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml",
+        ),
+        (
+            "v6_final_rivermark_dynamic.yaml",
+            REPOSITORY_ROOT / "data/rivermark_demo/rivermark.spawn.yaml",
+        ),
+    ],
+)
+def test_v6_final_dynamic_scenarios_match_one_physical_actor(filename, spawn_file):
+    scenario = load_scenario(CONFIG / filename)
+    spawn_pose = load_spawn_pose(spawn_file, scenario.spawn_pose_name)
+    validate_dynamic_physical_contract(
+        scenario,
+        spawn_pose,
+        scenario.resolve_path(scenario.dynamic_config_file),
+    )
+    assert tuple(row.variant_id for row in scenario.run_matrix) == (
+        "v1", "v2", "v3", "v4", "v5",
+    )
+
+
+def test_v6_final_kujiale_physical_geometry_variants_and_appearance_profiles():
+    static = yaml.safe_load((
+        REPOSITORY_ROOT
+        / "isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen.yaml"
+    ).read_text(encoding="utf-8"))
+    assert len(static["obstacles"]) == 1
+    assert static["obstacles"][0]["id"] == "v6_low_box_solo"
+    assert static["obstacles"][0]["start"] == [-0.45, -0.35, 0.08]
+    assert static["obstacles"][0]["size"] == [0.30, 0.30, 0.16]
+
+    dynamic = yaml.safe_load((
+        REPOSITORY_ROOT
+        / "isaac_sim/configs/experiments/v6_single_dynamic_low_obstacle.yaml"
+    ).read_text(encoding="utf-8"))
+    assert list(dynamic["cases"]) == ["single_dynamic_low_box"]
+    case = dynamic["cases"]["single_dynamic_low_box"]
+    assert case["trigger_group"] == "G2"
+    assert case["obstacle"]["id"] == "v6_dynamic_low_box_solo"
+    assert case["obstacle"]["size"] == [0.30, 0.30, 0.16]
+    assert case["obstacle"]["waypoints"] == [
+        [-1.25, -0.35, 0.08], [-0.45, -0.35, 0.08],
+    ]
+    assert case["obstacle"]["speed"] == pytest.approx(0.25)
+    assert [row["start_delay_sec"] for row in case["variants"].values()] == [
+        0.0, 0.15, 0.30, 0.45, 0.60,
+    ]
+
+    appearance = load_scenario(CONFIG / "v6_final_kujiale_appearance.yaml")
+    assert [row.appearance_profile_id for row in appearance.run_matrix] == [
+        "dim_warm", "dim_cool", "bright_warm", "bright_cool",
+    ]
+
+
+def _region_ids_for_xy(regions, x, y):
+    identifiers = []
+    for region in regions:
+        xs = [point[0] for point in region["core_polygon_map"]]
+        ys = [point[1] for point in region["core_polygon_map"]]
+        if min(xs) <= x <= max(xs) and min(ys) <= y <= max(ys):
+            identifiers.append(region["id"])
+    return identifiers
+
+
+def test_v6_final_rivermark_physical_geometry_regions_and_appearance_profiles():
+    static = yaml.safe_load((
+        REPOSITORY_ROOT
+        / "data/rivermark_demo/v6_rivermark_single_static_arc44.yaml"
+    ).read_text(encoding="utf-8"))
+    assert len(static["obstacles"]) == 1
+    obstacle = static["obstacles"][0]
+    assert obstacle["id"] == "rivermark_static_arc44"
+    assert obstacle["start"] == obstacle["end"] == [-15.087, 134.984, 6.33]
+    assert obstacle["size"] == [0.70, 0.70, 0.80]
+
+    dynamic = yaml.safe_load((
+        REPOSITORY_ROOT
+        / "data/rivermark_demo/v6_rivermark_single_dynamic_crossing.yaml"
+    ).read_text(encoding="utf-8"))
+    assert list(dynamic["cases"]) == ["crossing"]
+    case = dynamic["cases"]["crossing"]
+    assert case["trigger_group"] == "G3"
+    assert case["obstacle"]["id"] == "rivermark_crossing_cart"
+    assert case["obstacle"]["waypoints"] == [
+        [-16.9516, 150.855, 6.60], [-20.469, 148.3825, 6.49],
+    ]
+    assert case["obstacle"]["size"] == [0.8, 0.6, 1.0]
+    assert case["obstacle"]["speed"] == pytest.approx(0.55)
+    assert [row["start_delay_sec"] for row in case["variants"].values()] == [
+        0.0, 0.15, 0.30, 0.45, 0.60,
+    ]
+
+    region_document = yaml.safe_load((
+        REPOSITORY_ROOT / "data/rivermark_demo/rivermark_regions.yaml"
+    ).read_text(encoding="utf-8"))
+    assert len(region_document["regions"]) == 50
+    assert _region_ids_for_xy(
+        region_document["regions"], -15.087, 134.984
+    ) == ["rivermark_a:region_14"]
+    assert _region_ids_for_xy(
+        region_document["regions"], -16.9516, 150.855
+    ) == ["rivermark_a:region_22"]
+    assert _region_ids_for_xy(
+        region_document["regions"], -20.469, 148.3825
+    ) == ["rivermark_a:region_22"]
+
+    appearance = load_scenario(CONFIG / "v6_final_rivermark_appearance.yaml")
+    assert [row.appearance_profile_id for row in appearance.run_matrix] == [
+        "dim_warm", "dim_cool", "bright_warm", "bright_cool",
+    ]
 
 
 def test_dynamic_scenario_preserves_reproducible_trajectories():

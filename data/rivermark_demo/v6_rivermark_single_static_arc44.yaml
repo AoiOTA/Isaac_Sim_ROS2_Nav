@@ -1,0 +1,18 @@
+# One physical obstacle for the V6 Rivermark static and appearance scenarios.
+schema_version: 2
+seed: 20260814
+enabled: true
+coordinate_frame: map
+spawn_pose_name: rivermark_start
+obstacles:
+  - id: rivermark_static_arc44
+    mode: stationary
+    trigger_group: null
+    size: [0.70, 0.70, 0.80]
+    mass: 80.0
+    start: [-15.087, 134.984, 6.33]
+    end: [-15.087, 134.984, 6.33]
+    speed: 0.0
+    delay_sec: 0.0
+    jitter_sec: 0.0
+    post_motion: hold

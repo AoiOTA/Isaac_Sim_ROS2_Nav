@@ -29,4 +29,8 @@ cases:
       post_motion: park
     variants:
       v1: {seed: 8601, start_delay_sec: 0.0}
+      v2: {seed: 8601, start_delay_sec: 0.15}
+      v3: {seed: 8601, start_delay_sec: 0.30}
+      v4: {seed: 8601, start_delay_sec: 0.45}
+      v5: {seed: 8601, start_delay_sec: 0.60}
 case_sets: {}
