@@ -118,6 +118,7 @@ for argument in "$@"; do
     ekf_profile:=*|imu_calibration_params_file:=*|\
     lidar_odometry_backend:=*|\
     lidar_odometry_validated:=*|nav2_profile:=*|\
+    nav2_profile_params_file:=*|nav2_params_file:=*|\
     cognitive_profile:=*|cognitive_graph_mode:=*|route_prior_enabled:=*|\
     interactive:=*|use_rviz:=*)
       die "V6 Rivermark fixes the estimated-navigation contract; rejected override: ${argument}"

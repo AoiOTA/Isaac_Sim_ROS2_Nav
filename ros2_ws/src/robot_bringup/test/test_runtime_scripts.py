@@ -491,6 +491,9 @@ def test_v6_rivermark_ros_argv_is_estimated_occupancy_only_m0_gvg(tmp_path):
                and argument.endswith('/robot_odometry/config/imu_calibration.yaml')
                for argument in arguments)
     assert 'nav2_profile:=stable' in arguments
+    assert not any(argument.startswith('nav2_profile_params_file:=')
+                   or argument.startswith('nav2_params_file:=')
+                   for argument in arguments)
     assert 'nav2_profile:=v6_low_obstacle_isolation' not in arguments
     assert 'cognitive_profile:=M0' in arguments
     assert 'cognitive_graph_mode:=gvg' in arguments
@@ -551,9 +554,11 @@ die() {{ printf '%s\\n' "$*" >&2; return 1; }}
 @pytest.mark.parametrize(
     'override',
     ('cognitive_profile:=M3', 'cognitive_graph_mode:=primary',
-     'route_prior_enabled:=true'),
+     'route_prior_enabled:=true',
+     'nav2_profile_params_file:=/tmp/caller-nav2.yaml',
+     'nav2_params_file:=/tmp/caller-nav2.yaml'),
 )
-def test_v6_rivermark_rejects_final_cognitive_overrides(tmp_path, override):
+def test_v6_rivermark_rejects_final_navigation_overrides(tmp_path, override):
     scripts = tmp_path / 'scripts'
     (scripts / 'lib').mkdir(parents=True)
     shutil.copy2(RUN_V6_RIVERMARK, scripts / RUN_V6_RIVERMARK.name)
