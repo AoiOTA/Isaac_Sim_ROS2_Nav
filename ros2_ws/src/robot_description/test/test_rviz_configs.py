@@ -152,6 +152,57 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
     assert _named(config, 'Transformed Reference Plan')['Topic'][
         'Value'] == '/transformed_global_plan'
     assert _named(config, 'MPPI Candidate Trajectories')['Enabled'] is True
+    module1_odom = _named(config, 'Module1 Candidate Odometry (No TF Authority)')
+    _assert_topic(
+        module1_odom,
+        '/bio_nav/module1/odom',
+        reliability='Reliable',
+        durability='Volatile',
+    )
+    assert module1_odom['Enabled'] is True
+    assert _named(config, 'SLAM Toolbox Diagnostic Map')['Enabled'] is False
+
+    current = _named(config, 'Current Cognitive Navigation')
+    _assert_topic(
+        current,
+        '/bio_nav/v310/rviz',
+        reliability='Reliable',
+        durability='Volatile',
+    )
+    required_current_namespaces = {
+        # Module1 localization candidates and AMCL comparison.
+        'm1_cognitive_posterior',
+        'm1_dominant_covariance',
+        'm1_validated_candidates',
+        'm1_status',
+        'amcl_pose_covariance',
+        'route_estimated_trajectory',
+        # Module2 belief, SR/DR, obstacle and consumer state.
+        'module2_p_corr',
+        'module2_place_peak',
+        'module2_sr',
+        'module2_dr',
+        'module2_cognitive_obstacles',
+        'module2_applied_status',
+        # Module3 topology, route/path and ownership.
+        'module3_gvg_edges',
+        'module3_gvg_nodes',
+        'module3_final_cost',
+        'selected_canonical_route',
+        'route_cognitive_selected',
+        'route_projection',
+        'smac_plan',
+        'executed_trajectory',
+        'ownership_module2',
+        'ownership_module3',
+        'ownership_handoff',
+    }
+    assert required_current_namespaces <= {
+        namespace
+        for namespace, enabled in current['Namespaces'].items()
+        if enabled
+    }
+
     module2 = _named(config, 'Module2 Live Overlay')
     _assert_topic(
         module2,
@@ -167,67 +218,16 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
     assert module2['Namespaces']['Local BEV Label'] is False
     assert module2['Namespaces']['Status'] is True
     assert module2['Namespaces']['Visual Candidate'] is False
-    applied = _named(config, 'Module2 Applied Nav2 Risk')
-    _assert_topic(
-        applied,
+    navigation_source = (RVIZ_ROOT / 'navigation.rviz').read_text(
+        encoding='utf-8')
+    for retired_topic in (
         '/bio_nav/local_risk_layer/rviz_markers',
-        reliability='Reliable',
-        durability='Volatile',
-    )
-    assert applied['Namespaces']['Projected Global Risk'] is True
-    assert applied['Namespaces']['Risk Cost Raised'] is True
-    assert applied['Namespaces']['Nav2 Risk Status'] is True
-    planning = _named(config, 'Module2 Planning Decision')
-    _assert_topic(
-        planning,
         '/bio_nav/planner/rviz_markers',
-        reliability='Reliable',
-        durability='Volatile',
-    )
-    assert planning['Namespaces']['Planning Decision'] is True
-    assert planning['Namespaces']['SR Zero-Tie Reference'] is True
-    assert planning['Namespaces']['SR Tie-Break Result'] is True
-    assert planning['Namespaces']['SR Zero-Tie Only Cells'] is True
-    assert planning['Namespaces']['SR Selected Only Cells'] is True
-    assert planning['Namespaces']['SR Search Selected-Only Cells'] is True
-    assert planning['Namespaces']['SR Search Zero-Only Cells'] is True
-    sr_probe = _named(config, 'Module2 SR Full-House Impact')
-    _assert_topic(
-        sr_probe,
         '/bio_nav/sr_impact_probe/rviz_markers',
-        reliability='Reliable',
-        durability='Volatile',
-    )
-    assert sr_probe['Enabled'] is True
-    assert sr_probe['Namespaces']['SR Full Route Zero Reference'] is True
-    assert sr_probe['Namespaces']['SR Full Route Selected'] is True
-    assert sr_probe['Namespaces']['SR Full Route Zero-Only Search'] is True
-    assert sr_probe['Namespaces']['SR Full Route Selected-Only Search'] is True
-    assert sr_probe['Namespaces']['SR Full Route Waypoints'] is True
-    assert sr_probe['Namespaces']['SR Full Route Waypoint Labels'] is True
-    risk_probe = _named(config, 'Module2 Risk On-Off Impact')
-    _assert_topic(
-        risk_probe,
         '/bio_nav/risk_impact_probe/rviz_markers',
-        reliability='Reliable',
-        durability='Volatile',
-    )
-    assert risk_probe['Enabled'] is True
-    assert risk_probe['Namespaces']['Risk OFF Reference Path'] is True
-    assert risk_probe['Namespaces']['Risk ON Selected Path'] is True
-    assert risk_probe['Namespaces']['Risk Impact Status'] is True
-    assert risk_probe['Namespaces']['Risk Impact Waypoints'] is True
-    assert risk_probe['Namespaces']['Risk Impact Waypoint Labels'] is True
-    probe_plan = _named(config, 'SR Impact Probe Final Plan')
-    _assert_topic(
-        probe_plan,
         '/bio_nav/planner/sr_impact_probe_plan',
-        reliability='Reliable',
-        durability='Transient Local',
-    )
-    assert probe_plan['Enabled'] is True
-    assert probe_plan['Color'] == '255; 215; 0'
-    assert probe_plan['Line Width'] >= 0.18
+    ):
+        assert retired_topic not in navigation_source
     raw_risk = _named(config, 'Module2 Dynamic Risk Raw')
     assert raw_risk['Enabled'] is False
     assert raw_risk['Color Scheme'] == 'costmap'
