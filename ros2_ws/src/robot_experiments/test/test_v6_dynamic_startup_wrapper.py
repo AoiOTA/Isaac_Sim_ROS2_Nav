@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 
@@ -11,7 +12,7 @@ STARTUP = REPO / "scripts/lib/v6_dynamic_startup.sh"
 
 
 def _fake_startup(tmp_path: Path, *, has_candidate=True, asset_available=True):
-    project = tmp_path / "module3"
+    project = tmp_path / "bio_nav_module3"
     scripts = project / "scripts"
     (scripts / "lib").mkdir(parents=True)
     shutil.copy2(WRAPPER, scripts / WRAPPER.name)
@@ -20,12 +21,12 @@ def _fake_startup(tmp_path: Path, *, has_candidate=True, asset_available=True):
     (project / "isaac_sim/tools").mkdir(parents=True)
     (project / "isaac_sim/tools/import_assets.py").touch()
 
-    integration = tmp_path / "integration"
-    prefix = integration / "ros2_ws/install_run4_candidate"
+    integration = tmp_path / "bio_nav_integration"
+    prefix = integration / "ros2_ws/install"
     prefix.mkdir(parents=True)
-    setup = prefix / "setup.bash"
+    setup = prefix / "local_setup.bash"
     setup.write_text(
-        f"export FAKE_INTEGRATION_PREFIX={prefix}\n"
+        f"export FAKE_INTEGRATION_PREFIX={shlex.quote(str(prefix))}\n"
         f"export FAKE_HAS_CANDIDATE={'1' if has_candidate else '0'}\n"
         'export OVERLAY_ORDER="${OVERLAY_ORDER},integration"\n',
         encoding="utf-8",
@@ -134,7 +135,19 @@ def test_run_imports_then_checks_assets_after_current_overlay(tmp_path):
     assert "--check" not in calls[0]
     assert "--check" in calls[1]
     assert os.environ.get("BIO_NAV_INTEGRATION_SETUP") is None
-    assert (integration / "ros2_ws/install_run4_candidate/setup.bash").is_file()
+    assert (integration / "ros2_ws/install/local_setup.bash").is_file()
+    dispatch = Path(env["FAKE_DISPATCH_LOG"]).read_text(encoding="utf-8")
+    assert "jazzy,integration,module3|run robot_experiments" in dispatch
+
+
+def test_checkout_portable_default_uses_sibling_integration_with_spaces(tmp_path):
+    scripts, integration, env = _fake_startup(tmp_path / "checkout with spaces")
+    env.pop("BIO_NAV_INTEGRATION_ROOT")
+
+    result = _run_wrapper(scripts, env, "run")
+
+    assert result.returncode == 0, result.stderr
+    assert (integration / "ros2_ws/install/local_setup.bash").is_file()
     dispatch = Path(env["FAKE_DISPATCH_LOG"]).read_text(encoding="utf-8")
     assert "jazzy,integration,module3|run robot_experiments" in dispatch
 
@@ -155,6 +168,28 @@ def test_stale_overlay_fails_before_asset_or_dispatch(tmp_path):
     assert "does not provide CognitivePoseModeCandidate" in result.stderr
     assert not Path(env["FAKE_ASSET_LOG"]).exists()
     assert not Path(env["FAKE_DISPATCH_LOG"]).exists()
+
+
+def test_explicit_integration_setup_override_is_preserved_with_spaces(tmp_path):
+    scripts, integration, env = _fake_startup(tmp_path)
+    explicit_setup = integration / "explicit overlay/setup with spaces.bash"
+    explicit_setup.parent.mkdir(parents=True)
+    explicit_prefix = integration / "explicit prefix"
+    explicit_setup.write_text(
+        f"export FAKE_INTEGRATION_PREFIX={shlex.quote(str(explicit_prefix))}\n"
+        "export FAKE_HAS_CANDIDATE=1\n"
+        'export OVERLAY_ORDER="${OVERLAY_ORDER},integration-explicit"\n',
+        encoding="utf-8",
+    )
+    explicit_prefix.mkdir()
+    env["BIO_NAV_INTEGRATION_ROOT"] = str(integration / ".." / integration.name)
+    env["BIO_NAV_INTEGRATION_SETUP"] = str(explicit_setup)
+
+    result = _run_wrapper(scripts, env, "run")
+
+    assert result.returncode == 0, result.stderr
+    dispatch = Path(env["FAKE_DISPATCH_LOG"]).read_text(encoding="utf-8")
+    assert "jazzy,integration-explicit,module3|run robot_experiments" in dispatch
 
 
 def test_phase_f_stale_overlay_fails_before_run_directory(tmp_path):

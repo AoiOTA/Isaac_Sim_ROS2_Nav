@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 
 configure_v6_dynamic_integration_overlay() {
-  export BIO_NAV_INTEGRATION_ROOT="${BIO_NAV_INTEGRATION_ROOT:-/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration}"
-  export BIO_NAV_INTEGRATION_SETUP="${BIO_NAV_INTEGRATION_SETUP:-${BIO_NAV_INTEGRATION_ROOT}/ros2_ws/install_run4_candidate/setup.bash}"
+  local helper_dir project_root integration_root
+  helper_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  project_root="$(cd "${helper_dir}/../.." && pwd)"
+  integration_root="${BIO_NAV_INTEGRATION_ROOT:-${project_root}/../bio_nav_integration}"
+  export BIO_NAV_INTEGRATION_ROOT="$(readlink -f "${integration_root}")"
+  export BIO_NAV_INTEGRATION_SETUP="${BIO_NAV_INTEGRATION_SETUP:-${BIO_NAV_INTEGRATION_ROOT}/ros2_ws/install/local_setup.bash}"
 }
 
 validate_v6_dynamic_integration_overlay() {
