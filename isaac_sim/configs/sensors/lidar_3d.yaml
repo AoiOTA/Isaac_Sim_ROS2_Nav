@@ -14,10 +14,11 @@ tick_rate: 20.0
 accumulate_outputs: true
 render_product_resolution: [1, 1]
 topic_name: /lidar/points_raw
-frame_id: lidar_link
-# SENSOR output already includes the authored scan-plane rotation. Label those
-# sensor-local coordinates directly with the physical mount frame; do not add
-# another ROS-frame rotation or couple measurements to navigation/truth frames.
+frame_id: rtx_lidar
+# SENSOR output already includes the authored scan-plane rotation but retains
+# the RTX sensor's yaw convention. Label those coordinates with an independent
+# ROS sensor frame; the fixed lidar_link -> rtx_lidar transform aligns yaw with
+# the physical mount without coupling measurements to navigation/truth frames.
 output_frame: SENSOR
 # A full rotary scan spans one sensor period. Compensate returns into one
 # sensor pose so simultaneous translation and rotation do not bend walls.

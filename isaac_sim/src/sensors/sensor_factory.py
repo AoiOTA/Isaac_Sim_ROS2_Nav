@@ -474,11 +474,11 @@ def _load_lidar(path) -> dict[str, Any]:
         )
     if data["type"] != "point_cloud" or data["topic_name"] != "/lidar/points_raw":
         raise SensorConfigError("LiDAR must publish point_cloud on /lidar/points_raw")
-    if data["frame_id"] != "lidar_link":
-        raise SensorConfigError("RTX PointCloud frame_id must be lidar_link")
+    if data["frame_id"] != "rtx_lidar":
+        raise SensorConfigError("RTX PointCloud frame_id must be rtx_lidar")
     if data["output_frame"] != "SENSOR":
         raise SensorConfigError(
-            "RTX PointCloud output_frame must be SENSOR when frame_id is lidar_link"
+            "RTX PointCloud output_frame must be SENSOR when frame_id is rtx_lidar"
         )
     if data["motion_compensation"] != "COMPENSATED":
         raise SensorConfigError(

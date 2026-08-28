@@ -79,7 +79,7 @@ def lidar_graph_spec(config: ProjectConfig, render_product_path: str) -> GraphSp
         ("PointCloudPublisher.inputs:renderProductPath", render_product_path),
         ("PointCloudPublisher.inputs:type", "point_cloud"),
         ("PointCloudPublisher.inputs:topicName", topics["pointcloud"]),
-        ("PointCloudPublisher.inputs:frameId", topics["frames"]["lidar"]),
+        ("PointCloudPublisher.inputs:frameId", topics["frames"]["rtx_lidar"]),
         ("PointCloudPublisher.inputs:nodeNamespace", config.ros2.namespace),
         ("PointCloudPublisher.inputs:queueSize", 5),
         ("PointCloudPublisher.inputs:qosProfile", qos["sensor_data"]),

@@ -47,6 +47,7 @@ def test_every_workflow_has_map_frame_robot_tf_and_sensor_qos(name):
     classes = {item['Class'] for item in _displays(config)}
     assert 'rviz_default_plugins/RobotModel' in classes
     assert 'rviz_default_plugins/TF' in classes
+    assert _named(config, 'TF')['Frames']['rtx_lidar']['Value'] is True
     _assert_topic(
         _named(config, 'LaserScan'),
         '/scan',

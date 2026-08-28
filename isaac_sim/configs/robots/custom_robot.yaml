@@ -40,10 +40,12 @@ controller:
 frames:
   base: base_link
   lidar: lidar_link
+  rtx_lidar: rtx_lidar
   imu: imu_link
   camera: camera_link
 static_transforms:
   - {parent: base_link, child: lidar_link, translation: null, rotation_xyzw: null}
+  - {parent: lidar_link, child: rtx_lidar, translation: null, rotation_xyzw: null}
   - {parent: base_link, child: imu_link, translation: null, rotation_xyzw: null}
   - {parent: base_link, child: camera_link, translation: null, rotation_xyzw: null}
   - {parent: camera_link, child: camera_front_link, translation: null, rotation_xyzw: null}

@@ -44,11 +44,12 @@ def load_topics(path: str | Path) -> dict[str, Any]:
         raise ValueError("ROS topics must be absolute names")
     frames = data["frames"]
     if not isinstance(frames, dict) or set(frames) != {
-        "odom", "base", "lidar", "imu", "camera_front",
+        "odom", "base", "lidar", "rtx_lidar", "imu", "camera_front",
         "camera_front_optical"
     }:
         raise ValueError(
-            "ROS frame contract must define odom/base/lidar/imu/camera_front/camera_front_optical"
+            "ROS frame contract must define "
+            "odom/base/lidar/rtx_lidar/imu/camera_front/camera_front_optical"
         )
     if any(not isinstance(value, str) or not value or value.startswith("/") for value in frames.values()):
         raise ValueError("ROS frame IDs must be non-empty relative names")

@@ -121,6 +121,10 @@ Visualization Manager:
           Alpha: 1
           Show Axes: false
           Show Trail: false
+        rtx_lidar:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
         rear_left_wheel_link:
           Alpha: 1
           Show Axes: false
@@ -170,6 +174,8 @@ Visualization Manager:
           Value: true
         lidar_link:
           Value: true
+        rtx_lidar:
+          Value: true
         map:
           Value: true
         odom:
@@ -204,7 +210,8 @@ Visualization Manager:
               imu_link:
                 {}
               lidar_link:
-                {}
+                rtx_lidar:
+                  {}
               rear_left_wheel_link:
                 {}
               rear_right_wheel_link:

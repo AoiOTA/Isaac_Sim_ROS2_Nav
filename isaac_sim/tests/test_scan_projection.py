@@ -36,19 +36,19 @@ def test_pointcloud_projection_matches_2d_navigation_baseline():
     assert parameters["use_inf"] is True
 
 
-def test_sensor_local_raw_axes_are_already_horizontal_in_the_mount_frame():
+def test_d222_sensor_axes_are_horizontal_and_use_one_ros_yaw_to_mount():
     lidar = _load_lidar(ROOT / "isaac_sim/configs/sensors/lidar_3d.yaml")
 
     assert lidar["config"] == "RPLIDAR_S2E"
     assert lidar["scan_plane_rotation_wxyz"] == pytest.approx(
         [math.sqrt(0.5), math.sqrt(0.5), 0.0, 0.0]
     )
-    # Frozen from the d221 sensor-local PointCloud capture. The two broad
+    # Frozen from the d222 sensor-local PointCloud capture. The two broad
     # horizontal axes and near-zero vertical spread prove that SENSOR output
-    # already incorporates the authored prim rotation.
+    # already incorporates the authored +90 X prim rotation.
     raw_axis_std_m = (2.889, 5.597, 1.67e-6)
     assert raw_axis_std_m[2] < min(raw_axis_std_m[:2]) * 1e-5
-    assert lidar["frame_id"] == "lidar_link"
+    assert lidar["frame_id"] == "rtx_lidar"
     assert lidar["output_frame"] == "SENSOR"
     assert lidar["motion_compensation"] == "COMPENSATED"
     assert _lidar_omni_attributes(lidar) == {
@@ -65,7 +65,7 @@ def test_navigation_app_enables_motion_bvh_before_kit_startup():
     assert '"--/rtx/rendering/perSensorTickTlas=true"' in source
 
 
-def test_physical_lidar_tf_remains_the_measured_mount_pose():
+def test_d222_rtx_yaw_maps_sensor_xy_into_the_measured_mount_frame():
     robot = yaml.safe_load(
         (ROOT / "isaac_sim/configs/robots/jackal.yaml").read_text()
     )
@@ -77,14 +77,35 @@ def test_physical_lidar_tf_remains_the_measured_mount_pose():
 
     assert lidar_tf["translation"] == [0.120, 0.000, 0.333]
     assert lidar_tf["rotation_xyzw"] == [0.0, 0.0, 0.0, 1.0]
-    assert not any(
+    rtx_tf = next(
         transform
         for transform in robot["static_transforms"]
-        if transform["parent"] == "lidar_link"
+        if transform["child"] == "rtx_lidar"
     )
+    assert rtx_tf["parent"] == "lidar_link"
+    assert rtx_tf["translation"] == [0.0, 0.0, 0.0]
+    assert rtx_tf["rotation_xyzw"] == pytest.approx(
+        [0.0, 0.0, math.sqrt(0.5), math.sqrt(0.5)]
+    )
+    # d222 map residuals selected +90 Z over identity. Expressed in the mount,
+    # sensor +X becomes mount +Y, sensor +Y becomes mount -X, and Z is unchanged.
+    sensor_xyz = (2.0, 3.0, 0.25)
+    mount_xyz = (-sensor_xyz[1], sensor_xyz[0], sensor_xyz[2])
+    assert mount_xyz == (-3.0, 2.0, 0.25)
+    assert rtx_tf["rotation_xyzw"][:2] == [0.0, 0.0]
+    assert sum(
+        transform["child"] == "lidar_link"
+        for transform in robot["static_transforms"]
+    ) == 1
+    assert sum(
+        transform["child"] == "rtx_lidar"
+        for transform in robot["static_transforms"]
+    ) == 1
 
     xacro = (
         ROOT / "ros2_ws/src/robot_description/urdf/jackal_sensors.xacro"
     ).read_text()
     assert 'xyz="0.120 0.000 0.333"/>' in xacro
     assert xacro.count('parent="base_link" child="lidar_link"') == 1
+    assert xacro.count('parent="lidar_link" child="rtx_lidar"') == 1
+    assert 'rpy="0 0 1.5707963267948966"' in xacro

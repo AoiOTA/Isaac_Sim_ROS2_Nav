@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -122,7 +123,7 @@ def test_control_sensor_and_ideal_odometry_specs_validate():
         "DifferentialController.inputs:maxAngularAcceleration"
     ] == pytest.approx(6.5)
     assert dict(lidar.values)["PointCloudPublisher.inputs:frameId"] \
-        == "lidar_link"
+        == "rtx_lidar"
 
 
 def test_core_sensors_publish_once_per_physics_step():
@@ -221,7 +222,7 @@ def test_core_sensors_materialize_on_demand(monkeypatch):
     assert "evaluator_name" not in captured["graph_description"]
 
 
-def test_isaac_static_tf_uses_the_physical_lidar_mount_without_extra_frame():
+def test_isaac_static_tf_owns_physical_mount_and_rtx_yaw_once():
     spec = structure_tf_graph_spec(_config())
     spec.validate()
     node_types = dict(spec.nodes)
@@ -240,7 +241,7 @@ def test_isaac_static_tf_uses_the_physical_lidar_mount_without_extra_frame():
         for node, node_type in spec.nodes
         if node_type.endswith("ROS2PublishRawTransformTree")
     ]
-    assert len(raw_tf_nodes) == 9
+    assert len(raw_tf_nodes) == 10
     values = dict(spec.values)
     edges = {
         (
@@ -250,8 +251,18 @@ def test_isaac_static_tf_uses_the_physical_lidar_mount_without_extra_frame():
         for node in raw_tf_nodes
     }
     assert ("base_link", "lidar_link") in edges
+    assert ("lidar_link", "rtx_lidar") in edges
     assert sum(child == "lidar_link" for _, child in edges) == 1
-    assert not any(parent == "lidar_link" for parent, _ in edges)
+    assert sum(child == "rtx_lidar" for _, child in edges) == 1
+    rtx_node = next(
+        node
+        for node in raw_tf_nodes
+        if values[f"{node}.inputs:childFrameId"] == "rtx_lidar"
+    )
+    assert values[f"{rtx_node}.inputs:translation"] == [0.0, 0.0, 0.0]
+    assert values[f"{rtx_node}.inputs:rotation"] == pytest.approx(
+        [0.0, 0.0, math.sqrt(0.5), math.sqrt(0.5)]
+    )
 
 
 def test_tf_ownership_requires_exactly_one_publisher():
@@ -315,6 +326,7 @@ def test_topic_and_qos_contracts_are_absolute_and_encoded():
     assert topics["pointcloud"] == "/lidar/points_raw"
     assert topics["frames"]["base"] == "base_link"
     assert topics["frames"]["lidar"] == "lidar_link"
+    assert topics["frames"]["rtx_lidar"] == "rtx_lidar"
     assert '"reliability":"bestEffort"' in qos["sensor_data"]
     assert '"depth":2' in qos["camera_sensor_data"]
     assert '"durability":"transientLocal"' in qos["static_tf"]
