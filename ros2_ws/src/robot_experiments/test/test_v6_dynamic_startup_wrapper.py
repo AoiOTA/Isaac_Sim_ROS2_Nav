@@ -43,7 +43,12 @@ def _fake_startup(tmp_path: Path, *, has_candidate=True, asset_available=True):
 export PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export ISAAC_PYTHON="${ISAAC_PYTHON}"
 export ISAAC_ASSET_ROOT="${ISAAC_ASSET_ROOT}"
-require_directory() { [[ -d "$1" ]]; }
+require_directory() {
+  if [[ -n "${FAKE_REQUIRED_DIRS_LOG:-}" ]]; then
+    printf '%s\n' "$1" >>"${FAKE_REQUIRED_DIRS_LOG}"
+  fi
+  [[ -d "$1" ]]
+}
 require_file() { [[ -f "$1" ]]; }
 source_ros() {
   source "${ROS_SETUP}"
@@ -192,9 +197,10 @@ def test_explicit_integration_setup_override_is_preserved_with_spaces(tmp_path):
     assert "jazzy,integration-explicit,module3|run robot_experiments" in dispatch
 
 
-def test_phase_f_stale_overlay_fails_before_run_directory(tmp_path):
-    scripts, integration, env = _fake_startup(tmp_path, has_candidate=False)
-    module2 = tmp_path / "module2"
+def test_phase_f_default_uses_sibling_integration_with_spaces(tmp_path):
+    checkout = tmp_path / "checkout with spaces"
+    scripts, integration, env = _fake_startup(checkout, has_candidate=False)
+    module2 = checkout / "module2"
     constraints = module2 / "configs/kujiale_0026_module1_visual_shadow_v310.yaml"
     constraints.parent.mkdir(parents=True)
     constraints.touch()
@@ -202,15 +208,61 @@ def test_phase_f_stale_overlay_fails_before_run_directory(tmp_path):
     integration_scripts.mkdir()
     for name in ("run_module2_v310_server.sh", "run_v6_module2_causal_obstacle_server.sh"):
         (integration_scripts / name).touch()
-    run_dir = tmp_path / "must_not_exist"
+    run_dir = checkout / "must_not_exist"
+    required_dirs = checkout / "required-dirs.log"
+    env.pop("BIO_NAV_INTEGRATION_ROOT")
     env["BIO_NAV_MODULE2_V310_ROOT"] = str(module2)
+    env["FAKE_REQUIRED_DIRS_LOG"] = str(required_dirs)
     result = subprocess.run(
         [str(scripts / STACK.name), "M3", "--domain", "150", "--run-dir", str(run_dir),
-         "--socket", str(tmp_path / "socket/module2.sock"),
-         "--module2-asset-root", str(tmp_path / "module2-assets")],
+         "--socket", str(checkout / "socket/module2.sock"),
+         "--module2-asset-root", str(checkout / "module2-assets")],
         capture_output=True, text=True, env=env,
     )
 
     assert result.returncode == 2
     assert "does not provide CognitivePoseModeCandidate" in result.stderr
+    assert required_dirs.read_text(encoding="utf-8").splitlines()[0] == str(
+        integration
+    )
     assert not run_dir.exists()
+
+
+def test_phase_f_preserves_explicit_integration_root_with_spaces(tmp_path):
+    checkout = tmp_path / "checkout"
+    scripts, integration, env = _fake_startup(checkout, has_candidate=False)
+    explicit = tmp_path / "explicit integration with spaces"
+    shutil.copytree(integration, explicit)
+    prefix = explicit / "ros2_ws/install"
+    (prefix / "local_setup.bash").write_text(
+        f"export FAKE_INTEGRATION_PREFIX={shlex.quote(str(prefix))}\n"
+        "export FAKE_HAS_CANDIDATE=0\n"
+        'export OVERLAY_ORDER="${OVERLAY_ORDER},integration-explicit"\n',
+        encoding="utf-8",
+    )
+    integration_scripts = explicit / "scripts"
+    integration_scripts.mkdir()
+    for name in (
+        "run_module2_v310_server.sh",
+        "run_v6_module2_causal_obstacle_server.sh",
+    ):
+        (integration_scripts / name).touch()
+    module2 = checkout / "module2"
+    constraints = module2 / "configs/kujiale_0026_module1_visual_shadow_v310.yaml"
+    constraints.parent.mkdir(parents=True)
+    constraints.touch()
+    required_dirs = checkout / "required-dirs.log"
+    env["BIO_NAV_INTEGRATION_ROOT"] = str(explicit)
+    env["BIO_NAV_MODULE2_V310_ROOT"] = str(module2)
+    env["FAKE_REQUIRED_DIRS_LOG"] = str(required_dirs)
+    result = subprocess.run(
+        [str(scripts / STACK.name), "M3", "--domain", "150",
+         "--run-dir", str(checkout / "must_not_exist"),
+         "--socket", str(checkout / "socket/module2.sock"),
+         "--module2-asset-root", str(checkout / "module2-assets")],
+        capture_output=True, text=True, env=env,
+    )
+
+    assert result.returncode == 2
+    assert "does not provide CognitivePoseModeCandidate" in result.stderr
+    assert required_dirs.read_text(encoding="utf-8").splitlines()[0] == str(explicit)

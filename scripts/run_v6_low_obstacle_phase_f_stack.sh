@@ -324,7 +324,6 @@ candidate_manifest=""
 route_prior_enabled="false"
 route_prior_snapshot=""
 dry_run=false
-integration_root="${BIO_NAV_INTEGRATION_ROOT:-/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration}"
 while (($#)); do
   case "$1" in
     --run-dir) run_dir="${2:?--run-dir requires a path}"; shift 2 ;;
@@ -463,6 +462,7 @@ export ROS_DOMAIN_ID="${domain_id}"
 # shellcheck source=lib/v6_dynamic_startup.sh
 source "${script_dir}/lib/v6_dynamic_startup.sh"
 configure_v6_dynamic_integration_overlay
+integration_root="${BIO_NAV_INTEGRATION_ROOT}"
 # shellcheck source=lib/common.sh
 source "${script_dir}/lib/common.sh"
 
