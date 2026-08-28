@@ -394,6 +394,7 @@ def test_dynamic_scenario_matches_isaac_physical_configuration():
         "kujiale_dynamic_visual_g5_g1.yaml",
         "kujiale_4x20_dynamic_pair.yaml",
         "kujiale_g2_dynamic_safety_smoke.yaml",
+        "kujiale_contact_observability_dynamic.yaml",
     ):
         scenario = load_scenario(CONFIG / filename)
         spawn_file = (
