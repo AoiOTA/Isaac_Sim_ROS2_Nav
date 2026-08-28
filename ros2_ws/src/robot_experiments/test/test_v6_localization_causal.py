@@ -238,6 +238,8 @@ def _run_wrapper(
             "bash",
             str(WRAPPER),
             "--dry-run",
+            "--module2-asset-root",
+            str(tmp_path / "module2-assets"),
             "--arm",
             arm,
             component,
@@ -264,9 +266,33 @@ def test_s0_s1_argv_share_run4_server_manifest_and_keep_seed_modes(tmp_path):
         server = outputs[(arm, "module1")].stdout
         bridge = outputs[(arm, "bridge")].stdout
         assert f"--candidate-manifest {manifest}" in server
+        argv = shlex.split(server)
+        assert argv.count("--module2-asset-root") == 1
+        assert argv[argv.index("--module2-asset-root") + 1] == str(
+            tmp_path / "module2-assets"
+        )
         assert f"localization_candidate_manifest:={manifest}" in bridge
     assert "localization_supervisor_mode:=shadow" in outputs[("S0", "bridge")].stdout
     assert "localization_supervisor_mode:=startup" in outputs[("S1", "bridge")].stdout
+
+
+def test_module1_requires_asset_root_but_bridge_does_not(tmp_path):
+    missing = subprocess.run(
+        ["bash", str(WRAPPER), "--dry-run", "--arm", "S0", "module1"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert missing.returncode == 2
+    assert "--module2-asset-root is required for module1" in missing.stderr
+
+    bridge = subprocess.run(
+        ["bash", str(WRAPPER), "--dry-run", "--arm", "S0", "bridge"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert "--module2-asset-root is required" not in bridge.stderr
 
 
 def test_all_arms_ros_wait_for_their_later_seed(tmp_path):

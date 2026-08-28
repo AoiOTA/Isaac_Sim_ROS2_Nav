@@ -2096,7 +2096,7 @@ def test_plan_dispatch_requires_all_three_adapters_and_constructs_commands(tmp_p
     assert plan["runs"][0]["setup"]["cognitive_place_graph_enabled"] is False
     exact = build_plan(
         manifest,
-        adapters=exact_adapter_templates(manifest),
+        adapters=exact_adapter_templates(manifest, tmp_path / "module2-assets"),
         pilot=True,
         output_root=tmp_path,
     )
@@ -2107,6 +2107,11 @@ def test_plan_dispatch_requires_all_three_adapters_and_constructs_commands(tmp_p
     assert exact["runs"][2]["commands"]["producer_stop"][1] == "stop-producer"
     assert exact["runs"][2]["commands"]["producer_stop"][-2:] == (
         "--socket", exact["runs"][2]["setup"]["module2_socket"],
+    )
+    stack = exact["runs"][2]["commands"]["stack"]
+    assert stack.count("--module2-asset-root") == 1
+    assert stack[stack.index("--module2-asset-root") + 1] == str(
+        tmp_path / "module2-assets"
     )
 
 
@@ -2362,6 +2367,7 @@ def test_campaign_records_expected_baseline_collision_but_active_collision_fails
         "--stack-adapter", "/stack",
         "--episode-adapter", "/episode",
         "--producer-stop-adapter", "/producer-stop",
+        "--module2-asset-root", str(tmp_path / "module2-assets"),
         "--output-root", str(tmp_path / f"cli-{arm_name}"),
     ]) == expected_rc
     capsys.readouterr()
@@ -3132,6 +3138,7 @@ wait "$!"
         str(scripts / "run_v6_low_obstacle_phase_f_stack.sh"),
         arm, "--domain", "150", "--run-dir", str(run_dir),
         "--socket", str(socket_path),
+        "--module2-asset-root", str(tmp_path / "module2-assets"),
     ]
     if localization_supervisor_mode is not None:
         command.extend(
@@ -3214,6 +3221,7 @@ def test_final_route_prior_pilot_dry_run_defaults_off(tmp_path):
             "M3",
             "--run-dir", str(tmp_path / "run"),
             "--socket", str(tmp_path / "module2.sock"),
+            "--module2-asset-root", str(tmp_path / "module2-assets"),
             "--dry-run",
         ],
         capture_output=True,
@@ -3235,6 +3243,31 @@ def test_final_route_prior_pilot_dry_run_defaults_off(tmp_path):
     assert "goal_prior_retry_window_s" not in result.stdout
 
 
+def test_phase_f_asset_root_required_only_for_server_arms(tmp_path):
+    stack = PACKAGE.parents[2] / "scripts/run_v6_low_obstacle_phase_f_stack.sh"
+    common = [
+        "--run-dir", str(tmp_path / "run"),
+        "--socket", str(tmp_path / "module2.sock"),
+        "--dry-run",
+    ]
+    missing = subprocess.run(
+        [str(stack), "M1", *common],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert missing.returncode == 2
+    assert "--module2-asset-root is required for M1" in missing.stderr
+
+    baseline = subprocess.run(
+        [str(stack), "M0", *common],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "module2_asset_root" not in baseline.stdout
+
+
 def test_final_route_prior_pilot_forwards_gvg_prior_to_m3_and_bridge(tmp_path):
     fake = _start_fake_phase_f_stack(
         tmp_path, arm="M3", enable_route_prior=True
@@ -3246,6 +3279,10 @@ def test_final_route_prior_pilot_forwards_gvg_prior_to_m3_and_bridge(tmp_path):
             "route_prior_enabled:=true",
         ]
         module2 = fake.module2_argv.read_text(encoding="utf-8").splitlines()
+        assert module2.count("--module2-asset-root") == 1
+        assert module2[module2.index("--module2-asset-root") + 1] == str(
+            tmp_path / "module2-assets"
+        )
         assert module2[:4] == [
             "--startup-profile",
             "module2_causal_obstacle_active",
@@ -3290,6 +3327,7 @@ def test_final_route_prior_pilot_rejects_recovery_and_has_explicit_dry_run(
         str(stack), "M3",
         "--run-dir", str(tmp_path / "run"),
         "--socket", str(tmp_path / "module2.sock"),
+        "--module2-asset-root", str(tmp_path / "module2-assets"),
         "--enable-route-prior",
     ]
     recovery = subprocess.run(
@@ -3330,6 +3368,7 @@ def test_final_route_prior_pilot_requires_snapshot_path(tmp_path):
         str(root / "scripts/run_v6_low_obstacle_phase_f_stack.sh"), "M3",
         "--run-dir", str(tmp_path / "run"),
         "--socket", str(tmp_path / "module2.sock"),
+        "--module2-asset-root", str(tmp_path / "module2-assets"),
         "--enable-route-prior", "--dry-run",
     ], capture_output=True, text=True)
     assert result.returncode == 2
@@ -4284,6 +4323,9 @@ def test_legacy_shadow_preserves_caller_map_context_argument(tmp_path):
 
 
 @pytest.mark.parametrize("command", ["manifest", "plan"])
-def test_non_runtime_cli_commands_emit_json(command, capsys):
-    assert cli([command, "--config", str(CONFIG)]) == 0
+def test_non_runtime_cli_commands_emit_json(command, capsys, tmp_path):
+    argv = [command, "--config", str(CONFIG)]
+    if command == "plan":
+        argv.extend(["--module2-asset-root", str(tmp_path / "module2-assets")])
+    assert cli(argv) == 0
     assert json.loads(capsys.readouterr().out)

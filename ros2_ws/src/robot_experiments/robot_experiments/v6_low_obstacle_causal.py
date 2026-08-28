@@ -170,12 +170,18 @@ class RecordedMessage:
     message: Any
 
 
-def exact_adapter_templates(manifest: CausalManifest) -> AdapterTemplates:
+def exact_adapter_templates(
+    manifest: CausalManifest,
+    module2_asset_root: str | Path,
+) -> AdapterTemplates:
     root = manifest.module3_root
     if root is None:
         raise CausalContractError(
             f"exact adapters require {MODULE3_ROOT_ENV} when using an installed manifest"
         )
+    asset_root = str(module2_asset_root)
+    if not asset_root:
+        raise CausalContractError("module2 asset root must not be empty")
     return AdapterTemplates(
         scene=(
             f"{root}/scripts/run_v6_r5_phase_b_kujiale.sh "
@@ -185,7 +191,8 @@ def exact_adapter_templates(manifest: CausalManifest) -> AdapterTemplates:
         stack=(
             f"{root}/scripts/run_v6_low_obstacle_phase_f_stack.sh "
             "{arm} --domain {ros_domain_id} --run-dir {run_dir} "
-            "--socket {module2_socket}"
+            "--socket {module2_socket} --module2-asset-root "
+            f"{shlex.quote(asset_root)}"
         ),
         episode=(
             f"{root}/scripts/run_v6_low_obstacle_causal.sh dispatch-episode "
@@ -4525,6 +4532,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan_parser.add_argument("--output-root", default="v6r5_module2_causal")
     plan_parser.add_argument("--pilot", action="store_true")
     plan_parser.add_argument("--exact-adapters", action="store_true")
+    plan_parser.add_argument("--module2-asset-root", required=True)
     for option in (
         "scene-adapter", "reset-adapter", "live-adapter", "producer-stop-adapter",
     ):
@@ -4541,6 +4549,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--live-adapter", "--episode-adapter", dest="live_adapter")
     run_parser.add_argument("--producer-stop-adapter")
     run_parser.add_argument("--exact-adapters", action="store_true")
+    run_parser.add_argument("--module2-asset-root", required=True)
     run_parser.add_argument("--output-root", required=True)
     run_parser.add_argument("--pilot", action="store_true")
     run_parser.add_argument("--shutdown-timeout-sec", type=float, default=DEFAULT_SHUTDOWN_TIMEOUT_SEC)
@@ -4585,7 +4594,7 @@ def cli(argv: list[str] | None = None) -> int:
             if any(supplied) and not all(supplied):
                 raise CausalContractError("plan adapters must be supplied together")
             adapters = (
-                exact_adapter_templates(manifest)
+                exact_adapter_templates(manifest, args.module2_asset_root)
                 if args.exact_adapters else (
                     AdapterTemplates(*raw_adapters) if all(supplied) else None
                 )
@@ -4649,7 +4658,7 @@ def cli(argv: list[str] | None = None) -> int:
                 "run requires --exact-adapters or all scene/stack/episode/producer-stop adapters"
             )
         adapters = (
-            exact_adapter_templates(manifest)
+            exact_adapter_templates(manifest, args.module2_asset_root)
             if args.exact_adapters else AdapterTemplates(*raw_adapters)
         )
         summary = run_campaign(

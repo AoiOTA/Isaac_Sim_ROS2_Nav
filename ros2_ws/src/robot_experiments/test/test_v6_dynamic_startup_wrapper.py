@@ -171,7 +171,8 @@ def test_phase_f_stale_overlay_fails_before_run_directory(tmp_path):
     env["BIO_NAV_MODULE2_V310_ROOT"] = str(module2)
     result = subprocess.run(
         [str(scripts / STACK.name), "M3", "--domain", "150", "--run-dir", str(run_dir),
-         "--socket", str(tmp_path / "socket/module2.sock")],
+         "--socket", str(tmp_path / "socket/module2.sock"),
+         "--module2-asset-root", str(tmp_path / "module2-assets")],
         capture_output=True, text=True, env=env,
     )
 

@@ -18,6 +18,7 @@ Options:
   --integration-root PATH  Integration checkout containing the Run4 manifest
   --integration-setup PATH explicit current Integration setup.bash/local_setup.bash
   --module2-root PATH      Module2 checkout used by the candidate server
+  --module2-asset-root PATH explicit candidate asset root for the server
   --dry-run                print the exact command without executing it
 
 The probe is stationary/read-only: it exposes only the Run4 server, the
@@ -33,6 +34,7 @@ duration_s="${BIO_NAV_RUN4_SHADOW_DURATION_S:-20}"
 integration_root="${BIO_NAV_INTEGRATION_ROOT:-/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration}"
 integration_setup="${BIO_NAV_INTEGRATION_SETUP:-}"
 module2_root="${BIO_NAV_MODULE2_V310_ROOT:-/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module2}"
+module2_asset_root=""
 dry_run=false
 
 while (($# > 0)); do
@@ -67,6 +69,11 @@ while (($# > 0)); do
       module2_root="$2"
       shift 2
       ;;
+    --module2-asset-root)
+      (($# >= 2)) || { usage >&2; exit 2; }
+      module2_asset_root="$2"
+      shift 2
+      ;;
     --dry-run)
       dry_run=true
       shift
@@ -82,6 +89,10 @@ done
 component="${1:-}"
 [[ -n "${component}" ]] || { usage >&2; exit 2; }
 shift
+if [[ "${component}" =~ ^(plan|server)$ && -z "${module2_asset_root}" ]]; then
+  echo "--module2-asset-root is required for ${component}" >&2
+  exit 2
+fi
 
 [[ "${domain_id}" =~ ^[0-9]+$ && "${domain_id}" -le 232 ]] || {
   echo "domain must be an integer in [0,232]" >&2
@@ -175,6 +186,7 @@ preflight_integration_overlay() {
 
 server_command=(
   "${server_entry}"
+  --module2-asset-root "${module2_asset_root}"
   --candidate-manifest "${candidate_manifest}"
   --socket "${socket_path}"
   --device "${BIO_NAV_RUN4_SHADOW_DEVICE:-cuda}"

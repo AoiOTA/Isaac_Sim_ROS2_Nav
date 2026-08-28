@@ -1470,7 +1470,8 @@ def test_sim_clock_controls_expiry_and_rejects_backward_jump():
 
 def test_plan_is_m2_m3_only_and_keeps_exact_fixed_scene_contract(tmp_path):
     manifest = load_manifest(CONFIG)
-    plan = build_probe_plan(manifest, tmp_path / "probe")
+    asset_root = tmp_path / "module2-assets"
+    plan = build_probe_plan(manifest, tmp_path / "probe", asset_root)
 
     assert [row["arm"] for row in plan["runs"]] == ["M2", "M3"]
     assert plan["selected_arm"] is None
@@ -1485,6 +1486,9 @@ def test_plan_is_m2_m3_only_and_keeps_exact_fixed_scene_contract(tmp_path):
         assert row["cognitive_place_graph_enabled"] is False
         assert row["commands"]["scene"][0].endswith("run_v6_r5_phase_b_kujiale.sh")
         assert row["commands"]["stack"][1] == row["arm"]
+        stack = row["commands"]["stack"]
+        assert stack.count("--module2-asset-root") == 1
+        assert stack[stack.index("--module2-asset-root") + 1] == str(asset_root)
         assert row["commands"]["producer_stop"][1] == "stop-producer"
 
 
@@ -1493,6 +1497,7 @@ def test_selected_m2_plan_contains_only_repeat1_m2_and_no_m3_command(tmp_path):
     plan = build_probe_plan(
         manifest,
         tmp_path / "probe",
+        tmp_path / "module2-assets",
         selected_arm="M2",
     )
 
@@ -1508,6 +1513,7 @@ def test_selected_m3_plan_contains_only_repeat1_m3_and_no_m2_command(tmp_path):
     plan = build_probe_plan(
         manifest,
         tmp_path / "probe",
+        tmp_path / "module2-assets",
         selected_arm="M3",
     )
 
@@ -1525,6 +1531,7 @@ def test_invalid_selected_arm_is_rejected_by_cli_parser():
             "plan",
             "--config", str(CONFIG),
             "--output-root", "/tmp/ttl-probe",
+            "--module2-asset-root", "/tmp/module2-assets",
             "--selected-arm", "M1",
         ])
 
@@ -1577,6 +1584,7 @@ def test_m2_failure_or_cleanup_failure_does_not_start_m3(
     result = probe_module.run_probe_campaign(
         manifest,
         tmp_path / "campaign",
+        tmp_path / "module2-assets",
         arming_timeout_sec=1.0,
         probe_timeout_sec=1.0,
         shutdown_timeout_sec=1.0,
@@ -1633,6 +1641,7 @@ def test_campaign_selection_preserves_default_and_selected_dispatch(
     result = probe_module.run_probe_campaign(
         manifest,
         tmp_path / "campaign",
+        tmp_path / "module2-assets",
         arming_timeout_sec=1.0,
         probe_timeout_sec=1.0,
         shutdown_timeout_sec=1.0,
@@ -1663,6 +1672,7 @@ def test_parent_domain_mismatch_fails_before_artifacts_or_adapter_dispatch(
         probe_module.run_probe_campaign(
             manifest,
             output_root,
+            tmp_path / "module2-assets",
             arming_timeout_sec=1.0,
             probe_timeout_sec=1.0,
             shutdown_timeout_sec=1.0,
@@ -1688,6 +1698,7 @@ def test_missing_parent_domain_fails_before_artifact_creation(tmp_path, monkeypa
         probe_module.run_probe_campaign(
             manifest,
             output_root,
+            tmp_path / "module2-assets",
             arming_timeout_sec=1.0,
             probe_timeout_sec=1.0,
             shutdown_timeout_sec=1.0,

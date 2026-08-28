@@ -11,6 +11,7 @@ usage() {
   cat >&2 <<'USAGE'
 usage: run_v6_localization_causal.sh [--run-root PATH] [--domain ID]
        [--arm S0|S1|R0|R1|W0|W1] [--variant whole_house_onebox_recovery]
+       [--module2-asset-root PATH]
        [--dry-run]
        config|plan|isaac|ros|module1|bridge|record|runner [arguments...]
 
@@ -37,6 +38,7 @@ domain_id="${BIO_NAV_PHASE_DE_DOMAIN_ID:-151}"
 arm="${BIO_NAV_PHASE_DE_ARM:-}"
 variant="${BIO_NAV_PHASE_DE_VARIANT:-}"
 dry_run=false
+module2_asset_root=""
 while (($# > 0)); do
   case "$1" in
     --run-root)
@@ -59,6 +61,11 @@ while (($# > 0)); do
       variant="$2"
       shift 2
       ;;
+    --module2-asset-root)
+      (($# >= 2)) || { usage; exit 2; }
+      module2_asset_root="$2"
+      shift 2
+      ;;
     --dry-run)
       dry_run=true
       shift
@@ -70,6 +77,10 @@ done
 component="${1:-}"
 [[ -n "${component}" ]] || { usage; exit 2; }
 shift
+if [[ "${component}" == "module1" && -z "${module2_asset_root}" ]]; then
+  echo "--module2-asset-root is required for module1" >&2
+  exit 2
+fi
 [[ "${domain_id}" =~ ^[0-9]+$ && "${domain_id}" -le 232 ]] || {
   echo "domain must be an integer in [0,232]" >&2
   exit 2
@@ -220,12 +231,14 @@ case "${component}" in
         --startup-profile module2_causal_obstacle_active \
         --active-effect-scope obstacle_only \
         --module2-root "${module2_root}" \
+        --module2-asset-root "${module2_asset_root}" \
         --candidate-manifest "${candidate_manifest}" \
         --socket "${socket_path}" \
         --device "${BIO_NAV_PHASE_DE_DEVICE:-cuda}" "$@"
     else
       run_command "${server_entry}" \
         --module2-root "${module2_root}" \
+        --module2-asset-root "${module2_asset_root}" \
         --candidate-manifest "${candidate_manifest}" \
         --socket "${socket_path}" \
         --device "${BIO_NAV_PHASE_DE_DEVICE:-cuda}" "$@"

@@ -230,6 +230,8 @@ def build_plan(
     experiment: DynamicLowObstacleExperiment,
     arm_label: str,
     output_root: str | Path,
+    *,
+    module2_asset_root: str | Path,
 ) -> dict[str, Any]:
     _require_route_identity(experiment)
     manifest, run = _causal_manifest(experiment, arm_label)
@@ -247,6 +249,7 @@ def build_plan(
             str(root / "scripts/run_v6_low_obstacle_phase_f_stack.sh"),
             run.arm, "--domain", str(experiment.identity["ros_domain_id"]),
             "--run-dir", str(run_dir), "--socket", socket_path,
+            "--module2-asset-root", str(module2_asset_root),
         ),
         "episode": (
             "ros2", "run", "robot_experiments", "v6_single_dynamic_low_obstacle",
@@ -852,11 +855,17 @@ def run_experiment(
     experiment: DynamicLowObstacleExperiment,
     arm_label: str,
     output_root: str | Path,
+    module2_asset_root: str | Path,
     *,
     shutdown_timeout_sec: float = causal.DEFAULT_SHUTDOWN_TIMEOUT_SEC,
 ) -> dict[str, Any]:
     manifest, run = _causal_manifest(experiment, arm_label)
-    plan = build_plan(experiment, arm_label, output_root)
+    plan = build_plan(
+        experiment,
+        arm_label,
+        output_root,
+        module2_asset_root=module2_asset_root,
+    )
     run_dir = Path(plan["run_directory"])
     prepared_plan = {
         "mode": "single_dynamic_low_obstacle",
@@ -923,6 +932,7 @@ def build_parser() -> argparse.ArgumentParser:
         child.add_argument("--config", required=True)
         child.add_argument("--arm", required=True, choices=tuple(ARM_MODES))
         child.add_argument("--output-root", required=True)
+        child.add_argument("--module2-asset-root", required=True)
         child.add_argument("--output")
     dispatch = subparsers.add_parser("dispatch-episode")
     dispatch.add_argument("--config", required=True)
@@ -950,7 +960,15 @@ def cli(argv: list[str] | None = None) -> int:
     try:
         experiment = load_experiment(args.config)
         if args.command == "plan":
-            _write_or_print(build_plan(experiment, args.arm, args.output_root), args.output)
+            _write_or_print(
+                build_plan(
+                    experiment,
+                    args.arm,
+                    args.output_root,
+                    module2_asset_root=args.module2_asset_root,
+                ),
+                args.output,
+            )
             return 0
         if args.command == "dispatch-episode":
             manifest, run = _causal_manifest(experiment, args.arm)
@@ -976,7 +994,12 @@ def cli(argv: list[str] | None = None) -> int:
             result = evaluate_evidence(experiment, args.arm, evidence)
             _write_or_print(result, args.output)
             return 0 if result["verdict"] == "PASS" else 2
-        result = run_experiment(experiment, args.arm, args.output_root)
+        result = run_experiment(
+            experiment,
+            args.arm,
+            args.output_root,
+            args.module2_asset_root,
+        )
         _write_or_print(result, args.output)
         return 0 if (
             result.get("runs")

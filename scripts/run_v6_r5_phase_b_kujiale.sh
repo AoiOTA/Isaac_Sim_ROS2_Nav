@@ -7,6 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 usage() {
   cat <<'USAGE'
 usage: run_v6_r5_phase_b_kujiale.sh [--run-root PATH] [--domain ID]
+       [--module2-asset-root PATH]
        ros|isaac|module1-shadow|bridge|record|runner|manifest [arguments...]
 
 Run the components in separate terminals in this order:
@@ -26,6 +27,7 @@ USAGE
 
 run_root="${BIO_NAV_PHASE_B_RUN_ROOT:-/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6r5_phase_b_kujiale_current}"
 domain_id="${BIO_NAV_PHASE_B_DOMAIN_ID:-150}"
+module2_asset_root=""
 while (($# > 0)); do
   case "$1" in
     --run-root)
@@ -36,6 +38,11 @@ while (($# > 0)); do
     --domain)
       (($# >= 2)) || { usage >&2; exit 2; }
       domain_id="$2"
+      shift 2
+      ;;
+    --module2-asset-root)
+      (($# >= 2)) || { usage >&2; exit 2; }
+      module2_asset_root="$2"
       shift 2
       ;;
     *) break ;;
@@ -49,6 +56,10 @@ fi
 component="${1:-}"
 [[ -n "${component}" ]] || { usage >&2; exit 2; }
 shift
+if [[ "${component}" == "module1-shadow" && -z "${module2_asset_root}" ]]; then
+  echo "--module2-asset-root is required for module1-shadow" >&2
+  exit 2
+fi
 [[ "${domain_id}" =~ ^[0-9]+$ && "${domain_id}" -le 232 ]] || {
   echo "domain must be an integer in [0,232]" >&2
   exit 2
@@ -162,6 +173,7 @@ case "${component}" in
     require_file "${INTEGRATION_ROOT}/scripts/run_module2_v310_server.sh"
     export BIO_NAV_MODULE2_V310_ROOT="${MODULE2_ROOT}"
     exec "${INTEGRATION_ROOT}/scripts/run_module2_v310_server.sh" \
+      --module2-asset-root "${module2_asset_root}" \
       --shadow-config "${SHADOW_CONFIG}" \
       --socket "${SOCKET_PATH}" \
       --device "${BIO_NAV_PHASE_B_DEVICE:-cuda}" \

@@ -6,6 +6,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
   echo "usage: $0 M0|M1|M2|M3 --domain ID --run-dir PATH --socket PATH [--module2-root PATH]" >&2
+  echo "       [--module2-asset-root PATH]" >&2
   echo "       [--localization-supervisor-mode shadow|active --candidate-manifest PATH]" >&2
   echo "       [--enable-route-prior --route-prior-snapshot PATH] [--dry-run]" >&2
   echo "       BIO_NAV_MODULE2_V310_ROOT or --module2-root must name the canonical Module2 root" >&2
@@ -317,6 +318,7 @@ run_dir=""
 socket_path=""
 domain_id="${BIO_NAV_PHASE_F_DOMAIN_ID:-150}"
 module2_root="${BIO_NAV_MODULE2_V310_ROOT:-}"
+module2_asset_root=""
 localization_supervisor_mode=""
 candidate_manifest=""
 route_prior_enabled="false"
@@ -329,6 +331,10 @@ while (($#)); do
     --socket) socket_path="${2:?--socket requires a path}"; shift 2 ;;
     --domain) domain_id="${2:?--domain requires an ID}"; shift 2 ;;
     --module2-root) module2_root="${2:?--module2-root requires a path}"; shift 2 ;;
+    --module2-asset-root)
+      module2_asset_root="${2:?--module2-asset-root requires a path}"
+      shift 2
+      ;;
     --localization-supervisor-mode)
       localization_supervisor_mode="${2:?--localization-supervisor-mode requires shadow or active}"
       shift 2
@@ -386,6 +392,10 @@ if [[ "${route_prior_enabled}" == true ]]; then
   route_prior_snapshot="$(cd "${route_prior_snapshot}" && pwd -P)"
 elif [[ -n "${route_prior_snapshot}" ]]; then
   echo "--route-prior-snapshot requires --enable-route-prior" >&2
+  exit 2
+fi
+if [[ "${arm}" != "M0" && -z "${module2_asset_root}" ]]; then
+  echo "--module2-asset-root is required for ${arm}" >&2
   exit 2
 fi
 module2_asset_args=(
@@ -683,6 +693,7 @@ if [[ "${arm}" != "M0" ]]; then
     exit_if_terminating
     setsid --wait -- "${integration_root}/scripts/run_module2_v310_server.sh" \
       --module2-root "${module2_root}" \
+      --module2-asset-root "${module2_asset_root}" \
       "${module2_asset_args[@]}" \
       --socket "${socket_path}" \
       >"${run_dir}/module2_server.log" 2>&1 &
@@ -693,6 +704,7 @@ if [[ "${arm}" != "M0" ]]; then
       --active-effect-scope obstacle_only \
       --socket "${socket_path}" \
       --module2-root "${module2_root}" \
+      --module2-asset-root "${module2_asset_root}" \
       "${module2_asset_args[@]}" \
       >"${run_dir}/module2_server.log" 2>&1 &
   fi

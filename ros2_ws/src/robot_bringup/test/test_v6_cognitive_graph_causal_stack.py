@@ -24,6 +24,7 @@ def _dry_run(
         "--run-dir", str(tmp_path / "run"),
         "--socket", str(tmp_path / "module2.sock"),
         "--module2-root", str(tmp_path / "module2"),
+        "--module2-asset-root", str(tmp_path / "module2-assets"),
         "--obstacle-arm", obstacle_arm,
     ]
     if graph_only_no_box:
@@ -75,6 +76,8 @@ def test_graph_arms_have_one_exact_stack_contract(
     assert "stop-producer" not in argv
     assert "--shadow-config" not in argv
     assert "--candidate-manifest" in argv
+    assert argv.count("--module2-asset-root") == 1
+    assert f"--module2-asset-root {tmp_path / 'module2-assets'}" in argv
     assert "kujiale_0026_run4_read_only_shadow_candidate.json" in argv
     assert "localization_candidate_manifest:=" in argv
     assert "localization_supervisor_mode:=shadow" in argv
@@ -135,6 +138,24 @@ def test_graph_only_no_box_rejects_g0(tmp_path):
     assert "requires G1, G2, or G3" in result.stderr
 
 
+def test_graph_stack_requires_asset_root_before_dry_run(tmp_path):
+    result = subprocess.run(
+        [
+            str(STACK),
+            "--arm", "G0",
+            "--domain", "151",
+            "--run-dir", str(tmp_path / "run"),
+            "--socket", str(tmp_path / "module2.sock"),
+            "--dry-run",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "--module2-asset-root is required" in result.stderr
+
+
 def test_nondefault_domain_reaches_active_socket_check_without_readonly_error(
     tmp_path,
 ):
@@ -168,6 +189,7 @@ def test_nondefault_domain_reaches_active_socket_check_without_readonly_error(
                 "--run-dir", str(tmp_path / "run"),
                 "--socket", str(socket_path),
                 "--module2-root", str(module2_root),
+                "--module2-asset-root", str(tmp_path / "module2-assets"),
             ],
             check=False,
             capture_output=True,

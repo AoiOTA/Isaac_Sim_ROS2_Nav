@@ -13,6 +13,7 @@ usage() {
   cat >&2 <<'USAGE'
 usage: run_v6_phase_g_causal.sh [--run-root PATH] [--domain ID]
        [--arm G0|G1|G2|G3] [--obstacle-arm M3|M2] [--socket PATH] [--dry-run]
+       [--module2-asset-root PATH]
        [--graph-only-no-box]
        config|plan|isaac|stack|record|runner|evaluate [arguments...]
 
@@ -34,6 +35,7 @@ obstacle_arm="${BIO_NAV_PHASE_G_OBSTACLE_ARM:-M3}"
 socket_path="${BIO_NAV_PHASE_G_SOCKET_PATH:-}"
 dry_run=false
 graph_only_no_box=false
+module2_asset_root=""
 while (($# > 0)); do
   case "$1" in
     --run-root)
@@ -59,6 +61,11 @@ while (($# > 0)); do
     --socket)
       (($# >= 2)) || { usage; exit 2; }
       socket_path="$2"
+      shift 2
+      ;;
+    --module2-asset-root)
+      (($# >= 2)) || { usage; exit 2; }
+      module2_asset_root="$2"
       shift 2
       ;;
     --dry-run)
@@ -89,6 +96,10 @@ if [[ "${component}" =~ ^(plan|isaac|stack|record|runner)$ ]]; then
     echo "--arm G0|G1|G2|G3 is required for ${component}" >&2
     exit 2
   }
+fi
+if [[ "${component}" == "stack" && -z "${module2_asset_root}" ]]; then
+  echo "--module2-asset-root is required for stack" >&2
+  exit 2
 fi
 if [[ "${graph_only_no_box}" == true \
     && "${component}" =~ ^(plan|isaac|stack|record|runner)$ \
@@ -155,7 +166,8 @@ case "${component}" in
     mkdir -p "${run_root}/stack/${arm,,}"
     command=("${stack_entry}" --arm "${arm}" --domain "${domain_id}"
       --run-root "${run_root}/stack/${arm,,}" --socket "${socket_path}"
-      --obstacle-arm "${obstacle_arm}")
+      --obstacle-arm "${obstacle_arm}"
+      --module2-asset-root "${module2_asset_root}")
     [[ "${graph_only_no_box}" == true ]] && command+=(--graph-only-no-box)
     run_command "${command[@]}" "$@"
     ;;

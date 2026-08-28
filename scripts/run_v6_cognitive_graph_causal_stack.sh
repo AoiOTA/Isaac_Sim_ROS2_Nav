@@ -10,7 +10,8 @@ usage() {
   cat >&2 <<'EOF'
 usage: run_v6_cognitive_graph_causal_stack.sh --arm G0|G1|G2|G3 \
   --domain ID --run-dir PATH --socket PATH [--obstacle-arm M3|M2] \
-  [--module2-root PATH] [--localization-supervisor-mode shadow|startup] \
+  [--module2-root PATH] --module2-asset-root PATH \
+  [--localization-supervisor-mode shadow|startup] \
   [--graph-only-no-box] [--dry-run]
 
 G0: GVG + route prior off       G1: graph shadow + route prior off
@@ -27,6 +28,7 @@ run_dir=""
 socket_path=""
 obstacle_arm="M3"
 module2_root="${BIO_NAV_MODULE2_V310_ROOT:-}"
+module2_asset_root=""
 integration_root="${BIO_NAV_INTEGRATION_ROOT:-/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration}"
 candidate_manifest="${integration_root}/ros2_ws/src/bio_nav_ros_bridge/config/kujiale_0026_run4_read_only_shadow_candidate.json"
 localization_supervisor_mode="${BIO_NAV_PHASE_G_LOCALIZATION_SUPERVISOR_MODE:-shadow}"
@@ -41,6 +43,10 @@ while (($#)); do
     --socket) socket_path="${2:?--socket requires a path}"; shift 2 ;;
     --obstacle-arm) obstacle_arm="${2:?--obstacle-arm requires M3 or M2}"; shift 2 ;;
     --module2-root) module2_root="${2:?--module2-root requires a path}"; shift 2 ;;
+    --module2-asset-root)
+      module2_asset_root="${2:?--module2-asset-root requires a path}"
+      shift 2
+      ;;
     --localization-supervisor-mode)
       localization_supervisor_mode="${2:?--localization-supervisor-mode requires shadow or startup}"
       shift 2
@@ -70,6 +76,10 @@ fi
   exit 2
 }
 [[ -n "${run_dir}" && -n "${socket_path}" ]] || { usage; exit 2; }
+[[ -n "${module2_asset_root}" ]] || {
+  echo "--module2-asset-root is required" >&2
+  exit 2
+}
 [[ "${run_dir}" == /* && "${socket_path}" == /* ]] || {
   echo "run-dir and socket must be absolute" >&2
   exit 2
@@ -136,6 +146,7 @@ module2_command=(
 module2_command+=(
   --socket "${socket_path}"
   --module2-root "${module2_root}"
+  --module2-asset-root "${module2_asset_root}"
   --candidate-manifest "${candidate_manifest}"
 )
 

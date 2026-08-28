@@ -37,11 +37,23 @@ def test_phase_b_wrapper_uses_canonical_shadow_server_and_planning_prior_record(
     ).read_text(encoding="utf-8")
 
     assert "run_module2_v310_server.sh" in source
+    assert source.count('--module2-asset-root "${module2_asset_root}"') == 1
     assert "--shadow-config \"${SHADOW_CONFIG}\"" in source
     assert "startup_profile:=estimated_shadow" in source
     assert "phase_b_observability" in source
     assert '"/bio_nav/module2/planning_prior"' in observability
     assert "--pilot --dispatch-pilot" in source
+
+
+def test_module1_shadow_requires_explicit_asset_root_before_starting_server():
+    result = subprocess.run(
+        ["bash", str(WRAPPER), "module1-shadow"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "--module2-asset-root is required for module1-shadow" in result.stderr
 
 
 def _run_common_shell(command, env=None):

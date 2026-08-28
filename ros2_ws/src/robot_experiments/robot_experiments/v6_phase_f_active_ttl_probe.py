@@ -1117,11 +1117,12 @@ def _active_runs(
 def build_probe_plan(
     manifest: CausalManifest,
     output_root: str | Path,
+    module2_asset_root: str | Path,
     *,
     selected_arm: str | None = None,
 ) -> dict[str, Any]:
     root = Path(output_root).expanduser().resolve()
-    templates = exact_adapter_templates(manifest)
+    templates = exact_adapter_templates(manifest, module2_asset_root)
     rows: list[dict[str, Any]] = []
     for run in _active_runs(manifest, selected_arm):
         values = _adapter_values(manifest, run, root)
@@ -1523,6 +1524,7 @@ def dispatch_live_probe(
 def run_probe_campaign(
     manifest: CausalManifest,
     output_root: str | Path,
+    module2_asset_root: str | Path,
     *,
     arming_timeout_sec: float,
     probe_timeout_sec: float,
@@ -1532,7 +1534,12 @@ def run_probe_campaign(
     _validate_parent_domain_contract(manifest, os.environ)
     root = Path(output_root).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    plan = build_probe_plan(manifest, root, selected_arm=selected_arm)
+    plan = build_probe_plan(
+        manifest,
+        root,
+        module2_asset_root,
+        selected_arm=selected_arm,
+    )
     existing = [row["run_directory"] for row in plan["runs"] if Path(row["run_directory"]).exists()]
     if existing:
         raise CausalContractError("refusing to overwrite probe directories: " + ",".join(existing))
@@ -1675,11 +1682,13 @@ def build_parser() -> argparse.ArgumentParser:
     plan = subparsers.add_parser("plan")
     plan.add_argument("--config", required=True)
     plan.add_argument("--output-root", required=True)
+    plan.add_argument("--module2-asset-root", required=True)
     plan.add_argument("--selected-arm", choices=SELECTABLE_ARMS)
     plan.add_argument("--output")
     run = subparsers.add_parser("run")
     run.add_argument("--config", required=True)
     run.add_argument("--output-root", required=True)
+    run.add_argument("--module2-asset-root", required=True)
     run.add_argument("--selected-arm", choices=SELECTABLE_ARMS)
     run.add_argument("--arming-timeout-sec", type=float, default=DEFAULT_ARMING_TIMEOUT_SEC)
     run.add_argument("--probe-timeout-sec", type=float, default=DEFAULT_PROBE_TIMEOUT_SEC)
@@ -1697,6 +1706,7 @@ def cli(argv: Sequence[str] | None = None) -> int:
                 build_probe_plan(
                     manifest,
                     args.output_root,
+                    args.module2_asset_root,
                     selected_arm=args.selected_arm,
                 ),
                 args.output,
@@ -1712,6 +1722,7 @@ def cli(argv: Sequence[str] | None = None) -> int:
         result = run_probe_campaign(
             manifest,
             args.output_root,
+            args.module2_asset_root,
             arming_timeout_sec=args.arming_timeout_sec,
             probe_timeout_sec=args.probe_timeout_sec,
             shutdown_timeout_sec=args.shutdown_timeout_sec,

@@ -197,8 +197,13 @@ def _evidence(arm_label="M3"):
 
 def test_plan_uses_one_dynamic_actor_m3_and_explicit_m2_fallback(tmp_path):
     experiment = load_experiment(CONFIG)
-    m3 = build_plan(experiment, "M3", tmp_path)
-    fallback = build_plan(experiment, "M2-fallback", tmp_path)
+    asset_root = tmp_path / "module2-assets"
+    m3 = build_plan(
+        experiment, "M3", tmp_path, module2_asset_root=asset_root
+    )
+    fallback = build_plan(
+        experiment, "M2-fallback", tmp_path, module2_asset_root=asset_root
+    )
 
     assert m3["module3_mode"] == "M3"
     assert m3["fallback_only"] is False
@@ -207,6 +212,10 @@ def test_plan_uses_one_dynamic_actor_m3_and_explicit_m2_fallback(tmp_path):
     assert "--dynamic-obstacles" in m3["commands"]["scene"]
     assert str(experiment.identity["obstacle_config"]) in m3["commands"]["scene"]
     assert m3["commands"]["stack"][1] == "M3"
+    assert m3["commands"]["stack"].count("--module2-asset-root") == 1
+    assert m3["commands"]["stack"][-2:] == (
+        "--module2-asset-root", str(asset_root)
+    )
     assert experiment.identity["route_backend"] == "gvg"
     assert experiment.identity["route_prior_enabled"] is False
     assert m3["route_backend"] == "gvg"
@@ -237,7 +246,12 @@ def test_loader_and_plan_reject_non_gvg_route_backend(tmp_path, monkeypatch):
         identity={**experiment.identity, "route_backend": "primary"},
     )
     with pytest.raises(DynamicLowObstacleError, match="identity.route_backend"):
-        build_plan(invalid_experiment, "M3", tmp_path)
+        build_plan(
+            invalid_experiment,
+            "M3",
+            tmp_path,
+            module2_asset_root=tmp_path / "module2-assets",
+        )
 
 
 @pytest.mark.parametrize("replacement", ["route_prior_enabled: true", ""])
@@ -273,7 +287,12 @@ def test_plan_and_causal_manifest_reject_tampered_route_prior(
     with pytest.raises(DynamicLowObstacleError, match="identity.route_prior_enabled"):
         _causal_manifest(invalid_experiment, "M1")
     with pytest.raises(DynamicLowObstacleError, match="identity.route_prior_enabled"):
-        build_plan(invalid_experiment, "M3", tmp_path)
+        build_plan(
+            invalid_experiment,
+            "M3",
+            tmp_path,
+            module2_asset_root=tmp_path / "module2-assets",
+        )
 
 
 @pytest.mark.parametrize("arm_label", ["M1", "M3"])

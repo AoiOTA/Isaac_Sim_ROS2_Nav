@@ -97,7 +97,9 @@ def _fake_runtime_overlay(tmp_path: Path, *, has_candidate: bool = True):
 
 
 def test_plan_freezes_run4_identity_and_shadow_only_policy():
-    result = _run("--dry-run", "plan")
+    result = _run(
+        "--dry-run", "--module2-asset-root", "/tmp/module2-assets", "plan"
+    )
     text = result.stdout
 
     assert "status=T2_FAIL_KEEP_SHADOW_ONLY" in text
@@ -132,17 +134,45 @@ def test_server_and_bridge_dry_run_pass_the_same_candidate_manifest(tmp_path):
         str(integration),
         "--module2-root",
         str(module2),
+        "--module2-asset-root",
+        str(tmp_path / "module2-assets"),
     )
     server_result = _run(*common, "server", "--extra-server-arg")
     bridge_result = _run(*common, "bridge", "extra_bridge_arg:=value")
 
     assert str(server) in server_result.stdout
+    server_argv = shlex.split(server_result.stdout)
+    assert server_argv.count("--module2-asset-root") == 1
+    assert server_argv[server_argv.index("--module2-asset-root") + 1] == str(
+        tmp_path / "module2-assets"
+    )
     assert f"--candidate-manifest {manifest}" in server_result.stdout
     assert "--extra-server-arg" in server_result.stdout
     assert "startup_profile:=estimated_shadow" in bridge_result.stdout
     assert "localization_supervisor_mode:=shadow" in bridge_result.stdout
     assert f"localization_candidate_manifest:={manifest}" in bridge_result.stdout
     assert "extra_bridge_arg:=value" in bridge_result.stdout
+
+
+def test_server_requires_asset_root_but_bridge_does_not():
+    missing = subprocess.run(
+        ["bash", str(WRAPPER), "--dry-run", "server"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=_domain_clean_env(),
+    )
+    assert missing.returncode == 2
+    assert "--module2-asset-root is required for server" in missing.stderr
+
+    bridge = subprocess.run(
+        ["bash", str(WRAPPER), "--dry-run", "bridge"],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=_domain_clean_env(),
+    )
+    assert "--module2-asset-root" not in bridge.stdout
 
 
 def test_bridge_uses_selected_domain_for_common_and_ros2(tmp_path):

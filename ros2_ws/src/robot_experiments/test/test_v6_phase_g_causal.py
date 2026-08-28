@@ -627,12 +627,52 @@ def test_wrapper_cli_matches_stack_contract_and_mcap_reuse() -> None:
         '--arm "${arm}" --domain "${domain_id}"',
         '--run-root "${run_root}/stack/${arm,,}"',
         '--obstacle-arm "${obstacle_arm}"',
+        '--module2-asset-root "${module2_asset_root}"',
         "phase_b_observability --print-recorder-topics",
         "--storage mcap",
         "--qos-profile-overrides-path",
     ):
         assert fragment in source
     subprocess.run(["bash", "-n", str(WRAPPER)], check=True)
+
+
+def test_stack_component_requires_and_forwards_asset_root_once(tmp_path: Path) -> None:
+    missing = subprocess.run(
+        [
+            "bash", str(WRAPPER), "--dry-run", "--run-root", str(tmp_path / "run"),
+            "--arm", "G2", "stack",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert missing.returncode == 2
+    assert "--module2-asset-root is required for stack" in missing.stderr
+
+    asset_root = tmp_path / "module2-assets"
+    valid = subprocess.run(
+        [
+            "bash", str(WRAPPER), "--dry-run", "--run-root", str(tmp_path / "run"),
+            "--arm", "G2", "--module2-asset-root", str(asset_root), "stack",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    argv = shlex.split(valid.stdout)
+    assert argv.count("--module2-asset-root") == 1
+    assert argv[argv.index("--module2-asset-root") + 1] == str(asset_root)
+
+    nonstack = subprocess.run(
+        [
+            "bash", str(WRAPPER), "--dry-run", "--run-root", str(tmp_path / "run"),
+            "--arm", "G2", "isaac",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "--module2-asset-root" not in nonstack.stdout
 
 
 def test_isaac_dry_run_exposes_selected_phase_b_domain_and_argv(
@@ -801,6 +841,7 @@ wait "$!"
             "--domain", "150",
             "--run-dir", str(run_dir),
             "--socket", str(socket_path),
+            "--module2-asset-root", str(tmp_path / "module2-assets"),
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
