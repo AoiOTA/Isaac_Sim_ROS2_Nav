@@ -14,6 +14,7 @@ from robot_experiments.experiment_runner import (
     _dynamic_interaction_acceptance,
     _reset_dynamic_selection,
 )
+from robot_experiments.configuration import ConfigurationError
 from robot_experiments.scenario import RunSelection
 
 
@@ -316,6 +317,72 @@ def test_focused_dynamic_case_skips_unselected_intermediate_goal_groups():
     assert runner._selected_dynamic_groups_for_goal("G5") == ["G5"]
 
 
+def test_single_dynamic_low_box_maps_crossing_to_its_g2_trigger_group():
+    runner = object.__new__(ExperimentRunner)
+    runner._scenario = SimpleNamespace(
+        scenario_type="dynamic",
+        obstacle_trajectories=(
+            {"id": "low_box", "motion": "crossing", "trigger_group": "G2"},
+        ),
+    )
+    runner._active_selection = SimpleNamespace(case_id="single_dynamic_low_box")
+
+    assert runner._selected_dynamic_groups_for_goal("G2") == ["G2"]
+
+
+def test_seeds_only_dynamic_scenario_selects_all_trajectories_and_passes_guard():
+    runner = object.__new__(ExperimentRunner)
+    runner._scenario = SimpleNamespace(
+        scenario_type="dynamic",
+        obstacle_trajectories=(
+            {"id": "first", "motion": "crossing", "trigger_group": "G2"},
+            {"id": "second", "motion": "oncoming", "trigger_group": "G3"},
+        ),
+    )
+    runner._active_selection = RunSelection(1)
+
+    assert runner._selected_dynamic_groups_for_goal("G2") == ["G2"]
+    assert runner._selected_dynamic_groups_for_goal("G3") == ["G3"]
+    runner._validate_dynamic_episode_selection()
+
+
+@pytest.mark.parametrize(
+    ("case_id", "trajectories"),
+    [
+        (
+            "unknown_dynamic_case",
+            ({"id": "low_box", "motion": "crossing", "trigger_group": "G2"},),
+        ),
+        ("single_dynamic_low_box", ()),
+    ],
+)
+def test_dynamic_episode_rejects_empty_selection_before_reset(case_id, trajectories):
+    runner = object.__new__(ExperimentRunner)
+    runner._clock_ready = True
+    runner._clock_timeout_sec = 1.0
+    runner._wait_until = lambda predicate, _timeout: predicate()
+    runner._verify_dynamic_runtime_contract = lambda: None
+    runner._verify_appearance_runtime_contract = lambda: None
+    runner._verify_collision_monitor_active = lambda: None
+    runner._authorization_only = False
+    runner._scenario = SimpleNamespace(
+        scenario_id="dynamic_selection_test",
+        scenario_type="dynamic",
+        obstacle_trajectories=trajectories,
+        run_matrix=(RunSelection(1, case_id, "v1"),),
+        seeds=(),
+    )
+    runner._run_indices = None
+    runner._require_pregoal_authorization = False
+    reset_calls = []
+    runner._reset_simulation = lambda *args: reset_calls.append(args)
+
+    with pytest.raises(ConfigurationError, match="no trigger groups or expected actor IDs"):
+        runner.run_all()
+
+    assert reset_calls == []
+
+
 def test_runner_has_no_actor_lifecycle_costmap_clear_workaround():
     assert not hasattr(
         ExperimentRunner, "_request_pending_dynamic_trail_clears"
@@ -366,6 +433,22 @@ def test_collision_free_policy_keeps_low_clearance_as_warning():
     assert status["clearance_warning_below_0_10m"] is True
     assert status["minimum_clearance_requirement_m"] == 0.0
     assert status["acceptance_policy"] == "physical_collision_free"
+
+
+def test_dynamic_acceptance_rejects_empty_expected_actor_ids():
+    status = _dynamic_interaction_acceptance(
+        scenario_type="dynamic",
+        expected_ids=set(),
+        triggered_ids=set(),
+        completed_ids=set(),
+        retired_ids=set(),
+        clearance_by_actor={},
+        evidence_complete=True,
+    )
+
+    assert status["complete"] is False
+    assert status["minimum_clearance_complete"] is False
+    assert status["reason"] == "expected_dynamic_actor_ids_empty"
 
 
 def test_static_appearance_profile_does_not_select_dynamic_obstacle_case():

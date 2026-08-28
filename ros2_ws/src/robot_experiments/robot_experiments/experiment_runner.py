@@ -119,6 +119,7 @@ APPEARANCE_NAV2_PROFILES = frozenset({
 # IDs and geometry.  These named Isaac schema-v4 case sets select the subset
 # that is actually armed during one full-route run.
 DYNAMIC_CASE_SET_MOTIONS = {
+    "single_dynamic_low_box": frozenset({"crossing"}),
     "full_route_three_stage": frozenset(
         {"local_bypass", "g2_g3_exit", "g5_g1_crossing"}
     ),
@@ -287,6 +288,25 @@ def _dynamic_interaction_acceptance(
             "maximum_pairing_clearance_m": 0.0,
             "close_interaction_complete": True,
             "acceptance_policy": "not_applicable",
+        }
+    if not expected_ids:
+        return {
+            "complete": False,
+            "minimum_clearance_complete": False,
+            "clearance_warning_below_0_10m": False,
+            "minimum_clearance_requirement_m": 0.0,
+            "maximum_pairing_clearance_m": (
+                float(maximum_pairing_clearance_m)
+                if maximum_pairing_clearance_m is not None
+                else 0.0
+            ),
+            "close_interaction_complete": False,
+            "acceptance_policy": (
+                "physical_collision_free_and_close_pairing"
+                if maximum_pairing_clearance_m is not None
+                else "physical_collision_free"
+            ),
+            "reason": "expected_dynamic_actor_ids_empty",
         }
     clearance_observed = expected_ids <= set(clearance_by_actor)
     close_interaction_complete = bool(
@@ -2324,28 +2344,55 @@ class ExperimentRunner(Node):
         """
         if self._scenario.scenario_type != "dynamic" or not goal_id:
             return []
+        return sorted({
+            str(item["trigger_group"])
+            for item in self._selected_dynamic_trajectories()
+            if item.get("trigger_group") == goal_id
+        })
+
+    def _selected_dynamic_trajectories(self) -> tuple[Mapping[str, Any], ...]:
+        if self._scenario.scenario_type != "dynamic":
+            return ()
         selected_case = (
             self._active_selection.case_id
             if self._active_selection is not None
             else None
         )
-        if selected_case in DYNAMIC_CASE_SET_MOTIONS:
-            selected_motions = DYNAMIC_CASE_SET_MOTIONS[selected_case]
-        elif selected_case:
-            selected_motions = {selected_case}
-        else:
-            selected_motions = None
-        return sorted({
+        if selected_case is None:
+            return tuple(self._scenario.obstacle_trajectories)
+        selected_motions = DYNAMIC_CASE_SET_MOTIONS.get(
+            selected_case,
+            frozenset({selected_case}),
+        )
+        return tuple(
+            item for item in self._scenario.obstacle_trajectories
+            if item.get("motion") in selected_motions
+        )
+
+    def _validate_dynamic_episode_selection(self) -> None:
+        if self._scenario.scenario_type != "dynamic":
+            return
+        selected = self._selected_dynamic_trajectories()
+        groups = {
             str(item["trigger_group"])
-            for item in self._scenario.obstacle_trajectories
-            if (
-                item.get("trigger_group") == goal_id
-                and (
-                    selected_motions is None
-                    or item.get("motion") in selected_motions
-                )
+            for item in selected
+            if isinstance(item.get("trigger_group"), str) and item["trigger_group"]
+        }
+        expected_ids = {
+            str(item["id"])
+            for item in selected
+            if isinstance(item.get("id"), str) and item["id"]
+        }
+        if not groups or not expected_ids:
+            selected_case = (
+                self._active_selection.case_id
+                if self._active_selection is not None
+                else None
             )
-        })
+            raise ConfigurationError(
+                "dynamic episode selection resolved to no trigger groups or expected "
+                f"actor IDs: case_id={selected_case!r}"
+            )
 
     def _trigger_obstacle_group(self, goal_id: str | None) -> None:
         if self._scenario.scenario_type != "dynamic" or not goal_id:
@@ -3188,22 +3235,9 @@ class ExperimentRunner(Node):
         quality_thresholds = self._scenario.success
         expected_dynamic_ids = {
             str(item["id"])
-            for item in self._scenario.obstacle_trajectories
-            if isinstance(item, Mapping) and isinstance(item.get("id"), str)
+            for item in self._selected_dynamic_trajectories()
+            if isinstance(item.get("id"), str)
         }
-        if self._active_selection is not None and self._active_selection.case_id:
-            if self._active_selection.case_id in DYNAMIC_CASE_SET_MOTIONS:
-                expected_dynamic_ids = {
-                    str(item["id"]) for item in self._scenario.obstacle_trajectories
-                    if item.get("motion") in DYNAMIC_CASE_SET_MOTIONS[
-                        self._active_selection.case_id
-                    ]
-                }
-            else:
-                expected_dynamic_ids = {
-                    str(item["id"]) for item in self._scenario.obstacle_trajectories
-                    if item.get("motion") == self._active_selection.case_id
-                }
         triggered_ids = {
             str(item.get("obstacle_id"))
             for item in self._obstacle_events
@@ -4226,6 +4260,7 @@ class ExperimentRunner(Node):
                 self._lifecycle_event("runner_started")
                 if self._authorization_only:
                     return [{"authorization_only": True, "run_index": run_index, "seed": seed}]
+            self._validate_dynamic_episode_selection()
             existing_root = self._evidence_root_for(run_index, seed)
             if self._record_evidence and existing_root.exists():
                 if not self._resume:
