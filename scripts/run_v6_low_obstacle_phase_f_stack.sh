@@ -440,6 +440,9 @@ if [[ "${dry_run}" == true ]]; then
   fi
   printf 'module3: %q ros %q route_prior_enabled:=%s' \
     "${script_dir}/run_v6_kujiale_low_obstacles.sh" "${arm}" "${route_prior_enabled}"
+  if [[ "${route_prior_enabled}" == true ]]; then
+    printf ' route_prior_snapshot_path:=%q' "${route_prior_snapshot}"
+  fi
   printf '\n'
   if [[ "${arm}" != "M0" ]]; then
     printf 'bridge: ros2 launch bio_nav_ros_bridge v6_cognitive_navigation.launch.py startup_profile:=%q' \
@@ -660,12 +663,16 @@ stack_pgid="$(process_group_of_pid "$$")"
 write_process_identity stack "${run_dir}" "$$" "${stack_pgid}"
 
 module3_localization_args=()
+module3_route_args=(
+  "route_prior_enabled:=${route_prior_enabled}"
+)
 bridge_localization_args=()
 bridge_route_args=(
   cognitive_graph_mode:=gvg
   "route_prior_enabled:=${route_prior_enabled}"
 )
 if [[ "${route_prior_enabled}" == true ]]; then
+  module3_route_args+=("route_prior_snapshot_path:=${route_prior_snapshot}")
   bridge_route_args+=("route_prior_snapshot_path:=${route_prior_snapshot}")
 fi
 if [[ -n "${localization_supervisor_mode}" ]]; then
@@ -681,7 +688,7 @@ fi
 
 exit_if_terminating
 setsid --wait -- "${script_dir}/run_v6_kujiale_low_obstacles.sh" ros "${arm}" \
-  "route_prior_enabled:=${route_prior_enabled}" \
+  "${module3_route_args[@]}" \
   "${module3_localization_args[@]}" \
   >"${run_dir}/module3_ros.log" 2>&1 &
 module3_pid="$!"

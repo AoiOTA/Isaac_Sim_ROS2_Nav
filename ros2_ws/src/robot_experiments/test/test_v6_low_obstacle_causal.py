@@ -3270,6 +3270,7 @@ def test_final_route_prior_pilot_dry_run_defaults_off(tmp_path):
     )
     assert "graph_mode=gvg" in result.stdout
     assert "route_prior_enabled=false" in result.stdout
+    assert "route_prior_snapshot_path" not in result.stdout
     assert "active_effect_scope=obstacle_only" in result.stdout
     assert "cognitive_graph_mode:=gvg route_prior_enabled:=false" in result.stdout
     assert "trajectory_topic:=/ground_truth/odom" in result.stdout
@@ -3306,19 +3307,26 @@ def test_phase_f_asset_root_required_only_for_server_arms(tmp_path):
         check=True,
     )
     assert "module2_asset_root" not in baseline.stdout
+    assert "route_prior_snapshot_path" not in baseline.stdout
 
 
 def test_final_route_prior_pilot_forwards_gvg_prior_to_m3_and_bridge(tmp_path):
+    snapshot = tmp_path / "route prior snapshot with spaces"
     fake = _start_fake_phase_f_stack(
-        tmp_path, arm="M3", enable_route_prior=True
+        tmp_path,
+        arm="M3",
+        enable_route_prior=True,
+        route_prior_snapshot=snapshot,
     )
     try:
         assert fake.module3_argv.read_text(encoding="utf-8").splitlines() == [
             "ros",
             "M3",
             "route_prior_enabled:=true",
+            f"route_prior_snapshot_path:={snapshot}",
         ]
         module2 = fake.module2_argv.read_text(encoding="utf-8").splitlines()
+        assert not any("route_prior_snapshot_path" in arg for arg in module2)
         assert module2.count("--module2-asset-root") == 1
         assert module2[module2.index("--module2-asset-root") + 1] == str(
             tmp_path / "module2-assets"
@@ -3383,7 +3391,7 @@ def test_final_route_prior_pilot_rejects_recovery_and_has_explicit_dry_run(
     assert recovery.returncode == 2
     assert "incompatible with W0/W1 localization recovery" in recovery.stderr
 
-    snapshot = tmp_path / "route-prior-snapshot"
+    snapshot = tmp_path / "route prior snapshot with spaces"
     snapshot.mkdir()
     (snapshot / "manifest.json").write_text("{}\n", encoding="utf-8")
     dry_run = subprocess.run([
@@ -3397,7 +3405,18 @@ def test_final_route_prior_pilot_rejects_recovery_and_has_explicit_dry_run(
     assert "cognitive_graph_mode:=gvg route_prior_enabled:=true" in dry_run.stdout
     assert f"route_prior_snapshot_path={snapshot}" in dry_run.stdout
     assert "route_prior_semantics=frozen_snapshot_main_compatible" in dry_run.stdout
-    assert f"route_prior_snapshot_path:={snapshot}" in dry_run.stdout
+    lines = dry_run.stdout.splitlines()
+    module3_line = next(line for line in lines if line.startswith("module3:"))
+    bridge_line = next(line for line in lines if line.startswith("bridge:"))
+    module2_line = next(line for line in lines if line.startswith("module2_assets:"))
+    escaped_snapshot = str(snapshot).replace(" ", "\\ ")
+    assert module3_line.count(
+        f"route_prior_snapshot_path:={escaped_snapshot}"
+    ) == 1
+    assert bridge_line.count(
+        f"route_prior_snapshot_path:={escaped_snapshot}"
+    ) == 1
+    assert "route_prior_snapshot_path" not in module2_line
     assert "module2_response_timeout_s" not in dry_run.stdout
     assert "goal_prior_retry_window_s" not in dry_run.stdout
 
