@@ -5,11 +5,70 @@ from setuptools import find_packages, setup
 
 package_name = "robot_experiments"
 package_root = Path(__file__).resolve().parent
+PACKAGED_CONFIGS = (
+    "attempt31_rivermark_appearance.yaml",
+    "attempt31_rivermark_dynamic.yaml",
+    "attempt31_rivermark_static.yaml",
+    "final_rivermark_appearance.yaml",
+    "final_rivermark_dynamic.yaml",
+    "final_rivermark_static.yaml",
+    "kujiale_4x20_dynamic_pair.yaml",
+    "kujiale_4x20_static_pair.yaml",
+    "kujiale_contact_observability_dynamic.yaml",
+    "kujiale_dynamic_controlled_20.yaml",
+    "kujiale_dynamic_full_route_5.yaml",
+    "kujiale_dynamic_visual.yaml",
+    "kujiale_dynamic_visual_g2_g3.yaml",
+    "kujiale_dynamic_visual_g5_g1.yaml",
+    "kujiale_g2_dynamic_safety_smoke.yaml",
+    "kujiale_long_range_campaign.yaml",
+    "kujiale_static_long_range.yaml",
+    "kujiale_static_visual.yaml",
+    "module1_targeted_teaching_kujiale_en.yaml",
+    "module1_targeted_teaching_kujiale_sw.yaml",
+    "module1_targeted_teaching_kujiale_t1.yaml",
+    "module1_targeted_teaching_kujiale_t2.yaml",
+    "module1_targeted_teaching_kujiale_v1.yaml",
+    "module1_targeted_teaching_kujiale_v2.yaml",
+    "module1_targeted_teaching_rosbag_qos.yaml",
+    "optimal_reference.json",
+    "scenario.schema.yaml",
+    "static.yaml",
+    "v6_estimated_calibration.yaml",
+    "v6_final_kujiale_appearance.yaml",
+    "v6_final_kujiale_dynamic.yaml",
+    "v6_final_kujiale_static.yaml",
+    "v6_final_rivermark_appearance.yaml",
+    "v6_final_rivermark_dynamic.yaml",
+    "v6_final_rivermark_static.yaml",
+    "v6_imu_lidar_readiness.yaml",
+    "v6_imu_regime_diagnostic.yaml",
+    "v6_imu_regime_resources.json",
+    "v6_kujiale_low_obstacle_causal.yaml",
+    "v6_kujiale_low_obstacles_static.yaml",
+    "v6_localization_causal.yaml",
+    "v6_low_obstacle_phase_f_rosbag_qos.yaml",
+    "v6_phase_g_causal.yaml",
+    "v6_pilot_kujiale_dynamic_hotreset_v1.yaml",
+    "v6_pilot_kujiale_static_hotreset.yaml",
+    "v6_r3_phase2_kujiale_baseline.yaml",
+    "v6_r5_phase_b_kujiale_exact_baseline.yaml",
+    "v6_run4_shadow_probe.yaml",
+    "v6_single_dynamic_low_obstacle.yaml",
+)
 
 
 def source_paths(directory: str, pattern: str) -> list[str]:
     """Keep package data rooted at source even when colcon invokes setup from build/."""
     return [os.path.relpath(path, Path.cwd()) for path in sorted((package_root / directory).glob(pattern))]
+
+
+def source_files(directory: str, filenames: tuple[str, ...]) -> list[str]:
+    """Resolve an explicit set of package data files relative to the invoking cwd."""
+    return [
+        os.path.relpath(package_root / directory / filename, Path.cwd())
+        for filename in filenames
+    ]
 
 
 def external_paths(directory: Path, pattern: str) -> list[str]:
@@ -26,8 +85,7 @@ setup(
         (f"share/{package_name}", ["package.xml"]),
         (
             f"share/{package_name}/config",
-            source_paths("config", "*.yaml")
-            + source_paths("config", "*.json")
+            source_files("config", PACKAGED_CONFIGS)
             + external_paths(
                 package_root.parents[2] / "isaac_sim/configs/experiments",
                 "v6_calibration_grid_features.yaml",

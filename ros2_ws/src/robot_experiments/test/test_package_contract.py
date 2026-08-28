@@ -8,6 +8,204 @@ import yaml
 
 
 PACKAGE_ROOT = Path(__file__).parents[1]
+EXPECTED_PACKAGED_CONFIGS = (
+    "attempt31_rivermark_appearance.yaml",
+    "attempt31_rivermark_dynamic.yaml",
+    "attempt31_rivermark_static.yaml",
+    "final_rivermark_appearance.yaml",
+    "final_rivermark_dynamic.yaml",
+    "final_rivermark_static.yaml",
+    "kujiale_4x20_dynamic_pair.yaml",
+    "kujiale_4x20_static_pair.yaml",
+    "kujiale_contact_observability_dynamic.yaml",
+    "kujiale_dynamic_controlled_20.yaml",
+    "kujiale_dynamic_full_route_5.yaml",
+    "kujiale_dynamic_visual.yaml",
+    "kujiale_dynamic_visual_g2_g3.yaml",
+    "kujiale_dynamic_visual_g5_g1.yaml",
+    "kujiale_g2_dynamic_safety_smoke.yaml",
+    "kujiale_long_range_campaign.yaml",
+    "kujiale_static_long_range.yaml",
+    "kujiale_static_visual.yaml",
+    "module1_targeted_teaching_kujiale_en.yaml",
+    "module1_targeted_teaching_kujiale_sw.yaml",
+    "module1_targeted_teaching_kujiale_t1.yaml",
+    "module1_targeted_teaching_kujiale_t2.yaml",
+    "module1_targeted_teaching_kujiale_v1.yaml",
+    "module1_targeted_teaching_kujiale_v2.yaml",
+    "module1_targeted_teaching_rosbag_qos.yaml",
+    "optimal_reference.json",
+    "scenario.schema.yaml",
+    "static.yaml",
+    "v6_estimated_calibration.yaml",
+    "v6_final_kujiale_appearance.yaml",
+    "v6_final_kujiale_dynamic.yaml",
+    "v6_final_kujiale_static.yaml",
+    "v6_final_rivermark_appearance.yaml",
+    "v6_final_rivermark_dynamic.yaml",
+    "v6_final_rivermark_static.yaml",
+    "v6_imu_lidar_readiness.yaml",
+    "v6_imu_regime_diagnostic.yaml",
+    "v6_imu_regime_resources.json",
+    "v6_kujiale_low_obstacle_causal.yaml",
+    "v6_kujiale_low_obstacles_static.yaml",
+    "v6_localization_causal.yaml",
+    "v6_low_obstacle_phase_f_rosbag_qos.yaml",
+    "v6_phase_g_causal.yaml",
+    "v6_pilot_kujiale_dynamic_hotreset_v1.yaml",
+    "v6_pilot_kujiale_static_hotreset.yaml",
+    "v6_r3_phase2_kujiale_baseline.yaml",
+    "v6_r5_phase_b_kujiale_exact_baseline.yaml",
+    "v6_run4_shadow_probe.yaml",
+    "v6_single_dynamic_low_obstacle.yaml",
+)
+EXPECTED_SOURCE_ONLY_CONFIGS = (
+    "dynamic.yaml",
+    "dynamic_benchmark.yaml",
+    "dynamic_complex_route.yaml",
+    "incremental_comparison.example.yaml",
+    "incremental_mapping.yaml",
+    "isaac_kujiale_attempt21_static_ab.yaml",
+    "isaac_kujiale_attempt21_static_ab_v10.yaml",
+    "isaac_kujiale_attempt21_static_ab_v11.yaml",
+    "isaac_kujiale_attempt21_static_ab_v12.yaml",
+    "isaac_kujiale_attempt21_static_ab_v2.yaml",
+    "isaac_kujiale_attempt21_static_ab_v3.yaml",
+    "isaac_kujiale_attempt21_static_ab_v4.yaml",
+    "isaac_kujiale_attempt21_static_ab_v5.yaml",
+    "isaac_kujiale_attempt21_static_ab_v6.yaml",
+    "isaac_kujiale_attempt21_static_ab_v7.yaml",
+    "isaac_kujiale_attempt21_static_ab_v8.yaml",
+    "isaac_kujiale_attempt21_static_ab_v9.yaml",
+    "isaac_kujiale_attempt21_static_fusion_supplement_v15.yaml",
+    "isaac_kujiale_attempt21_static_task_sensor_v13.yaml",
+    "isaac_kujiale_attempt22_v6_oracle_development_dynamic.yaml",
+    "isaac_kujiale_attempt22_v6_oracle_local_bypass_development.yaml",
+    "isaac_kujiale_attempt23_oracle_local_bypass_development.yaml",
+    "isaac_kujiale_dataset_v2_attempt_03_confirmation_dynamic.yaml",
+    "isaac_kujiale_dataset_v2_attempt_03_confirmation_static.yaml",
+    "isaac_kujiale_dataset_v2_attempt_03_development_dynamic.yaml",
+    "isaac_kujiale_dataset_v2_attempt_03_development_static.yaml",
+    "isaac_kujiale_dataset_v2_attempt_03_gate_dynamic.yaml",
+    "isaac_kujiale_dataset_v2_attempt_03_gate_static.yaml",
+    "isaac_kujiale_dataset_v2_attempt_04_confirmation_dynamic.yaml",
+    "isaac_kujiale_dataset_v2_attempt_04_confirmation_static.yaml",
+    "isaac_kujiale_dataset_v2_attempt_04_development_dynamic.yaml",
+    "isaac_kujiale_dataset_v2_attempt_04_development_static.yaml",
+    "isaac_kujiale_dataset_v2_attempt_04_gate_dynamic.yaml",
+    "isaac_kujiale_dataset_v2_attempt_04_gate_static.yaml",
+    "isaac_kujiale_dataset_v2_attempt_05_confirmation_dynamic.yaml",
+    "isaac_kujiale_dataset_v2_attempt_05_confirmation_static.yaml",
+    "isaac_kujiale_dataset_v2_attempt_05_development_dynamic.yaml",
+    "isaac_kujiale_dataset_v2_attempt_05_development_static.yaml",
+    "isaac_kujiale_dataset_v2_attempt_05_gate_dynamic.yaml",
+    "isaac_kujiale_dataset_v2_attempt_05_gate_static.yaml",
+    "isaac_kujiale_dataset_v2_attempt_06_confirmation_dynamic.yaml",
+    "isaac_kujiale_dataset_v2_attempt_06_confirmation_static.yaml",
+    "isaac_kujiale_dataset_v2_attempt_06_development_dynamic.yaml",
+    "isaac_kujiale_dataset_v2_attempt_06_development_static.yaml",
+    "isaac_kujiale_dataset_v2_attempt_06_gate_dynamic.yaml",
+    "isaac_kujiale_dataset_v2_attempt_06_gate_static.yaml",
+    "isaac_kujiale_dataset_v2_attempt_07_confirmation_dynamic.yaml",
+    "isaac_kujiale_dataset_v2_attempt_07_confirmation_static.yaml",
+    "isaac_kujiale_dataset_v2_attempt_07_development_dynamic.yaml",
+    "isaac_kujiale_dataset_v2_attempt_07_development_static.yaml",
+    "isaac_kujiale_dataset_v2_attempt_07_gate_dynamic.yaml",
+    "isaac_kujiale_dataset_v2_attempt_07_gate_static.yaml",
+    "isaac_kujiale_dataset_v2_attempt_20_confirmation_dynamic.yaml",
+    "isaac_kujiale_dataset_v2_attempt_20_confirmation_static.yaml",
+    "isaac_kujiale_dataset_v2_attempt_20_development_dynamic.yaml",
+    "isaac_kujiale_dataset_v2_attempt_20_development_static.yaml",
+    "isaac_kujiale_dataset_v2_attempt_20_gate_dynamic.yaml",
+    "isaac_kujiale_dataset_v2_attempt_20_gate_static.yaml",
+    "isaac_kujiale_dataset_v2_confirmation_dynamic.yaml",
+    "isaac_kujiale_dataset_v2_confirmation_static.yaml",
+    "isaac_kujiale_dataset_v2_development_dynamic.yaml",
+    "isaac_kujiale_dataset_v2_development_static.yaml",
+    "isaac_kujiale_dataset_v2_gate_dynamic.yaml",
+    "isaac_kujiale_dataset_v2_gate_static.yaml",
+    "isaac_kujiale_dataset_v2_smoke_dynamic.yaml",
+    "isaac_kujiale_dataset_v2_smoke_static.yaml",
+    "isaac_kujiale_dataset_v3_attempt21_confirmation_dynamic.yaml",
+    "isaac_kujiale_dataset_v3_attempt21_confirmation_static.yaml",
+    "isaac_kujiale_dataset_v3_attempt21_confirmation_static_v2.yaml",
+    "isaac_kujiale_dataset_v3_attempt21_confirmation_static_v3.yaml",
+    "isaac_kujiale_dataset_v3_attempt21_confirmation_static_v4.yaml",
+    "isaac_kujiale_dataset_v3_attempt21_confirmation_static_v5.yaml",
+    "isaac_kujiale_dataset_v3_attempt21_development_dynamic.yaml",
+    "isaac_kujiale_dataset_v3_attempt21_development_static.yaml",
+    "isaac_kujiale_dataset_v3_attempt21_gate_dynamic.yaml",
+    "isaac_kujiale_dataset_v3_attempt21_gate_static.yaml",
+    "isaac_kujiale_dataset_v3_attempt21_gate_static_v2.yaml",
+    "isaac_kujiale_dataset_v3_attempt21_gate_static_v3.yaml",
+    "isaac_kujiale_dataset_v3_attempt21_gate_static_v4.yaml",
+    "isaac_kujiale_dataset_v3_attempt21_gate_static_v5.yaml",
+    "isaac_kujiale_dataset_v3_attempt22_development_dynamic.yaml",
+    "isaac_kujiale_dataset_v3_attempt23_development_dynamic.yaml",
+    "isaac_kujiale_dataset_v3_attempt23_final_confirmation_dynamic.yaml",
+    "isaac_kujiale_dataset_v3_attempt23_final_confirmation_static.yaml",
+    "isaac_kujiale_dataset_v3_attempt23_global_ab_dynamic.yaml",
+    "isaac_kujiale_dataset_v3_attempt23_global_ab_static.yaml",
+    "isaac_kujiale_dataset_v3_attempt23_global_shadow_dynamic.yaml",
+    "isaac_kujiale_dataset_v3_attempt23_global_shadow_static.yaml",
+    "kujiale_baseline_pilot.yaml",
+    "kujiale_dynamic_long_range.yaml",
+    "kujiale_dynamic_pilot.yaml",
+    "kujiale_static_pilot.yaml",
+    "motion_benchmark.yaml",
+    "static_benchmark.yaml",
+    "static_complex_route.yaml",
+    "static_long_range.yaml",
+)
+
+
+def test_setup_packages_only_the_current_config_allowlist():
+    setup_source = (PACKAGE_ROOT / "setup.py").read_text()
+    setup_tree = ast.parse(setup_source)
+    assignments = [
+        node
+        for node in setup_tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id == "PACKAGED_CONFIGS"
+    ]
+    assert len(assignments) == 1
+    packaged_configs = ast.literal_eval(assignments[0].value)
+
+    assert isinstance(packaged_configs, tuple)
+    assert packaged_configs == EXPECTED_PACKAGED_CONFIGS
+    assert len(packaged_configs) == 49
+    assert len(packaged_configs) == len(set(packaged_configs))
+    assert packaged_configs == tuple(sorted(packaged_configs))
+    assert all((PACKAGE_ROOT / "config" / name).is_file() for name in packaged_configs)
+    assert 'source_files("config", PACKAGED_CONFIGS)' in setup_source
+
+    config_globs = [
+        node
+        for node in ast.walk(setup_tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "source_paths"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "config"
+    ]
+    assert not config_globs
+
+    source_configs = tuple(
+        sorted(
+            path.name
+            for path in (PACKAGE_ROOT / "config").iterdir()
+            if path.is_file() and path.suffix in {".yaml", ".json"}
+        )
+    )
+    assert len(source_configs) == 145
+    source_only_configs = tuple(
+        name for name in source_configs if name not in set(packaged_configs)
+    )
+    assert len(source_only_configs) == 96
+    assert source_only_configs == EXPECTED_SOURCE_ONLY_CONFIGS
 
 
 @pytest.mark.parametrize(
@@ -60,7 +258,7 @@ def test_package_metadata_declares_runtime_contract():
         "incremental_mapping.yaml",
     ],
 )
-def test_examples_validate_against_installed_schema(filename):
+def test_source_examples_validate_against_source_schema(filename):
     schema = yaml.safe_load((PACKAGE_ROOT / "config" / "scenario.schema.yaml").read_text())
     instance = yaml.safe_load((PACKAGE_ROOT / "config" / filename).read_text())
     jsonschema.Draft202012Validator(schema).validate(instance)
