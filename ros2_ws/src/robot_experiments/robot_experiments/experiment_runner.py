@@ -3358,15 +3358,7 @@ class ExperimentRunner(Node):
                 "segments": segments,
                 "complete": all(item["complete"] for item in segments.values()),
             }
-            # The frozen G2/Confirmation contract independently verifies actor
-            # arming, motion, retirement, safety and paired interaction.  Its
-            # evidence gate intentionally treats this calibrated follow-window
-            # observation as a diagnostic, not as a navigation failure.  Keep
-            # the legacy pilot scenario strict, while preserving that contract
-            # for the qualification scenarios.
             qualification_dynamic = self._scenario.scenario_id in {
-                "kujiale_stage2_2_g2_gate_dynamic",
-                "kujiale_stage2_2_g2_confirmation_dynamic",
                 # This isolated Module3-only smoke shares the formal
                 # telemetry/actor contract, but treats the calibrated
                 # right-side-bypass classifier as diagnostic.  The smoke's
