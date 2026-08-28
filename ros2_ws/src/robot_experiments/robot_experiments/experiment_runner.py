@@ -1338,12 +1338,7 @@ class ExperimentRunner(Node):
             ),
             "context_uncertainty": float(message.context_uncertainty),
         }
-        readiness = self._latest_planning_prior_readiness
-        if (
-            readiness["module2_healthy"]
-            and readiness["place_entropy_normalized"] <= 0.55
-            and readiness["context_uncertainty"] <= 0.55
-        ):
+        if self._latest_planning_prior_readiness["module2_healthy"]:
             self._planning_prior_ready_streak += 1
         else:
             self._planning_prior_ready_streak = 0

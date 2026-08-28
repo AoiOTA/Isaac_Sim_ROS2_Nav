@@ -74,6 +74,43 @@ def test_default_enabled_slam_buffer_clear_still_fails_closed_when_service_missi
     assert client.call_count == 0
 
 
+def _planning_prior(*, stamp_sec: int, healthy: bool):
+    return SimpleNamespace(
+        stamp=SimpleNamespace(sec=stamp_sec, nanosec=0),
+        module2_healthy=healthy,
+        place_entropy_normalized=0.58,
+        context_uncertainty=0.58,
+        place_belief=[],
+        dynamic_cost=[],
+    )
+
+
+def test_planning_readiness_uses_consecutive_fresh_healthy_priors_only():
+    runner = SimpleNamespace(
+        _latest_planning_prior_readiness=None,
+        _planning_prior_ready_streak=0,
+        _navigation_active=False,
+    )
+
+    for stamp_sec in range(1, 6):
+        ExperimentRunner._planning_prior_callback(
+            runner, _planning_prior(stamp_sec=stamp_sec, healthy=True)
+        )
+
+    assert runner._planning_prior_ready_streak == 5
+    assert runner._latest_planning_prior_readiness == {
+        "stamp_s": 5.0,
+        "module2_healthy": True,
+        "place_entropy_normalized": 0.58,
+        "context_uncertainty": 0.58,
+    }
+
+    ExperimentRunner._planning_prior_callback(
+        runner, _planning_prior(stamp_sec=6, healthy=False)
+    )
+    assert runner._planning_prior_ready_streak == 0
+
+
 def _transform(x: float, y: float, yaw_rad: float, stamp_s: float):
     return SimpleNamespace(
         stamp_s=stamp_s,

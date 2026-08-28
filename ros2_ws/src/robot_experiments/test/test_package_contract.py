@@ -297,6 +297,33 @@ def test_experiment_launch_exposes_strict_slam_buffer_clear_switch_and_manifest(
     )
 
 
+def test_experiment_launch_types_and_forwards_module2_planning_readiness():
+    launch_source = (PACKAGE_ROOT / "launch" / "experiment.launch.py").read_text()
+    runner_source = (
+        PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py"
+    ).read_text()
+
+    assert (
+        '"require_module2_planning_ready", default_value="false"'
+        in launch_source
+    )
+    assert (
+        '"module2_planning_ready_timeout_sec", default_value="30.0"'
+        in launch_source
+    )
+    assert 'LaunchConfiguration("require_module2_planning_ready")' in launch_source
+    assert 'LaunchConfiguration(\n                                "module2_planning_ready_timeout_sec"' in launch_source
+    assert launch_source.count("value_type=bool") >= 1
+    assert launch_source.count("value_type=float") >= 1
+    gate = runner_source.index(
+        "if self._require_module2_planning_ready and not self._wait_until("
+    )
+    dispatch = runner_source.index("nav2_succeeded, timed_out, nav2_status = self._navigate()")
+    assert gate < dispatch
+    assert "lambda: self._planning_prior_ready_streak >= 5" in runner_source
+    assert "Module2 planning prior did not become goal-query ready" in runner_source
+
+
 def test_attempt30_repeat_diagnostic_is_nonformal_and_pins_its_integration_underlay():
     root = PACKAGE_ROOT.parents[2]
     supervisor = (

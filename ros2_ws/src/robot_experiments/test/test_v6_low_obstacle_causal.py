@@ -3197,6 +3197,11 @@ def test_phase_f_stack_explicitly_disables_route_prior_for_module2_arms(
         assert fake.module3_argv.read_text(encoding="utf-8").splitlines() == [
             "ros", arm, "route_prior_enabled:=false"
         ]
+        module2 = fake.module2_argv.read_text(encoding="utf-8").splitlines()
+        assert module2[module2.index("--shadow-config") + 1] == (
+            "configs/kujiale_0026_module1_visual_shadow_v310.yaml"
+        )
+        assert "--candidate-manifest" not in module2
     finally:
         _stop_fake_phase_f_stack(fake)
 
@@ -3219,6 +3224,13 @@ def test_final_route_prior_pilot_dry_run_defaults_off(tmp_path):
     assert "route_prior_enabled=false" in result.stdout
     assert "active_effect_scope=obstacle_only" in result.stdout
     assert "cognitive_graph_mode:=gvg route_prior_enabled:=false" in result.stdout
+    assert "trajectory_topic:=/ground_truth/odom" in result.stdout
+    assert (
+        "module2_assets: --shadow-config "
+        "configs/kujiale_0026_module1_visual_shadow_v310.yaml"
+        in result.stdout
+    )
+    assert "--candidate-manifest" not in result.stdout
     assert "module2_response_timeout_s" not in result.stdout
     assert "goal_prior_retry_window_s" not in result.stdout
 
@@ -3245,6 +3257,7 @@ def test_final_route_prior_pilot_forwards_gvg_prior_to_m3_and_bridge(tmp_path):
         assert "cognitive_graph_mode:=gvg" in bridge
         assert "route_prior_enabled:=true" in bridge
         assert f"route_prior_snapshot_path:={fake.route_prior_snapshot}" in bridge
+        assert "trajectory_topic:=/ground_truth/odom" in bridge
     finally:
         _stop_fake_phase_f_stack(fake)
 
@@ -3350,6 +3363,7 @@ def test_phase_f_stack_localization_extension_forwards_exact_onebox_m3_argv(
         assert module2[module2.index("--candidate-manifest") + 1] == str(
             fake.candidate_manifest
         )
+        assert "--shadow-config" not in module2
         bridge = fake.bridge_argv.read_text(encoding="utf-8").splitlines()
         assert "startup_profile:=module2_causal_obstacle_active" in bridge
         assert f"localization_supervisor_mode:={expected_mode}" in bridge
@@ -3828,6 +3842,7 @@ export PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 die() { printf '%s\\n' "$*" >&2; exit 1; }
 require_file() { [[ -f "$1" ]] || die "missing: $1"; }
 require_directory() { [[ -d "$1" ]] || die "missing directory: $1"; }
+source_ros() { :; }
 """,
         encoding="utf-8",
     )
@@ -3836,12 +3851,25 @@ require_directory() { [[ -d "$1" ]] || die "missing directory: $1"; }
         "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\"\n", encoding="utf-8"
     )
     run_ros.chmod(0o755)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir(exist_ok=True)
+    fake_ros2 = fake_bin / "ros2"
+    fake_ros2.write_text(
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\"\n", encoding="utf-8"
+    )
+    fake_ros2.chmod(0o755)
     scenario = (
         project
         / "ros2_ws/src/robot_experiments/config/v6_kujiale_low_obstacles_static.yaml"
     )
     scenario.parent.mkdir(parents=True)
     scenario.touch()
+    spawn_poses = (
+        project
+        / "isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml"
+    )
+    spawn_poses.parent.mkdir(parents=True)
+    spawn_poses.touch()
     module2 = tmp_path / "installed_module2"
     constraints = (
         module2 / "configs/kujiale_0026_module1_visual_shadow_v310.yaml"
@@ -3854,6 +3882,7 @@ require_directory() { [[ -d "$1" ]] || die "missing directory: $1"; }
     env = os.environ.copy()
     env.pop("V6_COGNITIVE_PROFILE", None)
     env["BIO_NAV_MODULE2_V310_ROOT"] = str(module2)
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
     result = subprocess.run(
         [str(scripts / "run_v6_kujiale_low_obstacles.sh"), *arguments],
         check=check,
@@ -3862,6 +3891,38 @@ require_directory() { [[ -d "$1" ]] || die "missing directory: $1"; }
         env=env,
     )
     return project, constraints, result
+
+
+def test_v6_runner_fixes_spawn_and_keeps_module2_readiness_explicit(tmp_path):
+    project, _constraints, baseline = _run_low_obstacle_wrapper(
+        tmp_path / "baseline",
+        "runner",
+        str(tmp_path / "m0"),
+        "experiment_arm:=M0",
+    )
+    baseline_argv = baseline.stdout.splitlines()
+    assert (
+        f"spawn_poses_file:={project}/isaac_sim/configs/environments/"
+        "kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml"
+        in baseline_argv
+    )
+    assert "experiment_arm:=M0" in baseline_argv
+    assert not any(
+        argument.startswith("require_module2_planning_ready:=")
+        for argument in baseline_argv
+    )
+
+    _project, _constraints, route_prior = _run_low_obstacle_wrapper(
+        tmp_path / "route-prior",
+        "runner",
+        str(tmp_path / "m3-route-prior"),
+        "experiment_arm:=M3",
+        "require_module2_planning_ready:=true",
+        "module2_planning_ready_timeout_sec:=120.0",
+    )
+    route_prior_argv = route_prior.stdout.splitlines()
+    assert "require_module2_planning_ready:=true" in route_prior_argv
+    assert "module2_planning_ready_timeout_sec:=120.0" in route_prior_argv
 
 
 @pytest.mark.parametrize("arm", ["M0", "M1", "M2", "M3"])

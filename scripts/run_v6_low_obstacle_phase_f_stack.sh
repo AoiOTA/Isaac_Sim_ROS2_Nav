@@ -388,6 +388,16 @@ elif [[ -n "${route_prior_snapshot}" ]]; then
   echo "--route-prior-snapshot requires --enable-route-prior" >&2
   exit 2
 fi
+module2_asset_args=(
+  --shadow-config configs/kujiale_0026_module1_visual_shadow_v310.yaml
+)
+if [[ -n "${candidate_manifest}" ]]; then
+  module2_asset_args=(--candidate-manifest "${candidate_manifest}")
+fi
+((${#module2_asset_args[@]} == 2)) || {
+  echo "exactly one Module2 planning asset must be selected" >&2
+  exit 2
+}
 [[ "${run_dir}" == /* && "${socket_path}" == /* ]] || {
   echo "run-dir and socket must be absolute" >&2
   exit 2
@@ -413,6 +423,11 @@ if [[ "${dry_run}" == true ]]; then
   printf 'cognitive_profile=%s\n' "${arm}"
   printf 'active_effect_scope=%s\n' "${dry_scope}"
   printf 'cpg_navigation_writes=false\n'
+  if [[ "${arm}" != "M0" ]]; then
+    printf 'module2_assets:'
+    printf ' %q' "${module2_asset_args[@]}"
+    printf '\n'
+  fi
   printf 'module3: %q ros %q route_prior_enabled:=%s' \
     "${script_dir}/run_v6_kujiale_low_obstacles.sh" "${arm}" "${route_prior_enabled}"
   printf '\n'
@@ -424,7 +439,8 @@ if [[ "${dry_run}" == true ]]; then
     if [[ "${route_prior_enabled}" == true ]]; then
       printf ' route_prior_snapshot_path:=%q' "${route_prior_snapshot}"
     fi
-    printf ' socket_path:=%q use_sim_time:=true\n' "${socket_path}"
+    printf ' socket_path:=%q use_sim_time:=true trajectory_topic:=/ground_truth/odom\n' \
+      "${socket_path}"
   fi
   exit 0
 fi
@@ -444,9 +460,10 @@ require_directory "${integration_root}"
 require_directory "${module2_root}"
 module2_root="$(cd "${module2_root}" && pwd -P)"
 canonical_constraints_file="${module2_root}/configs/kujiale_0026_module1_visual_shadow_v310.yaml"
-require_file "${canonical_constraints_file}"
 if [[ -n "${candidate_manifest}" ]]; then
   require_file "${candidate_manifest}"
+else
+  require_file "${canonical_constraints_file}"
 fi
 export BIO_NAV_MODULE2_V310_ROOT="${module2_root}"
 if [[ "${arm}" != "M0" ]]; then
@@ -633,7 +650,6 @@ stack_pgid="$(process_group_of_pid "$$")"
 write_process_identity stack "${run_dir}" "$$" "${stack_pgid}"
 
 module3_localization_args=()
-module2_candidate_args=()
 bridge_localization_args=()
 bridge_route_args=(
   cognitive_graph_mode:=gvg
@@ -647,7 +663,6 @@ if [[ -n "${localization_supervisor_mode}" ]]; then
     initial_pose_source:=rviz
     activation_startup_policy:=wait_for_seed
   )
-  module2_candidate_args=(--candidate-manifest "${candidate_manifest}")
   bridge_localization_args=(
     "localization_supervisor_mode:=${localization_supervisor_mode}"
     "localization_candidate_manifest:=${candidate_manifest}"
@@ -668,8 +683,7 @@ if [[ "${arm}" != "M0" ]]; then
     exit_if_terminating
     setsid --wait -- "${integration_root}/scripts/run_module2_v310_server.sh" \
       --module2-root "${module2_root}" \
-      --shadow-config configs/kujiale_0026_module1_visual_shadow_v310.yaml \
-      "${module2_candidate_args[@]}" \
+      "${module2_asset_args[@]}" \
       --socket "${socket_path}" \
       >"${run_dir}/module2_server.log" 2>&1 &
   else
@@ -679,8 +693,7 @@ if [[ "${arm}" != "M0" ]]; then
       --active-effect-scope obstacle_only \
       --socket "${socket_path}" \
       --module2-root "${module2_root}" \
-      --shadow-config configs/kujiale_0026_module1_visual_shadow_v310.yaml \
-      "${module2_candidate_args[@]}" \
+      "${module2_asset_args[@]}" \
       >"${run_dir}/module2_server.log" 2>&1 &
   fi
   module2_server_pid="$!"
@@ -694,6 +707,7 @@ if [[ "${arm}" != "M0" ]]; then
     startup_profile:="${startup_profile}" \
     socket_path:="${socket_path}" \
     use_sim_time:=true \
+    trajectory_topic:=/ground_truth/odom \
     "${bridge_route_args[@]}" \
     "${bridge_localization_args[@]}" \
     >"${run_dir}/integration_bridge.log" 2>&1 &

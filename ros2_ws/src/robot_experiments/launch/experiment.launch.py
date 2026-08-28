@@ -31,6 +31,12 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "clear_slam_localization_buffer", default_value="true"
             ),
+            DeclareLaunchArgument(
+                "require_module2_planning_ready", default_value="false"
+            ),
+            DeclareLaunchArgument(
+                "module2_planning_ready_timeout_sec", default_value="30.0"
+            ),
             DeclareLaunchArgument("authorization_only", default_value="false"),
             DeclareLaunchArgument("resume", default_value="false"),
             DeclareLaunchArgument("require_successful_resume", default_value="false"),
@@ -85,6 +91,16 @@ def generate_launch_description():
                         "clear_slam_localization_buffer": ParameterValue(
                             LaunchConfiguration("clear_slam_localization_buffer"),
                             value_type=bool,
+                        ),
+                        "require_module2_planning_ready": ParameterValue(
+                            LaunchConfiguration("require_module2_planning_ready"),
+                            value_type=bool,
+                        ),
+                        "module2_planning_ready_timeout_sec": ParameterValue(
+                            LaunchConfiguration(
+                                "module2_planning_ready_timeout_sec"
+                            ),
+                            value_type=float,
                         ),
                         "authorization_only": ParameterValue(
                             LaunchConfiguration("authorization_only"), value_type=bool

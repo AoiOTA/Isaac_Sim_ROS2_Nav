@@ -175,6 +175,7 @@ case "${profile}" in
     source_ros --require-workspace
     exec ros2 launch robot_experiments experiment.launch.py \
       scenario_file:="${scenario_file}" \
+      spawn_poses_file:="${PROJECT_ROOT}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml" \
       output_directory:="${output_directory}" "$@"
     ;;
   *) die "profile must be isaac, ros, shadow, ros-d, or runner; got: ${profile}" ;;
