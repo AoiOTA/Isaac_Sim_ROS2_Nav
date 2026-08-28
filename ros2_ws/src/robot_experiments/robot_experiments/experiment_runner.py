@@ -3365,7 +3365,6 @@ class ExperimentRunner(Node):
             # the legacy pilot scenario strict, while preserving that contract
             # for the qualification scenarios.
             qualification_dynamic = self._scenario.scenario_id in {
-                "attempt30_a21_qualification_dynamic",
                 "kujiale_stage2_2_g2_gate_dynamic",
                 "kujiale_stage2_2_g2_confirmation_dynamic",
                 # This isolated Module3-only smoke shares the formal
