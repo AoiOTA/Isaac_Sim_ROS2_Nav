@@ -25,6 +25,19 @@ def test_rivermark_reference_sums_all_five_route_legs_and_converges():
     assert result["total_length_m_0_05"] == pytest.approx(113.05615792887396)
     assert result["convergence_percent"] < 1.0
     assert result["converged"] is True
+    provenance_paths = {
+        "map.yaml": result["map"]["yaml"],
+        "map.image": result["map"]["image"],
+        "scenario.file": result["scenario"]["file"],
+        "scenario.spawn_file": result["scenario"]["spawn_file"],
+    }
+    assert provenance_paths == {
+        "map.yaml": "rivermark_selected.yaml",
+        "map.image": "rivermark_selected.pgm",
+        "scenario.file": "attempt31_rivermark_static.yaml",
+        "scenario.spawn_file": "rivermark.spawn.yaml",
+    }
+    assert all(not Path(value).is_absolute() for value in provenance_paths.values())
 
     frozen = json.loads(
         (ROOT / "data/rivermark_demo/rivermark_optimal_reference.json").read_text(

@@ -163,14 +163,14 @@ Visualization Manager:
         module2_remap: true
         module2_sr: true
         moving_lookahead: true
-        ownership_handoff: false
-        ownership_module2: false
-        ownership_module3: false
+        ownership_handoff: true
+        ownership_module2: true
+        ownership_module3: true
         previous_tile_switch: true
         route_projection: true
         smac_plan: true
         tile_switch_direction: true
-        tile_switch_event: false
+        tile_switch_event: true
       Topic:
         Depth: 1
         Durability Policy: Transient Local
