@@ -156,14 +156,24 @@ def test_phase_b_help_declares_ros_first_and_isaac_readiness_order():
         < isaac_case.index('exec "${SCRIPT_DIR}/run_isaac.sh"')
 
 
-def _run_fake_isaac_startup(tmp_path, *, helper_result="0", helper_sleep_sec="0"):
+def _run_fake_isaac_startup(
+    tmp_path,
+    *,
+    helper_result="0",
+    helper_sleep_sec="0",
+    importer_result="0",
+):
     project = tmp_path / "project"
     scripts = project / "scripts"
+    startup_log = tmp_path / "startup.log"
+    asset_root = tmp_path / "assets"
     (scripts / "lib").mkdir(parents=True)
     shutil.copy2(WRAPPER, scripts / WRAPPER.name)
     (scripts / WAIT_HELPER.name).write_text(
         """import os
 import time
+from pathlib import Path
+Path(os.environ["FAKE_STARTUP_LOG"]).open("a", encoding="utf-8").write("wait-reset\\n")
 time.sleep(float(os.environ.get("FAKE_HELPER_SLEEP_SEC", "0")))
 raise SystemExit(int(os.environ.get("FAKE_HELPER_RESULT", "0")))
 """,
@@ -181,9 +191,22 @@ log_info() { printf '%s\\n' "$*"; }
     )
     run_isaac = scripts / "run_isaac.sh"
     run_isaac.write_text(
-        "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\"\n", encoding="utf-8"
+        """#!/usr/bin/env bash
+printf 'run-isaac\\n' >> "${FAKE_STARTUP_LOG:?}"
+printf '%s\\n' "$@"
+""",
+        encoding="utf-8",
     )
     run_isaac.chmod(0o755)
+    import_assets = scripts / "import_assets.sh"
+    import_assets.write_text(
+        """#!/usr/bin/env bash
+printf 'import-assets:%s:%s\\n' "${ISAAC_ASSET_ROOT:?}" "$*" >> "${FAKE_STARTUP_LOG:?}"
+exit "${FAKE_IMPORTER_RESULT:-0}"
+""",
+        encoding="utf-8",
+    )
+    import_assets.chmod(0o755)
     for relative in (
         "ros2_ws/src/robot_experiments/config/v6_r5_phase_b_kujiale_exact_baseline.yaml",
         "data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml",
@@ -202,6 +225,9 @@ log_info() { printf '%s\\n' "$*"; }
         {
             "BIO_NAV_MODULE2_V310_ROOT": str(module2),
             "BIO_NAV_PHASE_B_ROS_READY_TIMEOUT_SEC": "1",
+            "ISAAC_ASSET_ROOT": str(asset_root),
+            "FAKE_STARTUP_LOG": str(startup_log),
+            "FAKE_IMPORTER_RESULT": importer_result,
             "FAKE_HELPER_RESULT": helper_result,
             "FAKE_HELPER_SLEEP_SEC": helper_sleep_sec,
         }
@@ -221,6 +247,21 @@ def test_phase_b_isaac_starts_before_mixed_ekf_set_pose_exists(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "pre-Isaac ROS reset service is ready" in result.stdout
     assert "--spawn-pose\nlong_route_start_g1" in result.stdout
+    assert (tmp_path / "startup.log").read_text(encoding="utf-8").splitlines() == [
+        f"import-assets:{tmp_path / 'assets'}:",
+        f"import-assets:{tmp_path / 'assets'}:--check",
+        "wait-reset",
+        "run-isaac",
+    ]
+
+
+def test_phase_b_isaac_does_not_start_kit_when_asset_import_fails(tmp_path):
+    result = _run_fake_isaac_startup(tmp_path, importer_result="2")
+
+    assert result.returncode == 2
+    assert (tmp_path / "startup.log").read_text(encoding="utf-8").splitlines() == [
+        f"import-assets:{tmp_path / 'assets'}:",
+    ]
 
 
 def test_phase_b_isaac_still_fails_when_wheel_reset_is_missing(tmp_path):

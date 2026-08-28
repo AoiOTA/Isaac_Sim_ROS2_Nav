@@ -133,6 +133,8 @@ require_file "${SHADOW_CONFIG_ABS}"
 
 case "${component}" in
   isaac)
+    "${SCRIPT_DIR}/import_assets.sh"
+    "${SCRIPT_DIR}/import_assets.sh" --check
     source_ros --require-integration-underlay
     wait_for_ros_reset_services
     export ISAAC_NAV__GROUND_TRUTH__ENABLED=true
