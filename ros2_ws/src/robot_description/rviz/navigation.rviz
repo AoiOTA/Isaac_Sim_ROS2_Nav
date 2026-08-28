@@ -178,7 +178,7 @@ Visualization Manager:
           Value: true
         rear_right_wheel_link:
           Value: true
-        rtx_world:
+        rtx_lidar:
           Value: true
       Marker Scale: 0.3499999940395355
       Name: TF
@@ -206,13 +206,12 @@ Visualization Manager:
               imu_link:
                 {}
               lidar_link:
-                {}
+                rtx_lidar:
+                  {}
               rear_left_wheel_link:
                 {}
               rear_right_wheel_link:
                 {}
-            rtx_world:
-              {}
       Update Interval: 0
       Value: true
     - Alpha: 1

@@ -474,11 +474,11 @@ def _load_lidar(path) -> dict[str, Any]:
         )
     if data["type"] != "point_cloud" or data["topic_name"] != "/lidar/points_raw":
         raise SensorConfigError("LiDAR must publish point_cloud on /lidar/points_raw")
-    if data["frame_id"] != "rtx_world":
-        raise SensorConfigError("RTX PointCloud frame_id must be rtx_world")
-    if data["output_frame"] != "WORLD":
+    if data["frame_id"] != "rtx_lidar":
+        raise SensorConfigError("RTX PointCloud frame_id must be rtx_lidar")
+    if data["output_frame"] != "SENSOR":
         raise SensorConfigError(
-            "RTX PointCloud output_frame must be WORLD when frame_id is rtx_world"
+            "RTX PointCloud output_frame must be SENSOR when frame_id is rtx_lidar"
         )
     if data["motion_compensation"] != "COMPENSATED":
         raise SensorConfigError(
@@ -502,6 +502,15 @@ def _load_lidar(path) -> dict[str, Any]:
             "the Isaac Sim 6.0 multi-tick contract"
         )
     return data
+
+
+def _lidar_omni_attributes(lidar_config: dict[str, Any]) -> dict[str, str]:
+    return {
+        "omni:sensor:Core:outputFrameOfReference": lidar_config["output_frame"],
+        "omni:sensor:Core:outputMotionCompensationState": lidar_config[
+            "motion_compensation"
+        ],
+    }
 
 
 def _load_imu(path) -> dict[str, Any]:
@@ -647,14 +656,7 @@ class SensorFactory:
             variant=lidar_config["variant"],
             tick_rate=lidar_config["tick_rate"],
             accumulate_outputs=bool(lidar_config["accumulate_outputs"]),
-            attributes={
-                "omni:sensor:Core:outputFrameOfReference": lidar_config[
-                    "output_frame"
-                ],
-                "omni:sensor:Core:outputMotionCompensationState": lidar_config[
-                    "motion_compensation"
-                ],
-            },
+            attributes=_lidar_omni_attributes(lidar_config),
         )
         if len(lidar.paths) != 1:
             raise SensorConfigError(

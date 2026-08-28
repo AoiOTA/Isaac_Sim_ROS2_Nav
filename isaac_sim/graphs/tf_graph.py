@@ -8,12 +8,12 @@ from pathlib import Path
 from isaac_sim.graphs.spec import GraphSpec, TargetPaths, materialize_graph
 from isaac_sim.graphs.ros_contract import load_qos_profiles, load_topics
 from isaac_sim.src.config import ProjectConfig
-from isaac_sim.src.robot.spawn_pose_manager import load_spawn_poses
 from isaac_sim.src.yaml_utils import load_mapping, require_vector
 
 
 _STRUCTURE_EDGES = (
     ("base_link", "lidar_link"),
+    ("lidar_link", "rtx_lidar"),
     ("base_link", "imu_link"),
     ("base_link", "camera_link"),
     ("camera_link", "camera_front_link"),
@@ -61,47 +61,12 @@ def load_static_transforms(path: str | Path):
     return tuple(result)
 
 
-def rtx_world_transform(config: ProjectConfig):
-    """Return the fixed odom -> USD-world data-frame transform.
-
-    RTX PointCloud coordinates are absolute USD-world positions.  Isaac ideal
-    odometry is zeroed at the selected spawn, so this inverse spawn transform
-    attaches that fixed coordinate system below odom without adding a second
-    parent to odom.
-    """
-    poses = load_spawn_poses(config.spawn.poses_file)
-    pose = poses[config.spawn.selected].usd
-    x, y, z = pose.position
-    yaw = math.radians(pose.yaw_deg)
-    cosine = math.cos(yaw)
-    sine = math.sin(yaw)
-    translation = [
-        -(cosine * x + sine * y),
-        -(-sine * x + cosine * y),
-        -z,
-    ]
-    half_inverse_yaw = -0.5 * yaw
-    rotation = [
-        0.0,
-        0.0,
-        math.sin(half_inverse_yaw),
-        math.cos(half_inverse_yaw),
-    ]
-    return (
-        "RtxWorldTF",
-        "odom",
-        "rtx_world",
-        translation,
-        rotation,
-    )
-
-
 def structure_tf_graph_spec(config: ProjectConfig) -> GraphSpec:
     topics = load_topics(config.files.topics)
     qos = load_qos_profiles(config.files.qos)
     base = config.robot.base_link_prim
     static_transforms = load_static_transforms(config.files.robot)
-    published_transforms = static_transforms + (rtx_world_transform(config),)
+    published_transforms = static_transforms
     nodes = (
         ("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
         ("ReadSimTime", "isaacsim.core.nodes.IsaacReadSimulationTime"),

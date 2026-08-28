@@ -4,13 +4,15 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import yaml
 
 from isaac_sim.src.config import ConfigError, load_project_config
 from isaac_sim.src.robot.articulation_runtime import (
     ArticulationRuntimeError,
     load_articulation_physics_config,
 )
-from isaac_sim.src.sensors.sensor_factory import _load_lidar
+from isaac_sim.src.sensors.sensor_factory import SensorConfigError, _load_lidar
+from isaac_sim.src.yaml_utils import YamlConfigError
 from isaac_sim.src.stage.physics_setup import PhysicsSetup, pacing_plan
 from isaac_sim.graphs.sensor_graph import lidar_graph_spec
 
@@ -65,6 +67,29 @@ def test_default_project_contract_loads_strictly():
         == pytest.approx(6.0)
     assert stability.motion_assist_max_angular_acceleration \
         == pytest.approx(30.0)
+
+
+def test_lidar_sensor_frame_contract_rejects_unknown_and_world_values(tmp_path):
+    source = ROOT / "isaac_sim/configs/sensors/lidar_3d.yaml"
+    document = yaml.safe_load(source.read_text(encoding="utf-8"))
+
+    document["legacy_world_frame"] = True
+    candidate = tmp_path / "lidar.yaml"
+    candidate.write_text(yaml.safe_dump(document), encoding="utf-8")
+    with pytest.raises(YamlConfigError, match="unknown lidar config keys"):
+        _load_lidar(candidate)
+
+    document.pop("legacy_world_frame")
+    document["frame_id"] = "world"
+    candidate.write_text(yaml.safe_dump(document), encoding="utf-8")
+    with pytest.raises(SensorConfigError, match="frame_id must be rtx_lidar"):
+        _load_lidar(candidate)
+
+    document["frame_id"] = "rtx_lidar"
+    document["output_frame"] = "WORLD"
+    candidate.write_text(yaml.safe_dump(document), encoding="utf-8")
+    with pytest.raises(SensorConfigError, match="output_frame must be SENSOR"):
+        _load_lidar(candidate)
 
 
 def test_nested_environment_overrides_are_typed():

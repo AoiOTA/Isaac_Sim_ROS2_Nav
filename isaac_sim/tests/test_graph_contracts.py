@@ -12,7 +12,7 @@ from isaac_sim.graphs.odometry_graph import ideal_odometry_graph_spec
 from isaac_sim.graphs.ros_contract import load_qos_profiles, load_topics
 from isaac_sim.graphs.sensor_graph import core_sensor_graph_spec, lidar_graph_spec
 from isaac_sim.graphs.spec import materialize_graph
-from isaac_sim.graphs.tf_graph import rtx_world_transform, structure_tf_graph_spec
+from isaac_sim.graphs.tf_graph import structure_tf_graph_spec
 from isaac_sim.src.bridge.tf_ownership import (
     TfOwnershipError,
     expected_tf_owners,
@@ -47,6 +47,7 @@ def test_control_sensor_and_ideal_odometry_specs_validate():
         spec.validate()
         assert "ground_truth" not in repr(spec).lower()
     control = specs[0]
+    lidar = specs[2]
     odometry = specs[-1]
     assert control.on_demand is True
     assert dict(control.values)["SubscribeTwist.inputs:topicName"] \
@@ -120,6 +121,8 @@ def test_control_sensor_and_ideal_odometry_specs_validate():
     assert control_values[
         "DifferentialController.inputs:maxAngularAcceleration"
     ] == pytest.approx(6.5)
+    assert dict(lidar.values)["PointCloudPublisher.inputs:frameId"] \
+        == "rtx_lidar"
 
 
 def test_core_sensors_publish_once_per_physics_step():
@@ -218,7 +221,7 @@ def test_core_sensors_materialize_on_demand(monkeypatch):
     assert "evaluator_name" not in captured["graph_description"]
 
 
-def test_static_sensor_frames_use_raw_tf_and_no_world_frame():
+def test_static_sensor_frames_use_raw_tf_and_sensor_local_lidar_frame():
     spec = structure_tf_graph_spec(_config())
     spec.validate()
     node_types = dict(spec.nodes)
@@ -232,27 +235,32 @@ def test_static_sensor_frames_use_raw_tf_and_no_world_frame():
         if attribute.endswith(("parentFrameId", "childFrameId"))
     ]
     assert "world" not in frame_values
-    assert "rtx_world" in frame_values
-
-
-def test_rtx_world_frame_is_the_inverse_selected_spawn_pose():
-    config = load_project_config(
-        ROOT / "isaac_sim/configs/project.yaml",
-        {
-            "PROJECT_ROOT": str(ROOT),
-            "ISAAC_ASSET_ROOT": "/home/lyb/isaacsim_assets/Assets/Isaac/6.0",
-            "ISAAC_NAV__SPAWN__POSES_FILE": str(
-                ROOT
-                / "isaac_sim/configs/environments"
-                / "kujiale_0026_A_to_B_door_open.spawn.yaml"
-            ),
-        },
+    assert "rtx_lidar" in frame_values
+    raw_tf_nodes = [
+        node
+        for node, node_type in spec.nodes
+        if node_type.endswith("ROS2PublishRawTransformTree")
+    ]
+    assert len(raw_tf_nodes) == 10
+    values = dict(spec.values)
+    edges = {
+        (
+            values[f"{node}.inputs:parentFrameId"],
+            values[f"{node}.inputs:childFrameId"],
+        )
+        for node in raw_tf_nodes
+    }
+    assert ("lidar_link", "rtx_lidar") in edges
+    assert ("odom", "rtx_lidar") not in edges
+    rtx_node = next(
+        node
+        for node in raw_tf_nodes
+        if values[f"{node}.inputs:childFrameId"] == "rtx_lidar"
     )
-
-    node, parent, child, translation, rotation = rtx_world_transform(config)
-    assert (node, parent, child) == ("RtxWorldTF", "odom", "rtx_world")
-    assert translation == pytest.approx([2.9, -0.2, -0.0635])
-    assert rotation == pytest.approx([0.0, 0.0, -1.0, 0.0], abs=1e-12)
+    assert values[f"{rtx_node}.inputs:translation"] == [0.0, 0.0, 0.0]
+    assert values[f"{rtx_node}.inputs:rotation"] == pytest.approx(
+        [0.7071067811865475, 0.0, 0.0, 0.7071067811865476]
+    )
 
 
 def test_tf_ownership_requires_exactly_one_publisher():
@@ -315,7 +323,7 @@ def test_topic_and_qos_contracts_are_absolute_and_encoded():
     qos = load_qos_profiles(ROOT / "isaac_sim/configs/ros2_bridge/qos.yaml")
     assert topics["pointcloud"] == "/lidar/points_raw"
     assert topics["frames"]["base"] == "base_link"
-    assert topics["frames"]["rtx_world"] == "rtx_world"
+    assert topics["frames"]["rtx_lidar"] == "rtx_lidar"
     assert '"reliability":"bestEffort"' in qos["sensor_data"]
     assert '"depth":2' in qos["camera_sensor_data"]
     assert '"durability":"transientLocal"' in qos["static_tf"]

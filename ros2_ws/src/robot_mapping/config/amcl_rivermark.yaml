@@ -18,7 +18,7 @@ amcl:
     alpha3: 0.30
     alpha4: 0.30
     alpha5: 0.10
-    do_beamskip: false
+    do_beamskip: true
     beam_skip_distance: 0.7
     beam_skip_threshold: 0.3
     beam_skip_error_threshold: 0.9

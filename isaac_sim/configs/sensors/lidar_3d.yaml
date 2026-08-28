@@ -14,11 +14,11 @@ tick_rate: 20.0
 accumulate_outputs: true
 render_product_resolution: [1, 1]
 topic_name: /lidar/points_raw
-frame_id: rtx_world
-# Isaac Sim 6.0.1's RTX PointCloud writer publishes absolute USD-world
-# coordinates. Label them with the explicit fixed data frame; a spawn-derived
-# odom -> rtx_world transform converts them into the ROS navigation tree.
-output_frame: WORLD
+frame_id: rtx_lidar
+# Publish sensor-local coordinates. The fixed lidar_link -> rtx_lidar TF below
+# represents the internal scan-plane rotation without coupling measurements to
+# odometry, map localization, or ground truth.
+output_frame: SENSOR
 # A full rotary scan spans one sensor period. Compensate returns into one
 # sensor pose so simultaneous translation and rotation do not bend walls.
 motion_compensation: COMPENSATED
