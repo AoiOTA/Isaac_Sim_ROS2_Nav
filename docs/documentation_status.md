@@ -48,6 +48,6 @@ evidence classification. `docs/report_assets/`, `docs/videos/`, and
 - A result from another repository may be linked at its current-state page;
   do not duplicate detailed metrics into Module3.
 
-This convergence amendment intentionally removes only six zero-caller dated
-G2/G5 plan/result documents. Handoffs, report assets, data, scripts, configs,
-and historical ledgers are retained.
+This convergence amendment intentionally removes seven zero-caller dated
+handoff documents; other handoffs, report assets, data, scripts, configs, and
+historical ledgers are retained.
