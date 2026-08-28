@@ -8,12 +8,12 @@ from pathlib import Path
 from isaac_sim.graphs.spec import GraphSpec, TargetPaths, materialize_graph
 from isaac_sim.graphs.ros_contract import load_qos_profiles, load_topics
 from isaac_sim.src.config import ProjectConfig
+from isaac_sim.src.sensors.sensor_factory import _load_lidar
 from isaac_sim.src.yaml_utils import load_mapping, require_vector
 
 
 _STRUCTURE_EDGES = (
     ("base_link", "lidar_link"),
-    ("lidar_link", "rtx_lidar"),
     ("base_link", "imu_link"),
     ("base_link", "camera_link"),
     ("camera_link", "camera_front_link"),
@@ -23,6 +23,18 @@ _STRUCTURE_EDGES = (
     ("camera_left_link", "camera_left_optical_frame"),
     ("camera_right_link", "camera_right_optical_frame"),
 )
+
+
+def load_lidar_ros_transform(path: str | Path):
+    """Load the ROS-only RTX frame without authoring it onto the USD prim."""
+    lidar = _load_lidar(path)
+    return (
+        "RtxLidarTF",
+        lidar["ros_frame_parent"],
+        lidar["frame_id"],
+        list(lidar["ros_frame_translation"]),
+        list(lidar["ros_frame_rotation_xyzw"]),
+    )
 
 
 def load_static_transforms(path: str | Path):
@@ -66,7 +78,9 @@ def structure_tf_graph_spec(config: ProjectConfig) -> GraphSpec:
     qos = load_qos_profiles(config.files.qos)
     base = config.robot.base_link_prim
     static_transforms = load_static_transforms(config.files.robot)
-    published_transforms = static_transforms
+    published_transforms = static_transforms + (
+        load_lidar_ros_transform(config.files.lidar),
+    )
     nodes = (
         ("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
         ("ReadSimTime", "isaacsim.core.nodes.IsaacReadSimulationTime"),

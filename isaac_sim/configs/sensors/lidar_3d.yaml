@@ -17,8 +17,11 @@ topic_name: /lidar/points_raw
 frame_id: rtx_lidar
 # SENSOR output already includes the authored scan-plane rotation but retains
 # the RTX sensor's yaw convention. Label those coordinates with an independent
-# ROS sensor frame; the fixed lidar_link -> rtx_lidar transform aligns yaw with
-# the physical mount without coupling measurements to navigation/truth frames.
+# ROS sensor frame. This ROS-only transform must not be authored onto the USD
+# sensor prim; its physical orientation remains scan_plane_rotation_wxyz.
+ros_frame_parent: lidar_link
+ros_frame_translation: [0.0, 0.0, 0.0]
+ros_frame_rotation_xyzw: [0.0, 0.0, 0.7071067811865475, 0.7071067811865476]
 output_frame: SENSOR
 # A full rotary scan spans one sensor period. Compensate returns into one
 # sensor pose so simultaneous translation and rotation do not bend walls.

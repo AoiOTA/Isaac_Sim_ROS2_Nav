@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -459,6 +460,9 @@ def _load_lidar(path) -> dict[str, Any]:
         "render_product_resolution",
         "topic_name",
         "frame_id",
+        "ros_frame_parent",
+        "ros_frame_translation",
+        "ros_frame_rotation_xyzw",
         "output_frame",
         "motion_compensation",
         "type",
@@ -476,6 +480,26 @@ def _load_lidar(path) -> dict[str, Any]:
         raise SensorConfigError("LiDAR must publish point_cloud on /lidar/points_raw")
     if data["frame_id"] != "rtx_lidar":
         raise SensorConfigError("RTX PointCloud frame_id must be rtx_lidar")
+    if data["ros_frame_parent"] != "lidar_link":
+        raise SensorConfigError("RTX ROS frame parent must be lidar_link")
+    ros_translation = require_vector(
+        data["ros_frame_translation"],
+        3,
+        context="lidar.ros_frame_translation",
+    )
+    if tuple(ros_translation) != (0.0, 0.0, 0.0):
+        raise SensorConfigError("RTX ROS frame translation must be zero")
+    ros_rotation = require_vector(
+        data["ros_frame_rotation_xyzw"],
+        4,
+        context="lidar.ros_frame_rotation_xyzw",
+    )
+    expected_ros_rotation = (0.0, 0.0, math.sqrt(0.5), math.sqrt(0.5))
+    if any(
+        not math.isclose(float(value), expected, rel_tol=0.0, abs_tol=1e-12)
+        for value, expected in zip(ros_rotation, expected_ros_rotation)
+    ):
+        raise SensorConfigError("RTX ROS frame rotation must be +90 degrees about Z")
     if data["output_frame"] != "SENSOR":
         raise SensorConfigError(
             "RTX PointCloud output_frame must be SENSOR when frame_id is rtx_lidar"

@@ -91,6 +91,24 @@ def test_lidar_sensor_frame_contract_rejects_unknown_and_world_values(tmp_path):
     with pytest.raises(SensorConfigError, match="output_frame must be SENSOR"):
         _load_lidar(candidate)
 
+    document["output_frame"] = "SENSOR"
+    document["ros_frame_parent"] = "base_link"
+    candidate.write_text(yaml.safe_dump(document), encoding="utf-8")
+    with pytest.raises(SensorConfigError, match="parent must be lidar_link"):
+        _load_lidar(candidate)
+
+    document["ros_frame_parent"] = "lidar_link"
+    document["ros_frame_translation"] = [0.0, 0.1, 0.0]
+    candidate.write_text(yaml.safe_dump(document), encoding="utf-8")
+    with pytest.raises(SensorConfigError, match="translation must be zero"):
+        _load_lidar(candidate)
+
+    document["ros_frame_translation"] = [0.0, 0.0, 0.0]
+    document["ros_frame_rotation_xyzw"] = [0.0, 0.0, -0.7071067811865475, 0.7071067811865476]
+    candidate.write_text(yaml.safe_dump(document), encoding="utf-8")
+    with pytest.raises(SensorConfigError, match=r"rotation must be \+90 degrees"):
+        _load_lidar(candidate)
+
 
 def test_nested_environment_overrides_are_typed():
     config = load_project_config(

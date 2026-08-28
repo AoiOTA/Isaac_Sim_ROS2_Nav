@@ -13,7 +13,7 @@ from isaac_sim.graphs.odometry_graph import ideal_odometry_graph_spec
 from isaac_sim.graphs.ros_contract import load_qos_profiles, load_topics
 from isaac_sim.graphs.sensor_graph import core_sensor_graph_spec, lidar_graph_spec
 from isaac_sim.graphs.spec import materialize_graph
-from isaac_sim.graphs.tf_graph import structure_tf_graph_spec
+from isaac_sim.graphs.tf_graph import load_static_transforms, structure_tf_graph_spec
 from isaac_sim.src.bridge.tf_ownership import (
     TfOwnershipError,
     expected_tf_owners,
@@ -222,8 +222,13 @@ def test_core_sensors_materialize_on_demand(monkeypatch):
     assert "evaluator_name" not in captured["graph_description"]
 
 
-def test_isaac_static_tf_owns_physical_mount_and_rtx_yaw_once():
-    spec = structure_tf_graph_spec(_config())
+def test_isaac_static_tf_separates_physical_mount_from_ros_only_rtx_yaw():
+    config = _config()
+    physical_transforms = load_static_transforms(config.files.robot)
+    assert len(physical_transforms) == 9
+    assert not any(child == "rtx_lidar" for _, _, child, _, _ in physical_transforms)
+
+    spec = structure_tf_graph_spec(config)
     spec.validate()
     node_types = dict(spec.nodes)
     assert node_types["WheelTF"].endswith("ROS2PublishTransformTree")
@@ -263,6 +268,7 @@ def test_isaac_static_tf_owns_physical_mount_and_rtx_yaw_once():
     assert values[f"{rtx_node}.inputs:rotation"] == pytest.approx(
         [0.0, 0.0, math.sqrt(0.5), math.sqrt(0.5)]
     )
+    assert rtx_node == "RtxLidarTF"
 
 
 def test_tf_ownership_requires_exactly_one_publisher():
