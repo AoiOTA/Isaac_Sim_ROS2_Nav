@@ -1470,7 +1470,7 @@ def test_sim_clock_controls_expiry_and_rejects_backward_jump():
 
 def test_plan_is_m2_m3_only_and_keeps_exact_fixed_scene_contract(tmp_path):
     manifest = load_manifest(CONFIG)
-    asset_root = tmp_path / "module2-assets"
+    asset_root = tmp_path / "module2 assets"
     plan = build_probe_plan(manifest, tmp_path / "probe", asset_root)
 
     assert [row["arm"] for row in plan["runs"]] == ["M2", "M3"]
@@ -1533,6 +1533,18 @@ def test_invalid_selected_arm_is_rejected_by_cli_parser():
             "--output-root", "/tmp/ttl-probe",
             "--module2-asset-root", "/tmp/module2-assets",
             "--selected-arm", "M1",
+        ])
+
+    assert raised.value.code == 2
+
+
+@pytest.mark.parametrize("command", ["plan", "run"])
+def test_cli_requires_explicit_module2_asset_root(command):
+    with pytest.raises(SystemExit) as raised:
+        probe_module.build_parser().parse_args([
+            command,
+            "--config", str(CONFIG),
+            "--output-root", "/tmp/ttl-probe",
         ])
 
     assert raised.value.code == 2

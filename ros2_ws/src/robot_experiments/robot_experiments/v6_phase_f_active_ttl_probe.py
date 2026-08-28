@@ -16,6 +16,7 @@ import json
 import math
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import threading
 import time
@@ -1126,6 +1127,9 @@ def build_probe_plan(
     rows: list[dict[str, Any]] = []
     for run in _active_runs(manifest, selected_arm):
         values = _adapter_values(manifest, run, root)
+        values["module2_asset_root_arg"] = (
+            "--module2-asset-root " + shlex.quote(str(module2_asset_root))
+        )
         run_dir = Path(values["run_dir"])
         rows.append({
             "run_id": run.run_id,
