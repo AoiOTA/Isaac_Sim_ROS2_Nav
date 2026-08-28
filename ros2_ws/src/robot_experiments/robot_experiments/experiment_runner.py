@@ -109,6 +109,7 @@ APPEARANCE_NAV2_PROFILES = frozenset({
     "attempt21_static_collection",
     "bio_nav_rgbd_risk_shadow",
     "bio_nav_rgbd_risk_ab",
+    "v6_low_obstacle_isolation",
     # Attempt-23: stock-critics global-prior profile; no camera, rendering,
     # or costmap-visual behavior changes, so appearance capture stays valid.
     "attempt23_global_prior",

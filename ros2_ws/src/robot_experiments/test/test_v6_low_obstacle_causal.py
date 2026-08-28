@@ -3834,7 +3834,7 @@ def _run_low_obstacle_wrapper(
     root = PACKAGE.parents[2]
     project = tmp_path / "project"
     scripts = project / "scripts"
-    (scripts / "lib").mkdir(parents=True)
+    (scripts / "lib").mkdir(parents=True, exist_ok=True)
     shutil.copy2(root / "scripts/run_v6_kujiale_low_obstacles.sh", scripts)
     (scripts / "lib/common.sh").write_text(
         """#!/usr/bin/env bash
@@ -3851,6 +3851,11 @@ source_ros() { :; }
         "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\"\n", encoding="utf-8"
     )
     run_ros.chmod(0o755)
+    run_isaac = scripts / "run_v6_r5_phase_b_kujiale.sh"
+    run_isaac.write_text(
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\"\n", encoding="utf-8"
+    )
+    run_isaac.chmod(0o755)
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(exist_ok=True)
     fake_ros2 = fake_bin / "ros2"
@@ -3858,27 +3863,35 @@ source_ros() { :; }
         "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\"\n", encoding="utf-8"
     )
     fake_ros2.chmod(0o755)
-    scenario = (
+    scenario_directory = project / "ros2_ws/src/robot_experiments/config"
+    scenario_directory.mkdir(parents=True, exist_ok=True)
+    for name in (
+        "v6_final_kujiale_static.yaml",
+        "v6_final_kujiale_dynamic.yaml",
+        "v6_final_kujiale_appearance.yaml",
+    ):
+        (scenario_directory / name).touch()
+    nav2_config = (
         project
-        / "ros2_ws/src/robot_experiments/config/v6_kujiale_low_obstacles_static.yaml"
+        / "ros2_ws/src/robot_navigation/config/nav2_v6_low_obstacle_isolation.yaml"
     )
-    scenario.parent.mkdir(parents=True)
-    scenario.touch()
+    nav2_config.parent.mkdir(parents=True, exist_ok=True)
+    nav2_config.touch()
     spawn_poses = (
         project
         / "isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml"
     )
-    spawn_poses.parent.mkdir(parents=True)
+    spawn_poses.parent.mkdir(parents=True, exist_ok=True)
     spawn_poses.touch()
     module2 = tmp_path / "installed_module2"
     constraints = (
         module2 / "configs/kujiale_0026_module1_visual_shadow_v310.yaml"
     )
     if create_constraints:
-        constraints.parent.mkdir(parents=True)
+        constraints.parent.mkdir(parents=True, exist_ok=True)
         constraints.touch()
     else:
-        module2.mkdir(parents=True)
+        module2.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env.pop("V6_COGNITIVE_PROFILE", None)
     env["BIO_NAV_MODULE2_V310_ROOT"] = str(module2)
@@ -3891,6 +3904,253 @@ source_ros() { :; }
         env=env,
     )
     return project, constraints, result
+
+
+def test_v6_low_obstacle_default_condition_is_explicit_static(tmp_path):
+    project, _constraints, implicit = _run_low_obstacle_wrapper(
+        tmp_path, "runner", str(tmp_path / "runs"), "run_indices:=2,4"
+    )
+    _project, _constraints, explicit = _run_low_obstacle_wrapper(
+        tmp_path,
+        "--condition",
+        "static",
+        "runner",
+        str(tmp_path / "runs"),
+        "run_indices:=2,4",
+    )
+
+    assert implicit.stdout == explicit.stdout
+    assert (
+        f"scenario_file:={project}/ros2_ws/src/robot_experiments/config/"
+        "v6_final_kujiale_static.yaml"
+    ) in implicit.stdout.splitlines()
+
+
+@pytest.mark.parametrize(
+    ("condition", "scenario_name"),
+    [
+        ("static", "v6_final_kujiale_static.yaml"),
+        ("dynamic", "v6_final_kujiale_dynamic.yaml"),
+        ("appearance", "v6_final_kujiale_appearance.yaml"),
+    ],
+)
+def test_v6_runner_condition_selects_scenario_and_fixed_nav2_config(
+    tmp_path, condition, scenario_name
+):
+    project, _constraints, result = _run_low_obstacle_wrapper(
+        tmp_path,
+        "--condition",
+        condition,
+        "runner",
+        str(tmp_path / "runs"),
+        "run_indices:=1,3",
+        "record_bag:=false",
+        "record_evidence:=true",
+        "resume:=true",
+        "require_module2_planning_ready:=true",
+        "clear_slam_localization_buffer:=false",
+        "reset_map_base_translation_tolerance_m:=0.10",
+        "navigation_execution_backend:=route_guided",
+    )
+    argv = result.stdout.splitlines()
+
+    assert (
+        f"scenario_file:={project}/ros2_ws/src/robot_experiments/config/"
+        f"{scenario_name}"
+    ) in argv
+    assert "nav2_profile:=v6_low_obstacle_isolation" in argv
+    assert (
+        f"nav2_config_file:={project}/ros2_ws/src/robot_navigation/config/"
+        "nav2_v6_low_obstacle_isolation.yaml"
+    ) in argv
+    assert f"output_directory:={tmp_path / 'runs'}" in argv
+    assert "run_indices:=1,3" in argv
+    assert "record_bag:=false" in argv
+    assert "record_evidence:=true" in argv
+    assert "resume:=true" in argv
+    assert "require_module2_planning_ready:=true" in argv
+    assert "clear_slam_localization_buffer:=false" in argv
+    assert "reset_map_base_translation_tolerance_m:=0.10" in argv
+    assert "navigation_execution_backend:=route_guided" in argv
+    if condition == "dynamic":
+        assert not any(argument.startswith("dynamic_variant_id:=") for argument in argv)
+        assert not any(argument.startswith("dynamic_case_id:=") for argument in argv)
+
+
+@pytest.mark.parametrize(
+    ("condition", "override"),
+    [
+        ("static", "scenario_file:=/tmp/not-static.yaml"),
+        ("dynamic", "spawn_poses_file:=/tmp/not-kujiale.yaml"),
+        ("appearance", "nav2_profile:=caller-profile"),
+        ("static", "nav2_config_file:=/tmp/not-isolation.yaml"),
+        ("appearance", "dynamic_case_id:=other"),
+        ("static", "dynamic_variant_id:=v5"),
+        ("dynamic", "dynamic_seed:=9001"),
+        ("appearance", "robot_config_file:=/tmp/not-jackal.yaml"),
+    ],
+)
+def test_v6_runner_rejects_condition_identity_overrides(
+    tmp_path, condition, override
+):
+    _project, _constraints, result = _run_low_obstacle_wrapper(
+        tmp_path,
+        "--condition",
+        condition,
+        "runner",
+        str(tmp_path / "runs"),
+        override,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "fixes runner scenario/spawn/Nav2 identity" in result.stderr
+    assert f"rejected override: {override}" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("condition", "config_name", "appearance_arguments"),
+    [
+        ("static", "v6_kujiale_low_obstacles_frozen.yaml", ["--appearance-profile", "baseline"]),
+        ("dynamic", "v6_single_dynamic_low_obstacle.yaml", []),
+        (
+            "appearance",
+            "v6_kujiale_low_obstacles_frozen.yaml",
+            ["--appearance-config", "kujiale_appearance_profiles.yaml", "--appearance-profile", "baseline"],
+        ),
+    ],
+)
+def test_v6_isaac_condition_wires_physical_and_appearance_argv(
+    tmp_path, condition, config_name, appearance_arguments
+):
+    project, _constraints, result = _run_low_obstacle_wrapper(
+        tmp_path,
+        "--condition",
+        condition,
+        "isaac",
+        "--headless",
+        "--validate-only",
+    )
+    argv = result.stdout.splitlines()
+
+    assert argv[:4] == [
+        "isaac",
+        "--dynamic-obstacle-config",
+        f"{project}/isaac_sim/configs/experiments/{config_name}",
+        "--dynamic-obstacles",
+    ]
+    assert argv[-2:] == ["--headless", "--validate-only"]
+    if condition == "appearance":
+        assert argv[4:] == [
+            "--appearance-config",
+            f"{project}/isaac_sim/configs/experiments/{appearance_arguments[1]}",
+            "--appearance-profile",
+            "baseline",
+            "--headless",
+            "--validate-only",
+        ]
+    else:
+        assert argv[4:-2] == appearance_arguments
+    if condition == "dynamic":
+        assert "--dynamic-case-id" not in argv
+        assert "--dynamic-variant-id" not in argv
+
+
+@pytest.mark.parametrize(
+    ("condition", "override_arguments", "rejected"),
+    [
+        ("static", ("--dynamic-obstacle-config", "/tmp/other.yaml"), "--dynamic-obstacle-config"),
+        ("dynamic", ("--dynamic-obstacles",), "--dynamic-obstacles"),
+        ("appearance", ("--no-dynamic-obstacles",), "--no-dynamic-obstacles"),
+        ("static", ("--dynamic-case-id=other",), "--dynamic-case-id=other"),
+        ("dynamic", ("--dynamic-variant-id", "v5"), "--dynamic-variant-id"),
+        ("appearance", ("--dynamic-seed=9001",), "--dynamic-seed=9001"),
+        ("static", ("--appearance-config=/tmp/other.yaml",), "--appearance-config=/tmp/other.yaml"),
+        ("dynamic", ("--appearance-profile", "bright_warm"), "--appearance-profile"),
+        ("appearance", ("--environment-usd=/tmp/other.usd",), "--environment-usd=/tmp/other.usd"),
+        ("static", ("--environment-root", "/tmp/scenes"), "--environment-root"),
+        ("dynamic", ("--spawn-poses-file=/tmp/other.yaml",), "--spawn-poses-file=/tmp/other.yaml"),
+        ("appearance", ("--spawn-pose", "other"), "--spawn-pose"),
+    ],
+)
+def test_v6_isaac_rejects_condition_identity_overrides(
+    tmp_path, condition, override_arguments, rejected
+):
+    _project, _constraints, result = _run_low_obstacle_wrapper(
+        tmp_path,
+        "--condition",
+        condition,
+        "isaac",
+        *override_arguments,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "fixes Isaac scene/obstacle/appearance identity" in result.stderr
+    assert f"rejected override: {rejected}" in result.stderr
+
+
+def test_v6_physical_configs_stay_default_off_and_wrapper_activates_them():
+    root = PACKAGE.parents[2]
+    for name in (
+        "v6_kujiale_low_obstacles_frozen.yaml",
+        "v6_single_dynamic_low_obstacle.yaml",
+    ):
+        document = yaml.safe_load(
+            (root / "isaac_sim/configs/experiments" / name).read_text(
+                encoding="utf-8"
+            )
+        )
+        assert document["enabled"] is False
+
+
+@pytest.mark.parametrize(
+    ("profile_arguments", "condition"),
+    [
+        (("ros", "M2"), "dynamic"),
+        (("shadow",), "appearance"),
+        (("ros-d", "hybrid"), "dynamic"),
+    ],
+)
+def test_v6_ros_profiles_do_not_fork_by_condition(
+    tmp_path, profile_arguments, condition
+):
+    _project, _constraints, baseline = _run_low_obstacle_wrapper(
+        tmp_path, *profile_arguments
+    )
+    _project, _constraints, selected = _run_low_obstacle_wrapper(
+        tmp_path, "--condition", condition, *profile_arguments
+    )
+
+    assert selected.stdout == baseline.stdout
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ("--condition", "invalid", "runner"),
+        ("--condition",),
+    ],
+)
+def test_v6_wrapper_rejects_invalid_condition(tmp_path, arguments):
+    _project, _constraints, result = _run_low_obstacle_wrapper(
+        tmp_path, *arguments, check=False
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+
+
+def test_v6_low_obstacle_profile_is_registered_as_appearance_safe():
+    runner = (PACKAGE / "robot_experiments/experiment_runner.py").read_text(
+        encoding="utf-8"
+    )
+    appearance_profiles = runner.split(
+        "APPEARANCE_NAV2_PROFILES = frozenset({", 1
+    )[1].split("})", 1)[0]
+    assert '"v6_low_obstacle_isolation"' in appearance_profiles
 
 
 def test_v6_runner_fixes_spawn_and_keeps_module2_readiness_explicit(tmp_path):

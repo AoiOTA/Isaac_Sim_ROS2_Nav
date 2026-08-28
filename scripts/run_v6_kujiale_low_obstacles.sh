@@ -7,13 +7,35 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
 
+condition="static"
+if [[ "${1:-}" == "--condition" ]]; then
+  (($# >= 2)) || die \
+    "usage: $0 [--condition static|dynamic|appearance] isaac|ros|shadow|ros-d|runner [mode] [arguments...]"
+  condition="$2"
+  shift 2
+fi
+case "${condition}" in
+  static|dynamic|appearance) ;;
+  *) die "condition must be static, dynamic, or appearance; got: ${condition}" ;;
+esac
+
 profile="${1:-}"
 [[ -n "${profile}" ]] || die \
-  "usage: $0 isaac|ros|shadow|ros-d|runner [mode] [arguments...]"
+  "usage: $0 [--condition static|dynamic|appearance] isaac|ros|shadow|ros-d|runner [mode] [arguments...]"
 shift
 
-scenario_file="${PROJECT_ROOT}/ros2_ws/src/robot_experiments/config/v6_kujiale_low_obstacles_static.yaml"
-require_file "${scenario_file}"
+case "${condition}" in
+  static)
+    scenario_file="${PROJECT_ROOT}/ros2_ws/src/robot_experiments/config/v6_final_kujiale_static.yaml"
+    ;;
+  dynamic)
+    scenario_file="${PROJECT_ROOT}/ros2_ws/src/robot_experiments/config/v6_final_kujiale_dynamic.yaml"
+    ;;
+  appearance)
+    scenario_file="${PROJECT_ROOT}/ros2_ws/src/robot_experiments/config/v6_final_kujiale_appearance.yaml"
+    ;;
+esac
+nav2_config_file="${PROJECT_ROOT}/ros2_ws/src/robot_navigation/config/nav2_v6_low_obstacle_isolation.yaml"
 
 reject_graph_override() {
   local argument
@@ -43,6 +65,40 @@ reject_phase_f_substrate_override() {
       localization_owner:=*|map_file:=*|spawn_poses_file:=*|\
       route_graph_file:=*|module1_amcl_prior_enabled:=*)
         die "Phase F fixes the Phase-B mixed/AMCL/GVG substrate; rejected override: ${argument}"
+        ;;
+    esac
+  done
+}
+
+reject_isaac_condition_override() {
+  local argument
+  for argument in "$@"; do
+    case "${argument}" in
+      --dynamic-obstacle-config|--dynamic-obstacle-config=*|\
+      --dynamic-obstacles|--dynamic-obstacles=*|\
+      --no-dynamic-obstacles|--no-dynamic-obstacles=*|\
+      --dynamic-case-id|--dynamic-case-id=*|\
+      --dynamic-variant-id|--dynamic-variant-id=*|\
+      --dynamic-seed|--dynamic-seed=*|\
+      --appearance-config|--appearance-config=*|\
+      --appearance-profile|--appearance-profile=*|\
+      --environment-usd|--environment-usd=*|\
+      --environment-root|--environment-root=*|\
+      --spawn-poses-file|--spawn-poses-file=*|\
+      --spawn-pose|--spawn-pose=*)
+        die "V6 condition fixes Isaac scene/obstacle/appearance identity; rejected override: ${argument}"
+        ;;
+    esac
+  done
+}
+
+reject_runner_condition_override() {
+  local argument
+  for argument in "$@"; do
+    case "${argument}" in
+      scenario_file:=*|spawn_poses_file:=*|nav2_profile:=*|nav2_config_file:=*|\
+      dynamic_case_id:=*|dynamic_variant_id:=*|dynamic_seed:=*|robot_config_file:=*)
+        die "V6 condition fixes runner scenario/spawn/Nav2 identity; rejected override: ${argument}"
         ;;
     esac
   done
@@ -141,11 +197,27 @@ run_ros_profile() {
 case "${profile}" in
   isaac)
     # Reuse the Phase-B mixed Compute-Odom + AMCL launcher, then explicitly
-    # enable the frozen stationary low box.  The original USD is unchanged.
+    # enable the selected physical condition.  Both physical YAMLs are
+    # default-off; --dynamic-obstacles is the explicit activation switch.
+    reject_isaac_condition_override "$@"
+    dynamic_obstacle_config="${PROJECT_ROOT}/isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen.yaml"
+    condition_args=(--appearance-profile baseline)
+    if [[ "${condition}" == "dynamic" ]]; then
+      dynamic_obstacle_config="${PROJECT_ROOT}/isaac_sim/configs/experiments/v6_single_dynamic_low_obstacle.yaml"
+      condition_args=()
+    elif [[ "${condition}" == "appearance" ]]; then
+      condition_args=(
+        --appearance-config
+        "${PROJECT_ROOT}/isaac_sim/configs/experiments/kujiale_appearance_profiles.yaml"
+        --appearance-profile baseline
+      )
+    fi
     exec "${SCRIPT_DIR}/run_v6_r5_phase_b_kujiale.sh" isaac \
       --dynamic-obstacle-config \
-      "${PROJECT_ROOT}/isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen.yaml" \
-      --dynamic-obstacles "$@"
+      "${dynamic_obstacle_config}" \
+      --dynamic-obstacles \
+      "${condition_args[@]}" \
+      "$@"
     ;;
   ros)
     # C experiment: only M0--M3 changes; the physical graph stays GVG.
@@ -172,11 +244,17 @@ case "${profile}" in
   runner)
     output_directory="${1:-${PROJECT_ROOT}/data/experiment_runs/v6_kujiale_low_obstacles}"
     [[ $# -eq 0 ]] || shift
+    reject_runner_condition_override "$@"
+    require_file "${scenario_file}"
+    require_file "${nav2_config_file}"
     source_ros --require-workspace
     exec ros2 launch robot_experiments experiment.launch.py \
       scenario_file:="${scenario_file}" \
       spawn_poses_file:="${PROJECT_ROOT}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml" \
-      output_directory:="${output_directory}" "$@"
+      output_directory:="${output_directory}" \
+      nav2_profile:=v6_low_obstacle_isolation \
+      nav2_config_file:="${nav2_config_file}" \
+      "$@"
     ;;
   *) die "profile must be isaac, ros, shadow, ros-d, or runner; got: ${profile}" ;;
 esac
