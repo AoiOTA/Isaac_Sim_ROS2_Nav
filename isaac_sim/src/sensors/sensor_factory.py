@@ -516,6 +516,14 @@ def _load_lidar(path) -> dict[str, Any]:
     norm_squared = sum(float(value) ** 2 for value in rotation)
     if abs(norm_squared - 1.0) > 1e-6:
         raise SensorConfigError("LiDAR scan-plane rotation must be a unit quaternion")
+    expected_scan_rotation = (math.sqrt(0.5), math.sqrt(0.5), 0.0, 0.0)
+    if any(
+        not math.isclose(float(value), expected, rel_tol=0.0, abs_tol=1e-12)
+        for value, expected in zip(rotation, expected_scan_rotation)
+    ):
+        raise SensorConfigError(
+            "LiDAR scan-plane rotation must be +90 degrees about X"
+        )
     data["tick_rate"] = require_number(data["tick_rate"], context="lidar.tick_rate", positive=True)
     data["render_product_resolution"] = require_vector(
         data["render_product_resolution"], 2, context="lidar.render_product_resolution"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import math
 from pathlib import Path
 
 import pytest
@@ -107,6 +108,31 @@ def test_lidar_sensor_frame_contract_rejects_unknown_and_world_values(tmp_path):
     document["ros_frame_rotation_xyzw"] = [0.0, 0.0, -0.7071067811865475, 0.7071067811865476]
     candidate.write_text(yaml.safe_dump(document), encoding="utf-8")
     with pytest.raises(SensorConfigError, match=r"rotation must be \+90 degrees"):
+        _load_lidar(candidate)
+
+
+@pytest.mark.parametrize(
+    "rotation_wxyz",
+    [
+        [1.0, 0.0, 0.0, 0.0],
+        [math.sqrt(0.5), -math.sqrt(0.5), 0.0, 0.0],
+        [math.sqrt(0.5), 0.0, 0.0, math.sqrt(0.5)],
+        [0.0, 1.0, 0.0, 0.0],
+    ],
+)
+def test_lidar_scan_plane_rejects_other_unit_rotations(
+    tmp_path, rotation_wxyz
+):
+    source = ROOT / "isaac_sim/configs/sensors/lidar_3d.yaml"
+    document = yaml.safe_load(source.read_text(encoding="utf-8"))
+    document["scan_plane_rotation_wxyz"] = rotation_wxyz
+    candidate = tmp_path / "lidar.yaml"
+    candidate.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    with pytest.raises(
+        SensorConfigError,
+        match=r"scan-plane rotation must be \+90 degrees about X",
+    ):
         _load_lidar(candidate)
 
 

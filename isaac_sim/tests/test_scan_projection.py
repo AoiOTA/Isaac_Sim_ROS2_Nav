@@ -122,27 +122,9 @@ def test_d222_rtx_yaw_maps_sensor_xy_into_the_measured_mount_frame():
     assert 'rpy="0 0 1.5707963267948966"' in xacro
 
 
-def test_d222_yaw_candidate_is_discriminated_by_asymmetric_occupancy():
-    # Frozen review summary for d222 frames 5/150/300. No exact -90/180 values
-    # were recorded, so the asymmetric fixture below guards their sign/order.
-    d222_median_residual_m = {
-        "run1_identity": (0.38, 0.83, 0.81),
-        "run1_plus90": (0.03, 0.03, 0.04),
-        "run2_identity": (0.50, 0.65, 0.69),
-        "run2_plus90": (0.03, 0.03, 0.03),
-    }
-    d222_within_0p15m_percent = {
-        "run1_identity": (21, 18, 23),
-        "run1_plus90": (77, 68, 76),
-        "run2_identity": (19, 26, 7),
-        "run2_plus90": (77, 80, 84),
-    }
-    for run in ("run1", "run2"):
-        assert max(d222_median_residual_m[f"{run}_plus90"]) <= 0.04
-        assert min(d222_median_residual_m[f"{run}_identity"]) >= 0.38
-        assert min(d222_within_0p15m_percent[f"{run}_plus90"]) >= 68
-        assert max(d222_within_0p15m_percent[f"{run}_identity"]) <= 26
-
+def test_rtx_yaw_candidate_is_discriminated_by_asymmetric_occupancy():
+    # Live alignment evidence belongs in NAS run artifacts. This asymmetric
+    # synthetic fixture only guards the +90 Z sign/order contract.
     raw_xy = (
         (0.7, 1.1),
         (1.4, 2.6),
