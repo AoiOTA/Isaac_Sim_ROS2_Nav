@@ -2,19 +2,20 @@
 
 Date: 2026-08-28
 
-## Pinned baseline
+## Current cleanup starting heads
 
-The current convergence baseline is the canonical
-`v6-compute-amcl-dual-odom` three-repository combination:
+The documentation cleanup started from this three-repository combination:
 
 | Repository | Commit |
 | --- | --- |
-| Module3 | `4e9030f3413214c8a4cc0cf0f5e1a16b3785ee91` |
-| Integration | `14594f38` |
-| Module2 | `7f4fbae` |
+| Integration | `5ba37eaa6a81d37193bc9ff4232cb24f87bbcf2d` |
+| Module3 | `53cbc3fb3eba10fdd8d4675f9bd38bb95d7b9b74` |
+| Module2 | `9e0731c760b6b15a9c0b0e5fbc20efa0eea423ad` |
 
-Do not substitute a similarly named historical branch, stale install, or a
-different three-repository combination.
+These are cleanup starting heads, not pins for the 5/5 run below. This cleanup
+and its subsequent documentation-only commits have not been live-revalidated.
+Do not substitute a similarly named historical branch, stale install, or an
+unrecorded three-repository combination for a live result.
 
 ## Current runtime
 
@@ -32,18 +33,32 @@ different three-repository combination.
   `v6_kujiale_isaacgen_v1` occupancy map, spawn calibration, and GVG.
 - Nav2: `stable` for the Phase B baseline and
   `v6_low_obstacle_isolation` for Phase F.
-- Reset owner: `ExperimentRunner` calls `/simulation/reset`; consumers observe
-  the resulting reset generation/event rather than initiating another reset.
+- Reset service owner: Isaac `ResetServiceBridge` owns `/simulation/reset`.
+  Phase B uses the `v6_formal_episode` caller through
+  `run_v6_formal_episode.sh`; Phase F uses the `ExperimentRunner` caller. Each
+  run has only one orchestrating episode caller.
 - Live output root: `/mnt/nas_home/Bio_Nav_Data/experiments/runs/`.
 
 ## Evidence achieved
 
-Phase 0 static-cold completed 5/5 as engineering evidence on the pinned
-combination. This is a narrow current-run engineering result. It is not a
-formal qualification, does not promote historical Rivermark results into the
-current V6 line, and does not close the P2 items below. Detailed cross-repository
-metrics remain in the Integration current-state record rather than being
-duplicated here.
+Phase 0 static-cold completed 5/5 as engineering evidence on these actual run
+pins:
+
+| Repository | Commit |
+| --- | --- |
+| Integration | `07815fa2f1d8a12f14c87ac92cdb3b3dbd4e16a5` |
+| Module3 | `dcbe1b2b030732cf09b2511aa5844682a60409b0` |
+| Module2 | `d71b2820036f8caf8387f0651191947bffee5bf6` |
+
+The run root is
+`/mnt/nas_home/Bio_Nav_Data/experiments/pilots/v6_phase0_static_cold_single_source_20260828T112000Z_d171`;
+the summary is at
+`runner/v6_pilot_kujiale_static_hotreset/run-0001-seed-8601/run_summary.json`
+under that root. This is narrow engineering evidence, not a formal
+qualification. It does not promote historical Rivermark results into the
+current V6 line or close the P2 items below. Detailed cross-repository metrics
+remain in the Integration current-state record rather than being duplicated
+here.
 
 ## Known P2 work
 

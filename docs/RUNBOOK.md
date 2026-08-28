@@ -7,18 +7,25 @@ live run by itself; use the current experiment plan and a new NAS run root.
 
 Open fresh terminals. In every terminal, source only the paired Integration V6
 setup; do not stack old workspace installs or manually edit ROS path variables.
+Set the same `V6_DOMAIN` and compatible Integration checkout in every terminal:
 
 ```bash
-cd /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3
-source ../bio_nav_integration/env/v6_pilot_setup.sh
+export V6_DOMAIN=150
+export BIO_NAV_INTEGRATION_ROOT=/absolute/path/to/compatible/bio_nav_integration
+source "${BIO_NAV_INTEGRATION_ROOT}/env/v6_pilot_setup.sh" "${V6_DOMAIN}"
 ```
 
-Before a data-producing run, choose one unique ROS domain and one new NAS root:
+The compatible checkout must pair the intended Integration, Module3, and
+Module2 runtime. The setup exports the same value as `ROS_DOMAIN_ID`,
+`ISAAC_NAV_EXPECTED_DOMAIN_ID`, `ISAAC_NAV__ROS2__DOMAIN_ID`,
+`BIO_NAV_PHASE_B_DOMAIN_ID`, and `BIO_NAV_PHASE_F_DOMAIN_ID`; do not override
+any of those variables per terminal.
+
+Before a data-producing run, choose one unique `V6_DOMAIN` and one new NAS root:
 
 ```bash
-export ROS_DOMAIN_ID=150
 export BIO_NAV_RUN_ROOT=/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_<run_id>
-export BIO_NAV_PHASE_F_SOCKET=/tmp/bio_nav_phase_f_${UID}_${ROS_DOMAIN_ID}.sock
+export BIO_NAV_PHASE_F_SOCKET=/tmp/bio_nav_phase_f_${UID}_${V6_DOMAIN}.sock
 ```
 
 `BIO_NAV_RUN_ROOT` must not already contain another run. If NAS is unavailable,
@@ -32,18 +39,18 @@ manifest without launching a runtime:
 
 ```bash
 ./scripts/run_v6_r5_phase_b_kujiale.sh \
-  --run-root "${BIO_NAV_RUN_ROOT}" --domain "${ROS_DOMAIN_ID}" manifest
+  --run-root "${BIO_NAV_RUN_ROOT}" --domain "${V6_DOMAIN}" manifest
 ```
 
 Start components in the order printed by the wrapper:
 
 ```bash
-./scripts/run_v6_r5_phase_b_kujiale.sh --run-root "${BIO_NAV_RUN_ROOT}" --domain "${ROS_DOMAIN_ID}" ros
-./scripts/run_v6_r5_phase_b_kujiale.sh --run-root "${BIO_NAV_RUN_ROOT}" --domain "${ROS_DOMAIN_ID}" isaac
-./scripts/run_v6_r5_phase_b_kujiale.sh --run-root "${BIO_NAV_RUN_ROOT}" --domain "${ROS_DOMAIN_ID}" module1-shadow
-./scripts/run_v6_r5_phase_b_kujiale.sh --run-root "${BIO_NAV_RUN_ROOT}" --domain "${ROS_DOMAIN_ID}" bridge
-./scripts/run_v6_r5_phase_b_kujiale.sh --run-root "${BIO_NAV_RUN_ROOT}" --domain "${ROS_DOMAIN_ID}" record
-./scripts/run_v6_r5_phase_b_kujiale.sh --run-root "${BIO_NAV_RUN_ROOT}" --domain "${ROS_DOMAIN_ID}" runner
+./scripts/run_v6_r5_phase_b_kujiale.sh --run-root "${BIO_NAV_RUN_ROOT}" --domain "${V6_DOMAIN}" ros
+./scripts/run_v6_r5_phase_b_kujiale.sh --run-root "${BIO_NAV_RUN_ROOT}" --domain "${V6_DOMAIN}" isaac
+./scripts/run_v6_r5_phase_b_kujiale.sh --run-root "${BIO_NAV_RUN_ROOT}" --domain "${V6_DOMAIN}" module1-shadow
+./scripts/run_v6_r5_phase_b_kujiale.sh --run-root "${BIO_NAV_RUN_ROOT}" --domain "${V6_DOMAIN}" bridge
+./scripts/run_v6_r5_phase_b_kujiale.sh --run-root "${BIO_NAV_RUN_ROOT}" --domain "${V6_DOMAIN}" record
+./scripts/run_v6_r5_phase_b_kujiale.sh --run-root "${BIO_NAV_RUN_ROOT}" --domain "${V6_DOMAIN}" runner
 ```
 
 Each command owns its terminal. The ROS component starts before Isaac because
@@ -59,23 +66,26 @@ owner without changing runtime contracts.
 The example below uses the static M0 arm. Select another authorized condition
 or arm only through the current experiment plan.
 
-Terminal T1 owns Isaac:
+Terminal T1 owns Isaac. Start from a clean shell and run the Section 1 setup
+with the shared `V6_DOMAIN` before this command:
 
 ```bash
 ./scripts/run_v6_kujiale_low_obstacles.sh --condition static isaac
 ```
 
-Terminal T2 owns Module3 ROS and the Phase-F stack. For M1-M3 it also owns the
-Module2 server and Integration bridge:
+Terminal T2 owns Module3 ROS and the Phase-F stack. Start from another clean
+shell and run the same Section 1 setup with the same `V6_DOMAIN`. For M1-M3 it
+also owns the Module2 server and Integration bridge:
 
 ```bash
 ./scripts/run_v6_low_obstacle_phase_f_stack.sh M0 \
-  --domain "${ROS_DOMAIN_ID}" \
+  --domain "${V6_DOMAIN}" \
   --run-dir "${BIO_NAV_RUN_ROOT}/stack/m0" \
   --socket "${BIO_NAV_PHASE_F_SOCKET}"
 ```
 
-Terminal T3 owns `ExperimentRunner` and its evidence output:
+Terminal T3 owns `ExperimentRunner` and its evidence output. Start from a third
+clean shell and run the same Section 1 setup with the same `V6_DOMAIN`:
 
 ```bash
 ./scripts/run_v6_kujiale_low_obstacles.sh --condition static runner \
@@ -88,10 +98,14 @@ substrate from these commands.
 
 ## 4. Reset and episode boundary
 
-`ExperimentRunner` is the reset owner. It calls `/simulation/reset`; Isaac
-holds motion, restores the scene/spawn, runs required ROS reset hooks, and emits
-the reset event. Do not call component reset services independently during an
-owned episode and do not treat a process restart as a reset receipt.
+Isaac `ResetServiceBridge` owns the `/simulation/reset` service and its reset
+transaction. Phase B has one orchestrating episode caller, `v6_formal_episode`,
+invoked through `run_v6_formal_episode.sh`; Phase F has one orchestrating caller,
+`ExperimentRunner`. A run must use exactly one of those callers. The Isaac
+transaction holds motion, restores the scene/spawn, runs required ROS reset
+hooks, and emits the reset event. Do not call component reset services
+independently during an owned episode and do not treat a process restart as a
+reset receipt.
 
 ## 5. Owned shutdown
 

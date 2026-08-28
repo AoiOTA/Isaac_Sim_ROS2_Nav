@@ -78,18 +78,21 @@ topic.
 
 ## Reset contract
 
-There is one episode reset owner:
+Isaac `ResetServiceBridge` is the sole owner of the `/simulation/reset` service
+and reset transaction. Each run has one orchestrating episode caller:
 
 ```text
-ExperimentRunner -> /simulation/reset -> Isaac reset transaction
+Phase B: v6_formal_episode (run_v6_formal_episode.sh) -> ResetServiceBridge (/simulation/reset)
+Phase F: ExperimentRunner                            -> ResetServiceBridge (/simulation/reset)
 ```
 
-The Isaac transaction holds the ResetStopGate, restores the selected spawn and
-simulation state, invokes required ROS odometry reset hooks, then publishes
-`/simulation/reset_event`. Consumers clear or re-seed their episode state from
-that event; they do not initiate independent resets. The gate status is exposed
-on `/simulation/reset_stop_gate/status`, and motion is released only after the
-current generation is ready.
+The two callers are phase-specific alternatives, never concurrent owners in
+one run. The Isaac transaction holds the ResetStopGate, restores the selected
+spawn and simulation state, invokes required ROS odometry reset hooks, then
+publishes `/simulation/reset_event`. Consumers clear or re-seed their episode
+state from that event; they do not initiate independent resets. The gate status
+is exposed on `/simulation/reset_stop_gate/status`, and motion is released only
+after the current generation is ready.
 
 Operator shutdown is not an episode reset. Stop the owning terminal/process
 group as documented in [RUNBOOK.md](RUNBOOK.md); do not use global `pkill` or
