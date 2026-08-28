@@ -27,6 +27,8 @@ RUN_V6_LOW_OBSTACLES = (
 RUN_V6_RIVERMARK = REPOSITORY_ROOT / 'scripts' / 'run_v6_rivermark.sh'
 SAVE_MAP = REPOSITORY_ROOT / 'scripts' / 'save_map.sh'
 SETUP_ROS_ENV = REPOSITORY_ROOT / 'scripts' / 'setup_ros_env.sh'
+V6_DYNAMIC_STARTUP = (
+    REPOSITORY_ROOT / 'scripts' / 'lib' / 'v6_dynamic_startup.sh')
 
 
 def _environment(**overrides: str) -> dict[str, str]:
@@ -322,12 +324,17 @@ def _v6_wrapper_argv(tmp_path: Path, *arguments: str) -> list[str]:
     (scripts / 'lib' / 'common.sh').write_text(
         f'''PROJECT_ROOT="{tmp_path}"
 require_file() {{ [[ -f "$1" ]]; }}
+require_directory() {{ [[ -d "$1" ]]; }}
 die() {{ printf '%s\\n' "$*" >&2; return 1; }}
 ''',
         encoding='utf-8',
     )
     (tmp_path / 'ros2_ws' / 'src' / 'robot_experiments' / 'config'
      / 'v6_kujiale_low_obstacles_static.yaml').touch()
+    module2_root = tmp_path / 'module2'
+    (module2_root / 'configs').mkdir(parents=True)
+    (module2_root / 'configs'
+     / 'kujiale_0026_module1_visual_shadow_v310.yaml').touch()
     fake_run_ros = scripts / 'run_ros.sh'
     fake_run_ros.write_text(
         '#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n',
@@ -338,7 +345,7 @@ die() {{ printf '%s\\n' "$*" >&2; return 1; }}
     result = subprocess.run(
         [str(scripts / RUN_V6_LOW_OBSTACLES.name), *arguments],
         cwd=tmp_path,
-        env=_environment(),
+        env=_environment(BIO_NAV_MODULE2_V310_ROOT=str(module2_root)),
         text=True,
         capture_output=True,
         check=False,
@@ -846,6 +853,16 @@ def test_runtime_scripts_use_strict_shell_and_diagnose_is_read_only():
             # A sourced environment helper must preserve the caller's shell
             # option state instead of globally enabling strict mode.
             assert 'intentionally has no `set -euo pipefail`' in source
+        elif script == V6_DYNAMIC_STARTUP:
+            # This sourced function library inherits strict mode from each
+            # standalone caller instead of changing the caller's options.
+            for caller_name in (
+                    'run_v6_low_obstacle_phase_f_stack.sh',
+                    'run_v6_single_dynamic_low_obstacle.sh'):
+                caller = (REPOSITORY_ROOT / 'scripts' / caller_name).read_text(
+                    encoding='utf-8')
+                assert 'set -Eeuo pipefail' in caller
+                assert 'source "${script_dir}/lib/v6_dynamic_startup.sh"' in caller
         else:
             assert 'set -Eeuo pipefail' in source, script
         result = subprocess.run(
