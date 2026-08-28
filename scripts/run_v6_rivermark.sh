@@ -80,6 +80,8 @@ if [[ "${entrypoint}" == "isaac" ]]; then
         ;;
     esac
   done
+  "${SCRIPT_DIR}/import_assets.sh"
+  "${SCRIPT_DIR}/import_assets.sh" --check
   obstacle_config="${dynamic_config}"
   dynamic_args=(--no-dynamic-obstacles)
   if [[ "${scenario}" == "static" ]]; then

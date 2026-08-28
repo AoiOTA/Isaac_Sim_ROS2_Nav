@@ -431,10 +431,22 @@ die() {{ printf '%s\\n' "$*" >&2; return 1; }}
         (demo / name).touch()
     environment_usd = tmp_path / 'rivermark.usd'
     environment_usd.touch()
+    call_log = tmp_path / 'rivermark_calls.log'
+    importer = scripts / 'import_assets.sh'
+    importer.write_text(
+        '#!/usr/bin/env bash\n'
+        'printf "import_assets:%s:asset_root=%s\\n" "$*" '
+        '"${ISAAC_ASSET_ROOT:-}" >>"$RIVERMARK_CALL_LOG"\n'
+        '[[ "${FAKE_IMPORT_ASSETS_FAIL:-0}" != 1 ]]\n',
+        encoding='utf-8',
+    )
+    importer.chmod(0o755)
     for executable in ('run_isaac.sh', 'run_ros.sh'):
         target = scripts / executable
         target.write_text(
             '#!/usr/bin/env bash\n'
+            f'printf "{executable.removesuffix(".sh")}\\n" '
+            '>>"$RIVERMARK_CALL_LOG"\n'
             'printf "GROUND_TRUTH=%s\\n" '
             '"${ISAAC_NAV__GROUND_TRUTH__ENABLED:-}"\n'
             'printf "SCENARIO=%s\\n" "${V6_RIVERMARK_SCENARIO:-}"\n'
@@ -447,7 +459,11 @@ die() {{ printf '%s\\n' "$*" >&2; return 1; }}
     result = subprocess.run(
         [str(scripts / RUN_V6_RIVERMARK.name), *arguments],
         cwd=tmp_path,
-        env=_environment(RIVERMARK_USD=str(environment_usd)),
+        env=_environment(
+            RIVERMARK_USD=str(environment_usd),
+            RIVERMARK_CALL_LOG=str(call_log),
+            ISAAC_ASSET_ROOT=str(tmp_path / 'explicit assets'),
+        ),
         text=True,
         capture_output=True,
         check=False,
@@ -487,6 +503,8 @@ def test_v6_rivermark_ros_argv_is_estimated_occupancy_only_m0_gvg(tmp_path):
                for argument in arguments)
     assert metadata['SCENARIO'] == 'static'
     assert metadata['GOALS'].endswith('/rivermark_demo_goals.yaml')
+    assert (tmp_path / 'rivermark_calls.log').read_text(
+        encoding='utf-8').splitlines() == ['run_ros']
 
 
 def test_v6_rivermark_requires_explicit_readable_usd(tmp_path):
@@ -591,6 +609,18 @@ def test_v6_rivermark_isaac_argv_covers_three_pilot_scenes(tmp_path):
         assert 'rgbd_navigation' in arguments
         assert metadata['GROUND_TRUTH'] == 'true'
 
+    for run_root in (
+            tmp_path / 'static',
+            tmp_path / 'dynamic',
+            tmp_path / 'appearance'):
+        asset_root = run_root / 'explicit assets'
+        assert (run_root / 'rivermark_calls.log').read_text(
+            encoding='utf-8').splitlines() == [
+                f'import_assets::asset_root={asset_root}',
+                f'import_assets:--check:asset_root={asset_root}',
+                'run_isaac',
+            ]
+
     assert 'final_rivermark_static_obstacles.yaml' in ' '.join(static)
     assert '--dynamic-obstacles' in static
     assert 'final_rivermark_dynamic.yaml' in ' '.join(dynamic)
@@ -598,6 +628,28 @@ def test_v6_rivermark_isaac_argv_covers_three_pilot_scenes(tmp_path):
     assert 'v3' in dynamic
     assert '--no-dynamic-obstacles' in appearance
     assert 'dim_cool' in appearance
+    static_root = tmp_path / 'static'
+    call_log = static_root / 'rivermark_calls.log'
+    call_log.unlink()
+    environment = _environment(
+        RIVERMARK_USD=str(static_root / 'rivermark.usd'),
+        RIVERMARK_CALL_LOG=str(call_log),
+        ISAAC_ASSET_ROOT=str(static_root / 'explicit assets'),
+        FAKE_IMPORT_ASSETS_FAIL='1',
+    )
+    failed = subprocess.run(
+        [str(static_root / 'scripts' / RUN_V6_RIVERMARK.name),
+         'isaac', 'static'],
+        cwd=static_root,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert failed.returncode != 0
+    assert call_log.read_text(encoding='utf-8').splitlines() == [
+        f'import_assets::asset_root={static_root / "explicit assets"}',
+    ]
 
 
 @pytest.mark.parametrize(
