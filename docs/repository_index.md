@@ -16,7 +16,7 @@ historical ledger are evidence records, not current execution entrypoints.
 | `scripts/run_ros.sh` | Single ROS/Nav2 bringup owner and installed-space gate. |
 | `scripts/run_v6_kujiale_low_obstacles.sh` | Phase F condition/profile selector on the Phase B substrate. |
 | `scripts/run_v6_low_obstacle_phase_f_stack.sh` | Phase F owner for Module3 ROS and, for M1-M3, the Integration bridge and Module2 server. |
-| `scripts/run_v6_rivermark.sh` | Implementation-only selector for the six `isaac|ros` by `static|dynamic|appearance` candidate pairings; not current-live validated or a README front door. |
+| `scripts/run_v6_rivermark.sh` | Rivermark Final selector for `isaac|ros` by `static|dynamic|appearance`; requires an explicit frozen `RIVERMARK_USD` and fixes M0 + GVG + RoutePrior OFF. |
 
 The only current environment entry is the paired Integration file
 `../bio_nav_integration/env/v6_pilot_setup.sh` when the three repositories are
@@ -36,9 +36,9 @@ checked out as siblings in the canonical V6 worktree.
 | `isaac_sim/configs/experiments/v6_single_dynamic_low_obstacle.yaml` | Single dynamic low-obstacle condition. |
 | `isaac_sim/configs/experiments/kujiale_appearance_profiles.yaml` | Appearance profiles only; the runner selects a profile and records state without changing geometry. Current appearance layout candidates remain unfrozen. |
 
-The host-local `/home/lyb/Rivermark/rivermark.usd` used by a historical
-candidate is not a canonical asset. A future Rivermark run must first freeze an
-explicit external-asset configuration and NAS path.
+Rivermark has no repository-local USD. Pass the frozen external scene through
+`RIVERMARK_USD`; the wrapper requires that exact file to be readable and does
+not infer a historical host-local path.
 
 ## Core implementation
 

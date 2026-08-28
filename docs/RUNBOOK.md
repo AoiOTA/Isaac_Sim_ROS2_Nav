@@ -134,23 +134,15 @@ stack, then start the existing navigation view independently:
 This display is optional and may be closed without stopping the run. It is not
 a readiness condition and must not be used to publish a goal or initial pose.
 
-## 5. Rivermark candidate bringup boundary
+## 5. Rivermark Final runtime boundary
 
-The existing `scripts/run_v6_rivermark.sh` exposes six component/condition
-pairings: `isaac|ros` for each of `static`, `dynamic`, and `appearance`. They
-are implementation-only selectors in this cleanup, have not been validated on
-the current cleanup heads, and are not a README front door.
-
-For the first separately authorized live use, select one matching condition,
-bring its Isaac half to cold-ready, then start the ROS half and confirm AMCL,
-EKF, Route, and PRIMARY readiness before sending a goal. The candidate external
-asset/configuration must be explicitly frozen first; do not infer an asset from
-a historical host-local path.
-
-The appearance runner selects a profile and records its state; it does not
-change scene geometry. Historical candidates used low-obstacle geometry for
-Kujiale appearance and no low obstacle for Rivermark appearance, but neither
-layout is frozen for a current appearance run.
+`scripts/run_v6_rivermark.sh` exposes `isaac|ros` for each of `static`,
+`dynamic`, and `appearance`. Set `RIVERMARK_USD` to the readable, frozen USD
+before either half is started; there is no host-local fallback. The ROS half is
+fixed to the M0 + GVG + RoutePrior-OFF arm. Static uses the four-box layout,
+dynamic uses the four-stage route interaction, and appearance changes only the
+selected appearance profile. These selectors are configured but have not yet
+been live-validated on the current heads.
 
 ## 6. Reset and episode boundary
 

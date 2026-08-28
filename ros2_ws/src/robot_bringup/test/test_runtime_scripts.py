@@ -451,7 +451,7 @@ die() {{ printf '%s\\n' "$*" >&2; return 1; }}
     return lines[3:], metadata
 
 
-def test_v6_rivermark_ros_argv_is_estimated_occupancy_only_primary(tmp_path):
+def test_v6_rivermark_ros_argv_is_estimated_occupancy_only_m0_gvg(tmp_path):
     arguments, metadata = _v6_rivermark_argv(
         tmp_path, 'ros', 'static')
 
@@ -468,8 +468,9 @@ def test_v6_rivermark_ros_argv_is_estimated_occupancy_only_primary(tmp_path):
                and argument.endswith('/robot_odometry/config/imu_calibration.yaml')
                for argument in arguments)
     assert 'nav2_profile:=v6_low_obstacle_isolation' in arguments
-    assert 'cognitive_profile:=M3' in arguments
-    assert 'cognitive_graph_mode:=primary' in arguments
+    assert 'cognitive_profile:=M0' in arguments
+    assert 'cognitive_graph_mode:=gvg' in arguments
+    assert 'route_prior_enabled:=false' in arguments
     assert 'use_rviz:=false' in arguments
     assert not any(argument.startswith('posegraph_file:=')
                    for argument in arguments)
@@ -479,6 +480,85 @@ def test_v6_rivermark_ros_argv_is_estimated_occupancy_only_primary(tmp_path):
                for argument in arguments)
     assert metadata['SCENARIO'] == 'static'
     assert metadata['GOALS'].endswith('/rivermark_demo_goals.yaml')
+
+
+def test_v6_rivermark_requires_explicit_readable_usd(tmp_path):
+    scripts = tmp_path / 'scripts'
+    (scripts / 'lib').mkdir(parents=True)
+    shutil.copy2(RUN_V6_RIVERMARK, scripts / RUN_V6_RIVERMARK.name)
+    (scripts / 'lib' / 'common.sh').write_text(
+        f'''PROJECT_ROOT="{tmp_path}"
+require_file() {{ [[ -f "$1" ]]; }}
+die() {{ printf '%s\\n' "$*" >&2; return 1; }}
+''',
+        encoding='utf-8',
+    )
+    environment = _environment()
+    environment.pop('RIVERMARK_USD', None)
+    result = subprocess.run(
+        [str(scripts / RUN_V6_RIVERMARK.name), 'ros', 'static'],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert 'RIVERMARK_USD must name the frozen Rivermark USD' in result.stderr
+
+    missing = tmp_path / 'missing-rivermark.usd'
+    result = subprocess.run(
+        [str(scripts / RUN_V6_RIVERMARK.name), 'ros', 'static'],
+        cwd=tmp_path,
+        env=_environment(RIVERMARK_USD=str(missing)),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert f'RIVERMARK_USD is not readable: {missing}' in result.stderr
+
+    source = RUN_V6_RIVERMARK.read_text(encoding='utf-8')
+    assert '/home/lyb/Rivermark' not in source
+
+
+@pytest.mark.parametrize(
+    'override',
+    ('cognitive_profile:=M3', 'cognitive_graph_mode:=primary',
+     'route_prior_enabled:=true'),
+)
+def test_v6_rivermark_rejects_final_cognitive_overrides(tmp_path, override):
+    scripts = tmp_path / 'scripts'
+    (scripts / 'lib').mkdir(parents=True)
+    shutil.copy2(RUN_V6_RIVERMARK, scripts / RUN_V6_RIVERMARK.name)
+    (scripts / 'lib' / 'common.sh').write_text(
+        f'''PROJECT_ROOT="{tmp_path}"
+require_file() {{ [[ -f "$1" ]]; }}
+die() {{ printf '%s\\n' "$*" >&2; return 1; }}
+''',
+        encoding='utf-8',
+    )
+    demo = tmp_path / 'data' / 'rivermark_demo'
+    demo.mkdir(parents=True)
+    for name in (
+        'rivermark.spawn.yaml', 'rivermark_selected.yaml',
+        'rivermark_selected.geojson', 'rivermark_demo_goals.yaml',
+        'final_rivermark_static_obstacles.yaml',
+        'final_rivermark_dynamic.yaml', 'rivermark_appearance_profiles.yaml',
+    ):
+        (demo / name).touch()
+    environment_usd = tmp_path / 'rivermark.usd'
+    environment_usd.touch()
+    result = subprocess.run(
+        [str(scripts / RUN_V6_RIVERMARK.name), 'ros', 'static', override],
+        cwd=tmp_path,
+        env=_environment(RIVERMARK_USD=str(environment_usd)),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert 'rejected override' in result.stderr
 
 
 def test_v6_rivermark_isaac_argv_covers_three_pilot_scenes(tmp_path):

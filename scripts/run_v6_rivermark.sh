@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Paired engineering-pilot entrypoints for the three Rivermark scene classes.
+# Paired final-runtime entrypoints for the three Rivermark scene classes.
 # Isaac and ROS remain separate processes so a cold stage can be started once
 # and inspected before the estimated-state navigation stack joins the graph.
 set -Eeuo pipefail
@@ -37,7 +37,11 @@ if [[ "${scenario}" == "appearance" ]]; then
 fi
 
 demo_dir="${RIVERMARK_DEMO_DIR:-${PROJECT_ROOT}/data/rivermark_demo}"
-environment_usd="${RIVERMARK_USD:-/home/lyb/Rivermark/rivermark.usd}"
+[[ -n "${RIVERMARK_USD:-}" ]] || die \
+  "RIVERMARK_USD must name the frozen Rivermark USD"
+environment_usd="${RIVERMARK_USD}"
+[[ -r "${environment_usd}" ]] || die \
+  "RIVERMARK_USD is not readable: ${environment_usd}"
 spawn_poses_file="${demo_dir}/rivermark.spawn.yaml"
 occupancy_map="${demo_dir}/rivermark_selected.yaml"
 route_graph="${demo_dir}/rivermark_selected.geojson"
@@ -112,7 +116,7 @@ for argument in "$@"; do
     ekf_profile:=*|imu_calibration_params_file:=*|\
     lidar_odometry_backend:=*|\
     lidar_odometry_validated:=*|nav2_profile:=*|\
-    cognitive_profile:=*|cognitive_graph_mode:=*|\
+    cognitive_profile:=*|cognitive_graph_mode:=*|route_prior_enabled:=*|\
     interactive:=*|use_rviz:=*)
       die "V6 Rivermark fixes the estimated-navigation contract; rejected override: ${argument}"
       ;;
@@ -134,8 +138,9 @@ exec "${SCRIPT_DIR}/run_ros.sh" navigation \
   lidar_odometry_backend:=off \
   lidar_odometry_validated:=false \
   nav2_profile:=v6_low_obstacle_isolation \
-  cognitive_profile:=M3 \
-  cognitive_graph_mode:=primary \
+  cognitive_profile:=M0 \
+  cognitive_graph_mode:=gvg \
+  route_prior_enabled:=false \
   spawn_poses_file:="${spawn_poses_file}" \
   spawn_pose_name:=rivermark_start \
   initial_pose_source:=auto \
