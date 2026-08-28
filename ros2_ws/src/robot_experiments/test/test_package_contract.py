@@ -63,7 +63,6 @@ EXPECTED_SOURCE_ONLY_CONFIGS = (
     "dynamic.yaml",
     "dynamic_benchmark.yaml",
     "dynamic_complex_route.yaml",
-    "incremental_comparison.example.yaml",
     "incremental_mapping.yaml",
     "isaac_kujiale_attempt21_static_ab.yaml",
     "isaac_kujiale_attempt21_static_ab_v10.yaml",
@@ -71,17 +70,12 @@ EXPECTED_SOURCE_ONLY_CONFIGS = (
     "isaac_kujiale_attempt21_static_ab_v12.yaml",
     "isaac_kujiale_attempt21_static_ab_v2.yaml",
     "isaac_kujiale_attempt21_static_ab_v3.yaml",
-    "isaac_kujiale_attempt21_static_ab_v4.yaml",
-    "isaac_kujiale_attempt21_static_ab_v5.yaml",
     "isaac_kujiale_attempt21_static_ab_v6.yaml",
     "isaac_kujiale_attempt21_static_ab_v7.yaml",
     "isaac_kujiale_attempt21_static_ab_v8.yaml",
     "isaac_kujiale_attempt21_static_ab_v9.yaml",
     "isaac_kujiale_attempt21_static_fusion_supplement_v15.yaml",
     "isaac_kujiale_attempt21_static_task_sensor_v13.yaml",
-    "isaac_kujiale_attempt22_v6_oracle_development_dynamic.yaml",
-    "isaac_kujiale_attempt22_v6_oracle_local_bypass_development.yaml",
-    "isaac_kujiale_attempt23_oracle_local_bypass_development.yaml",
     "isaac_kujiale_dataset_v2_attempt_03_confirmation_dynamic.yaml",
     "isaac_kujiale_dataset_v2_attempt_03_confirmation_static.yaml",
     "isaac_kujiale_dataset_v2_attempt_03_development_dynamic.yaml",
@@ -141,14 +135,12 @@ EXPECTED_SOURCE_ONLY_CONFIGS = (
     "isaac_kujiale_dataset_v3_attempt21_gate_static_v4.yaml",
     "isaac_kujiale_dataset_v3_attempt21_gate_static_v5.yaml",
     "isaac_kujiale_dataset_v3_attempt22_development_dynamic.yaml",
-    "isaac_kujiale_dataset_v3_attempt23_development_dynamic.yaml",
     "isaac_kujiale_dataset_v3_attempt23_final_confirmation_dynamic.yaml",
     "isaac_kujiale_dataset_v3_attempt23_final_confirmation_static.yaml",
     "isaac_kujiale_dataset_v3_attempt23_global_ab_dynamic.yaml",
     "isaac_kujiale_dataset_v3_attempt23_global_ab_static.yaml",
     "isaac_kujiale_dataset_v3_attempt23_global_shadow_dynamic.yaml",
     "isaac_kujiale_dataset_v3_attempt23_global_shadow_static.yaml",
-    "kujiale_baseline_pilot.yaml",
     "kujiale_dynamic_long_range.yaml",
     "kujiale_dynamic_pilot.yaml",
     "kujiale_static_pilot.yaml",
@@ -200,11 +192,11 @@ def test_setup_packages_only_the_current_config_allowlist():
             if path.is_file() and path.suffix in {".yaml", ".json"}
         )
     )
-    assert len(source_configs) == 145
+    assert len(source_configs) == 137
     source_only_configs = tuple(
         name for name in source_configs if name not in set(packaged_configs)
     )
-    assert len(source_only_configs) == 96
+    assert len(source_only_configs) == 88
     assert source_only_configs == EXPECTED_SOURCE_ONLY_CONFIGS
 
 
