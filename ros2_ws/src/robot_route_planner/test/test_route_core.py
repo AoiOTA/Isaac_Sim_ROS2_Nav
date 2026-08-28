@@ -1156,6 +1156,25 @@ def _reset_route_coordinator(*, active=True, handle=None):
         warning=lambda _message: None,
         error=lambda _message: None,
     ))
+    coordinator.SetParameters = SimpleNamespace(
+        Request=lambda: SimpleNamespace(parameters=[])
+    )
+    coordinator.Parameter = lambda **kwargs: SimpleNamespace(**kwargs)
+    coordinator.ParameterValue = lambda **kwargs: SimpleNamespace(**kwargs)
+    coordinator.ParameterType = SimpleNamespace(PARAMETER_INTEGER=2)
+
+    class _ImmediateTerminalHoldAck:
+        def result(self):
+            return SimpleNamespace(results=[SimpleNamespace(successful=True)])
+
+        def add_done_callback(self, callback):
+            callback(self)
+
+    coordinator.terminal_hold_client = SimpleNamespace(
+        service_is_ready=lambda: True,
+        call_async=lambda _request: _ImmediateTerminalHoldAck(),
+    )
+    coordinator._steady_now = lambda: 10.0
     coordinator.StructuralGraphStatus = SimpleNamespace(
         LAST_KNOWN_GOOD=2, READY=1)
     coordinator.structural_statuses = []
@@ -1399,21 +1418,37 @@ class _DeferredFuture:
 def _terminal_fence_route(
     *,
     succeeded: bool,
+    armed: bool = True,
+    rejected: bool = False,
+    targets_final: bool = True,
+    primary_fallback: bool = False,
     service_ready: bool = True,
     call_error: Exception | None = None,
 ):
-    coordinator = _reset_route_coordinator(handle=_AcceptedHandle())
+    coordinator = _reset_route_coordinator(
+        handle=None if rejected else _AcceptedHandle()
+    )
     coordinator.reset_generation = 99
     coordinator.pending_structural_map = None
     coordinator.cognitive_graph_feedback_active = None
-    coordinator.cognitive_graph_mode = 'gvg'
-    coordinator.navigation_goal_pending = False
-    coordinator.navigation_goal_targets_final = succeeded
+    coordinator.cognitive_graph_mode = (
+        'primary' if primary_fallback else 'gvg'
+    )
+    coordinator.primary_fallback_used = False if primary_fallback else True
+    fallback_calls = []
+    coordinator._fallback_to_gvg_once = (
+        lambda *args, **kwargs: fallback_calls.append((args, kwargs))
+    )
+    coordinator.navigation_goal_pending = rejected
+    coordinator.navigation_goal_targets_final = targets_final
     coordinator._current_xy = lambda: (0.0, 0.0)
     coordinator.pending_goal = SimpleNamespace(
         pose=SimpleNamespace(position=SimpleNamespace(x=0.0, y=0.0)))
     coordinator.route_goal_completion_tolerance_m = 0.25
-    coordinator.terminal_fence_binding = TerminalFenceToken(1, 41, 1)
+    coordinator.terminal_fence_serial = 1 if armed else 0
+    coordinator.terminal_fence_binding = (
+        TerminalFenceToken(1, 41, 1) if armed else None
+    )
     coordinator.terminal_fence_arm_pending = False
     coordinator.pending_terminal_fence = None
     coordinator.terminal_fence_future = None
@@ -1440,13 +1475,21 @@ def _terminal_fence_route(
     )
     coordinator._steady_now = lambda: 10.0
     generation = coordinator._route_callback_generation()
-    wrapped = SimpleNamespace(
-        status=4 if succeeded else 6,
-        result=SimpleNamespace(error_code=0 if succeeded else 207),
-    )
-    coordinator._on_navigation_result(
-        SimpleNamespace(result=lambda: wrapped), generation)
-    return coordinator, future, requests
+    if rejected:
+        coordinator._on_navigation_goal_handle(
+            SimpleNamespace(
+                result=lambda: SimpleNamespace(accepted=False)
+            ),
+            generation,
+        )
+    else:
+        wrapped = SimpleNamespace(
+            status=4 if succeeded else 6,
+            result=SimpleNamespace(error_code=0 if succeeded else 207),
+        )
+        coordinator._on_navigation_result(
+            SimpleNamespace(result=lambda: wrapped), generation)
+    return coordinator, future, requests, fallback_calls
 
 
 def _parameter_response(successful: bool, reason: str = ""):
@@ -1471,17 +1514,55 @@ def _assert_terminal_lockout_rejects_work(coordinator) -> None:
     assert coordinator.terminal_fence_lockout_generation == 1
 
 
+@pytest.mark.parametrize('rejected', (False, True))
+def test_unarmed_navigation_failure_waits_for_hold_ack(rejected) -> None:
+    coordinator, future, requests, fallbacks = _terminal_fence_route(
+        succeeded=False,
+        armed=False,
+        rejected=rejected,
+    )
+
+    assert fallbacks == []
+    assert coordinator.goal_complete_pub.messages == []
+    assert coordinator.goal_result_pub.messages == []
+    assert coordinator.terminal_fence_serial == 1
+    assert coordinator.pending_terminal_fence.token == TerminalFenceToken(
+        1, 41, 1
+    )
+    assert len(requests) == 1
+
+    future.complete(_parameter_response(True))
+
+    assert [message.data for message in coordinator.goal_complete_pub.messages] == [
+        False
+    ]
+    result = json.loads(coordinator.goal_result_pub.messages[0].data)
+    assert result == {
+        'request_id': 41,
+        'status': 'failed',
+        'reason': (
+            'navigate_to_pose_rejected'
+            if rejected
+            else 'navigate_to_pose_failed_error_207'
+        ),
+        'reset_epoch': 8,
+    }
+
+
 @pytest.mark.parametrize('succeeded', (True, False))
 def test_bound_terminal_waits_for_stop_gate_ack_before_bool_json_pair(
     succeeded,
 ) -> None:
-    coordinator, future, requests = _terminal_fence_route(succeeded=succeeded)
+    coordinator, future, requests, _fallbacks = _terminal_fence_route(
+        succeeded=succeeded
+    )
 
     assert coordinator.route_active is False
     assert coordinator.pending_goal is None
     assert coordinator.goal_complete_pub.messages == []
     assert coordinator.goal_result_pub.messages == []
     assert coordinator.terminal_fence_lockout_generation == 1
+    assert coordinator.terminal_fence_serial == 1
     assert len(requests) == 1
     parameter = requests[0].parameters[0]
     assert parameter.name == "reset_stop_gate_terminal_hold_generation"
@@ -1500,8 +1581,38 @@ def test_bound_terminal_waits_for_stop_gate_ack_before_bool_json_pair(
     _assert_terminal_lockout_rejects_work(coordinator)
 
 
+def test_unarmed_successes_and_primary_fallback_do_not_request_hold() -> None:
+    final, _future, final_requests, _fallbacks = _terminal_fence_route(
+        succeeded=True,
+        armed=False,
+    )
+    intermediate, _future, intermediate_requests, _fallbacks = (
+        _terminal_fence_route(
+            succeeded=True,
+            armed=False,
+            targets_final=False,
+        )
+    )
+    fallback, _future, fallback_requests, fallback_calls = (
+        _terminal_fence_route(
+            succeeded=False,
+            armed=False,
+            primary_fallback=True,
+        )
+    )
+
+    assert final_requests == []
+    assert [message.data for message in final.goal_complete_pub.messages] == [True]
+    assert intermediate_requests == []
+    assert intermediate.route_active is True
+    assert intermediate.goal_complete_pub.messages == []
+    assert fallback_requests == []
+    assert fallback.goal_complete_pub.messages == []
+    assert len(fallback_calls) == 1
+
+
 def test_terminal_hold_unavailable_fails_closed_without_terminal_pair() -> None:
-    coordinator, _future, requests = _terminal_fence_route(
+    coordinator, _future, requests, _fallbacks = _terminal_fence_route(
         succeeded=True, service_ready=False)
 
     assert requests == []
@@ -1512,7 +1623,7 @@ def test_terminal_hold_unavailable_fails_closed_without_terminal_pair() -> None:
 
 
 def test_terminal_hold_call_exception_keeps_lockout_without_terminal_pair() -> None:
-    coordinator, _future, requests = _terminal_fence_route(
+    coordinator, _future, requests, _fallbacks = _terminal_fence_route(
         succeeded=True, call_error=RuntimeError("injected call failure"))
 
     assert len(requests) == 1
@@ -1523,7 +1634,9 @@ def test_terminal_hold_call_exception_keeps_lockout_without_terminal_pair() -> N
 
 
 def test_terminal_hold_negative_response_keeps_lockout_without_terminal_pair() -> None:
-    coordinator, future, _requests = _terminal_fence_route(succeeded=True)
+    coordinator, future, _requests, _fallbacks = _terminal_fence_route(
+        succeeded=True
+    )
 
     future.complete(_parameter_response(False, "generation mismatch"))
 
@@ -1534,7 +1647,9 @@ def test_terminal_hold_negative_response_keeps_lockout_without_terminal_pair() -
 
 
 def test_terminal_hold_timeout_clears_pending_without_terminal_pair() -> None:
-    coordinator, _future, _requests = _terminal_fence_route(succeeded=True)
+    coordinator, _future, _requests, _fallbacks = _terminal_fence_route(
+        succeeded=True
+    )
     coordinator._steady_now = lambda: 12.1
 
     coordinator._terminal_fence_tick()
@@ -1546,7 +1661,9 @@ def test_terminal_hold_timeout_clears_pending_without_terminal_pair() -> None:
 
 
 def test_same_generation_status_and_terminal_hold_do_not_clear_lockout() -> None:
-    coordinator, _future, _requests = _terminal_fence_route(succeeded=True)
+    coordinator, _future, _requests, _fallbacks = _terminal_fence_route(
+        succeeded=True
+    )
     pending = coordinator.pending_terminal_fence
 
     coordinator._on_reset_stop_gate_status(
@@ -1563,7 +1680,9 @@ def test_same_generation_status_and_terminal_hold_do_not_clear_lockout() -> None
 
 @pytest.mark.parametrize('reason', ('hold', 'reset_complete'))
 def test_higher_generation_real_reset_clears_terminal_lockout(reason) -> None:
-    coordinator, _future, _requests = _terminal_fence_route(succeeded=True)
+    coordinator, _future, _requests, _fallbacks = _terminal_fence_route(
+        succeeded=True
+    )
 
     coordinator._on_reset_stop_gate_status(_gate_status(
         2,
@@ -1577,16 +1696,78 @@ def test_higher_generation_real_reset_clears_terminal_lockout(reason) -> None:
     assert coordinator.terminal_fence_future is None
 
 
-def test_reset_preempts_old_terminal_hold_ack_without_publication() -> None:
-    coordinator, future, _requests = _terminal_fence_route(succeeded=True)
+def test_reset_preempts_old_terminal_hold_ack_with_reset_abort() -> None:
+    coordinator, future, _requests, _fallbacks = _terminal_fence_route(
+        succeeded=True
+    )
 
     coordinator._on_reset_stop_gate_status(_gate_status(2, True, 'hold'))
     future.complete(_parameter_response(True))
 
     assert coordinator.terminal_fence_lockout_generation is None
     assert coordinator.pending_terminal_fence is None
-    assert coordinator.goal_complete_pub.messages == []
-    assert coordinator.goal_result_pub.messages == []
+    assert [message.data for message in coordinator.goal_complete_pub.messages] == [
+        False
+    ]
+    assert [
+        json.loads(message.data)
+        for message in coordinator.goal_result_pub.messages
+    ] == [{
+        'request_id': 41,
+        'status': 'aborted',
+        'reason': 'simulation_reset',
+        'reset_epoch': 9,
+    }]
+
+
+def test_unarmed_failure_reset_first_publishes_one_reset_pair_and_late_is_silent() -> None:
+    coordinator, future, _requests, _fallbacks = _terminal_fence_route(
+        succeeded=False,
+        armed=False,
+    )
+    old_generation = coordinator._route_callback_generation()
+    late_result = SimpleNamespace(result=lambda: SimpleNamespace(
+        status=6, result=SimpleNamespace(error_code=207)))
+
+    coordinator._on_reset_stop_gate_status(_gate_status(2, True, 'hold'))
+    future.complete(_parameter_response(True))
+    coordinator._on_navigation_result(late_result, old_generation)
+
+    assert [message.data for message in coordinator.goal_complete_pub.messages] == [
+        False
+    ]
+    assert [
+        json.loads(message.data)
+        for message in coordinator.goal_result_pub.messages
+    ] == [{
+        'request_id': 41,
+        'status': 'aborted',
+        'reason': 'simulation_reset',
+        'reset_epoch': 9,
+    }]
+
+
+def test_unarmed_failure_ack_first_publishes_one_failure_pair_across_reset() -> None:
+    coordinator, future, _requests, _fallbacks = _terminal_fence_route(
+        succeeded=False,
+        armed=False,
+    )
+
+    future.complete(_parameter_response(True))
+    coordinator._on_reset_stop_gate_status(_gate_status(2, True, 'hold'))
+
+    assert [message.data for message in coordinator.goal_complete_pub.messages] == [
+        False
+    ]
+    assert [
+        json.loads(message.data)
+        for message in coordinator.goal_result_pub.messages
+    ] == [{
+        'request_id': 41,
+        'status': 'failed',
+        'reason': 'navigate_to_pose_failed_error_207',
+        'reset_epoch': 8,
+    }]
 
 
 def test_release_publishes_deferred_ready_once_after_reassert_commit_in_hold() -> None:

@@ -1813,6 +1813,40 @@ class RouteCoordinator:
         )
         return pending
 
+    def _reserve_failure_terminal_fence_locked(
+        self,
+        *,
+        status: str,
+        reason: str,
+        reset_epoch: int,
+        rebuild: bool,
+    ) -> PendingTerminalFence | None:
+        """Bind current unarmed failures to the authoritative stop gate."""
+
+        binding = getattr(self, "terminal_fence_binding", None)
+        reset_status_generation = getattr(
+            self, "reset_status_generation", None
+        )
+        if binding is None:
+            if reset_status_generation is None:
+                return None
+            self.terminal_fence_serial = int(
+                getattr(self, "terminal_fence_serial", 0)
+            ) + 1
+            binding = TerminalFenceToken(
+                self.terminal_fence_serial,
+                int(getattr(self, "request_id", 0)),
+                int(reset_status_generation),
+            )
+            self.terminal_fence_binding = binding
+        return self._reserve_terminal_fence_locked(
+            success=False,
+            status=status,
+            reason=reason,
+            reset_epoch=reset_epoch,
+            rebuild=rebuild,
+        )
+
     def _fail_terminal_fence(self, token: TerminalFenceToken, detail: str) -> None:
         rebuild = False
         with self._route_output_lock():
@@ -1944,8 +1978,15 @@ class RouteCoordinator:
     def _retire_active_route_for_reset(self):
         """Fence and synchronously retire all state owned by the old epoch."""
 
-        was_active = bool(getattr(self, "route_active", False))
-        old_request_id = int(getattr(self, "request_id", 0))
+        pending_terminal = getattr(self, "pending_terminal_fence", None)
+        was_active = bool(
+            getattr(self, "route_active", False) or pending_terminal is not None
+        )
+        old_request_id = int(
+            pending_terminal.token.request_id
+            if pending_terminal is not None
+            else getattr(self, "request_id", 0)
+        )
         old_goal = getattr(self, "pending_goal", None)
         old_handle = getattr(self, "navigation_goal_handle", None)
 
@@ -4518,8 +4559,7 @@ class RouteCoordinator:
                                 getattr(self, "pending_structural_map", None)
                                 is not None
                             )
-                            terminal_fence = self._reserve_terminal_fence_locked(
-                                success=False,
+                            terminal_fence = self._reserve_failure_terminal_fence_locked(
                                 status="failed",
                                 reason="navigate_to_pose_rejected",
                                 reset_epoch=terminal_snapshot[1],
@@ -4640,15 +4680,21 @@ class RouteCoordinator:
                     rebuild = (
                         getattr(self, "pending_structural_map", None) is not None
                     )
-                    terminal_fence = self._reserve_terminal_fence_locked(
-                        success=terminal_snapshot[2],
-                        status=(
-                            "succeeded" if terminal_snapshot[2] else "failed"
-                        ),
-                        reason=terminal_snapshot[3],
-                        reset_epoch=terminal_snapshot[1],
-                        rebuild=rebuild,
-                    )
+                    if terminal_snapshot[2]:
+                        terminal_fence = self._reserve_terminal_fence_locked(
+                            success=True,
+                            status="succeeded",
+                            reason=terminal_snapshot[3],
+                            reset_epoch=terminal_snapshot[1],
+                            rebuild=rebuild,
+                        )
+                    else:
+                        terminal_fence = self._reserve_failure_terminal_fence_locked(
+                            status="failed",
+                            reason=terminal_snapshot[3],
+                            reset_epoch=terminal_snapshot[1],
+                            rebuild=rebuild,
+                        )
             if edge is not None:
                 feedback, validated_edge_id, candidate_edge_id = edge
                 self._publish_edge_outcome(
