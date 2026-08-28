@@ -22,11 +22,12 @@ For current behavior, use this order:
 2. current wrappers and launch/config implementation;
 3. [`interfaces.md`](interfaces.md) and [`RUNBOOK.md`](RUNBOOK.md);
 4. focused tests and current-run evidence;
-5. dated handoffs, reports, and historical campaign documents.
+5. the historical ledger, reports, and campaign documents.
 
-Historical Rivermark, Attempt21-32, 4x20, and dated V6 handoffs remain useful
-for their original runs. They are not current commands or proof that the V6
-baseline has completed outdoor, appearance, or formal qualification.
+Historical Rivermark, Attempt21-32, 4x20, and V6 milestone entries remain in
+the ledger for their original evidence scope. They are not current commands or
+proof that the V6 baseline has completed outdoor, appearance, or formal
+qualification. No V6 micro-handoff files remain.
 
 ## Generated-report storage
 
@@ -48,6 +49,6 @@ evidence classification. `docs/report_assets/`, `docs/videos/`, and
 - A result from another repository may be linked at its current-state page;
   do not duplicate detailed metrics into Module3.
 
-This convergence amendment intentionally removes seven zero-caller dated
-handoff documents; other handoffs, report assets, data, scripts, configs, and
-historical ledgers are retained.
+This convergence amendment retains the experiment ledger while removing all
+V6 micro-handoff files. Report assets, data, scripts, configs, and unrelated
+historical documents are retained.

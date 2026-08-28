@@ -76,14 +76,19 @@ remain tracked because repository callers still reference them.
 - Precise terminal command-to-actuator zero latency was not closed in this
   documentation amendment. Terminal safety behavior must not be described as
   qualified from code inspection or historical timing alone.
-- Outdoor navigation is not complete on the current V6 baseline.
-- Appearance coverage is not complete on the current V6 baseline.
+- Outdoor and appearance candidate assets/configuration remain unfrozen. A
+  historical Rivermark candidate referenced the host-local
+  `/home/lyb/Rivermark/rivermark.usd`; it is not a canonical current asset.
+  Any future use must freeze an explicit external-asset configuration and NAS
+  path before a live run.
+- Outdoor navigation and appearance coverage are not complete on the current
+  V6 baseline.
 - Formal qualification is not complete. No current result may be labeled
   `FORMAL_QUALIFICATION_PASS`.
 
 ## Boundary
 
-This page describes current runtime and evidence classification only. Dated
-handoffs, Rivermark/Attempt reports, 4x20 artifacts, and report assets are
-retained for historical traceability. They do not override the pins or open
-items above.
+This page describes current runtime and evidence classification only. The
+historical ledger, Rivermark/Attempt reports, 4x20 artifacts, and report assets
+are retained for traceability. No V6 micro-handoff files remain; retained
+history does not override the pins or open items above.

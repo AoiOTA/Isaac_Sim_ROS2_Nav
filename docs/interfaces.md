@@ -39,6 +39,11 @@ priors and cognitive-obstacle observations. Missing, stale, invalid, or
 unhealthy Module2 input must not grant traversability, publish TF, or command
 the robot.
 
+Appearance selection is non-geometric: the runner selects a profile and records
+its state, but does not add, remove, or move collision geometry. The historical
+candidate layout used low obstacles for Kujiale appearance and no low obstacle
+for Rivermark appearance; both remain unfrozen for current appearance work.
+
 ## Current data-plane topics
 
 | Topic | Purpose / owner |
@@ -75,6 +80,12 @@ robot articulation
 `/cmd_vel` is the final public safety output. Isaac consumes only its private
 `/cmd_vel_sim` relay. Module1, Module2, and Integration do not own either final
 topic.
+
+Fresh live terminal acceptance requires the first `/cmd_vel_sim` zero no later
+than 0.25 s after the terminal outcome, no later nonzero actuator command, and
+post-terminal ground-truth XY/yaw within the preregistered bounds. This cleanup
+does not validate that acceptance. Historical Attempt9 measurements remain in
+the [experiment ledger](handoff/EXPERIMENT_LEDGER.md) and are not restated here.
 
 ## Reset contract
 

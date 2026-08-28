@@ -96,7 +96,25 @@ The selected wrapper fixes `nav2_profile:=v6_low_obstacle_isolation`. Do not
 override the Phase B map, spawn, GVG, localization owner, or mixed-odometry
 substrate from these commands.
 
-## 4. Reset and episode boundary
+## 4. Rivermark candidate bringup boundary
+
+The existing `scripts/run_v6_rivermark.sh` exposes six component/condition
+pairings: `isaac|ros` for each of `static`, `dynamic`, and `appearance`. They
+are implementation-only selectors in this cleanup, have not been validated on
+the current cleanup heads, and are not a README front door.
+
+For the first separately authorized live use, select one matching condition,
+bring its Isaac half to cold-ready, then start the ROS half and confirm AMCL,
+EKF, Route, and PRIMARY readiness before sending a goal. The candidate external
+asset/configuration must be explicitly frozen first; do not infer an asset from
+a historical host-local path.
+
+The appearance runner selects a profile and records its state; it does not
+change scene geometry. Historical candidates used low-obstacle geometry for
+Kujiale appearance and no low obstacle for Rivermark appearance, but neither
+layout is frozen for a current appearance run.
+
+## 5. Reset and episode boundary
 
 Isaac `ResetServiceBridge` owns the `/simulation/reset` service and its reset
 transaction. Phase B has one orchestrating episode caller, `v6_formal_episode`,
@@ -107,7 +125,7 @@ hooks, and emits the reset event. Do not call component reset services
 independently during an owned episode and do not treat a process restart as a
 reset receipt.
 
-## 5. Owned shutdown
+## 6. Owned shutdown
 
 For the Phase F three-terminal composition, stop in reverse dispatch order:
 
@@ -124,7 +142,7 @@ Do not use global `pkill`, delete a socket with a live listener, or clean anothe
 run's PID/runtime directory. If a wrapper reports that an owned child remains,
 preserve the logs and diagnose that exact process identity.
 
-## 6. Evidence boundary
+## 7. Evidence boundary
 
 Keep logs, bags, JSONL, images, and evaluator results inside the new NAS run
 root. A successful startup, a focused test, or a historical campaign is not a

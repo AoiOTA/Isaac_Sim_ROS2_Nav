@@ -1,7 +1,7 @@
 # Current V6 repository index
 
-This index covers the canonical Kujiale V6 runtime. Dated reports and handoffs
-are historical evidence, not current execution entrypoints.
+This index covers the canonical Kujiale V6 runtime. Dated reports and the
+historical ledger are evidence records, not current execution entrypoints.
 
 ## Start and operate
 
@@ -16,6 +16,7 @@ are historical evidence, not current execution entrypoints.
 | `scripts/run_ros.sh` | Single ROS/Nav2 bringup owner and installed-space gate. |
 | `scripts/run_v6_kujiale_low_obstacles.sh` | Phase F condition/profile selector on the Phase B substrate. |
 | `scripts/run_v6_low_obstacle_phase_f_stack.sh` | Phase F owner for Module3 ROS and, for M1-M3, the Integration bridge and Module2 server. |
+| `scripts/run_v6_rivermark.sh` | Implementation-only selector for the six `isaac|ros` by `static|dynamic|appearance` candidate pairings; not current-live validated or a README front door. |
 
 The only current environment entry is the paired Integration file
 `../bio_nav_integration/env/v6_pilot_setup.sh` when the three repositories are
@@ -33,7 +34,11 @@ checked out as siblings in the canonical V6 worktree.
 | `ros2_ws/src/robot_navigation/config/nav2_v6_low_obstacle_isolation.yaml` | Phase F low-obstacle isolation overlay. |
 | `isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen.yaml` | Frozen static low-obstacle condition. |
 | `isaac_sim/configs/experiments/v6_single_dynamic_low_obstacle.yaml` | Single dynamic low-obstacle condition. |
-| `isaac_sim/configs/experiments/kujiale_appearance_profiles.yaml` | Appearance profiles; not yet a completed current-V6 qualification. |
+| `isaac_sim/configs/experiments/kujiale_appearance_profiles.yaml` | Appearance profiles only; the runner selects a profile and records state without changing geometry. Current appearance layout candidates remain unfrozen. |
+
+The host-local `/home/lyb/Rivermark/rivermark.usd` used by a historical
+candidate is not a canonical asset. A future Rivermark run must first freeze an
+explicit external-asset configuration and NAS path.
 
 ## Core implementation
 
@@ -55,8 +60,9 @@ checked out as siblings in the canonical V6 worktree.
 
 - Live bags, logs, images, and run results belong under
   `/mnt/nas_home/Bio_Nav_Data/experiments/runs/`.
-- `docs/handoff/EXPERIMENT_LEDGER.md` and `docs/handoff/` retain historical
-  engineering context without changing its evidence classification.
+- `docs/handoff/EXPERIMENT_LEDGER.md` retains historical engineering context
+  without changing its evidence classification; no V6 micro-handoff files
+  remain.
 - Generated `docs/reports/` from source HEAD
   `09c3ae80a5766ccf37fd244421e4c5f50afe7e91` is stored at
   `/mnt/nas_home/Bio_Nav_Data/experiments/visualizations/module3_repo_generated_09c3ae80a5766ccf37fd244421e4c5f50afe7e91/docs/reports/`:

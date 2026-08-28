@@ -67,7 +67,7 @@
   TF ownership or prematurely enabling three-source fusion.
 - Branch/worktree/commit: `cognitive-navigation`;
   `/home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3`;
-  commit containing `docs/handoff/V6_A3_RF2O_VENDOR.md`.
+  ledger-containing commit.
 - Upstream/configuration: MAPIRlab RF2O commit `b38c68e46387b98845ecbfeb6660292f967a00d3`;
   `/lidar/odom`; `odom -> base_link`; `publish_tf:=false`; conservative
   parameterized covariance; `lidar_odometry_validated:=false` by default.
@@ -79,7 +79,7 @@
   exited 1 as intended; synthetic smoke produced 44 finite, nonzero,
   stamp-monotonic messages with positive covariance and correct frames; exactly
   one RF2O node, no hidden listener/algorithm node, and zero `/tf` publishers.
-- Evidence/reproducer: `docs/handoff/V6_A3_RF2O_VENDOR.md` and
+- Evidence/reproducer:
   `ros2_ws/src/robot_odometry/test/rf2o_synthetic_smoke.py`; generated build
   artifacts remain under `ros2_ws/build`, `install`, and `log` and are not
   committed.
@@ -133,7 +133,6 @@
 - Verdict: **PASS (frozen configuration and static tests only)**.
 - Unrun: Isaac/ROS/Nav2, camera visibility, contact, bypass behavior, estimated
   localization, causal experiment, and formal qualification.
-- Handoff: `docs/handoff/V6_C4_LOW_OBSTACLE_LAYOUT.md`.
 
 ## 2026-08-20 — V6 estimated/Isaac odometry-mode alignment
 
@@ -165,8 +164,7 @@
   a same-name Node for both `fail_closed/auto` and `wait_for_seed/rviz`.
 - Verdict: **PASS (implementation, parameter parsing, unit tests, clean build)**.
 - Unrun: ROS graph, Isaac, Nav2, live 120-second/reseed behavior, navigation,
-  evidence, and formal qualification. Handoff:
-  `docs/handoff/V6_GATE_EXACT_OVERRIDE_20260820.md`.
+  evidence, and formal qualification.
 
 ## 2026-08-20 — V6 shadow wrapper RF2O default
 
@@ -181,7 +179,7 @@
   runtime-script pytest `30 passed`.
 - Verdict: **PASS (shell syntax and isolated argv contracts only)**.
 - Unrun: ROS/Isaac, live topic and TF ownership, navigation, metrics, and
-  qualification. Handoff: `docs/handoff/V6_SHADOW_RF2O_WRAPPER_20260820.md`.
+  qualification.
 
 ## 2026-08-21 — V6 M1 shadow live engineering observation
 
@@ -206,7 +204,6 @@
 - Cleanup: all run-owned launch and monitor processes were stopped; logs and
   PID records were retained under the evidence directory. No standalone exact
   launch-command transcript exists in that directory.
-- Handoff: `docs/handoff/V6_M1_SHADOW_ENGINEERING_20260821.md`.
 
 ## 2026-08-21 — V6 Module3 obstacle validation consumer
 
@@ -227,7 +224,6 @@
 - Verdict: **PASS (implementation and code-level tests only)**.
 - Unrun: live ROS/TF/Costmap, Isaac, Nav2 navigation, evidence campaign, and
   formal qualification.
-- Handoff: `docs/handoff/V6_M3_OBSTACLE_VALIDATION_CONSUMER_20260821.md`.
 
 ## 2026-08-21 — V6 Isaac cold stage-readiness timeout repair
 
@@ -244,7 +240,6 @@
 - Verdict: **PASS (implementation and code-level tests only)**.
 - Unrun: Isaac, ROS, Nav2, navigation, evidence, and formal qualification.
   Runtime cold-start confirmation remains for the next authorized retry.
-- Handoff: `docs/handoff/V6_ISAAC_COLD_STAGE_READINESS_20260821.md`.
 
 ## 2026-08-21 — V6 Module3 typed cognitive graph feedback
 
@@ -266,7 +261,6 @@
 - Verdict: **PASS (implementation/build/unit only)**.
 - Unrun: live typed-event flow, ROS/Isaac/Nav2 navigation, causal Module2
   update, evidence campaign, and formal qualification.
-- Handoff: `docs/handoff/V6_MODULE3_GRAPH_FEEDBACK_20260821.md`.
 
 ## 2026-08-21 — V6 A7 estimated navigation reviewer smoke
 
@@ -276,7 +270,6 @@
 - Result: G2 `34.8 s`; recovery `0`; collision `0`; remaining `0.071 m`;
   EKF xy ATE RMSE `0.0689 m`; AMCL xy ATE RMSE `0.0629 m`.
 - Verdict: **PASS (engineering smoke only; not qualification)**.
-- Handoff: `docs/handoff/V6_A7_ESTIMATED_NAV_SMOKE_20260821.md`.
 
 ## 2026-08-21 — V6 formal single-episode runner contract
 
@@ -299,8 +292,6 @@
 - Verdict: **PASS (implementation/build/unit only)**.
 - Unrun: ROS/Isaac/Nav2, live reset/route/capture, pilot episode, evidence,
   scene-contract freeze, and formal qualification.
-- Handoff:
-  `docs/handoff/V6_FORMAL_SINGLE_EPISODE_RUNNER_20260821.md`.
 
 ## 2026-08-21 — V6 low-obstacle M0--M3 causal runner/evaluator skeleton
 
@@ -327,7 +318,6 @@
 - Verdict: **PASS (implementation/build/unit only)**;
   **ENGINEERING_CAUSAL_NOT_RUN** for live evidence. No ROS/Isaac/Nav2,
   12-row campaign, causal result, visual result, or formal qualification ran.
-- Handoff: `docs/handoff/V6_LOW_OBSTACLE_CAUSAL_RUNNER_20260821.md`.
 
 ## 2026-08-21 — V6 L0--L3 localization causal runner and true-kidnap skeleton
 
@@ -352,7 +342,6 @@
   qualification was claimed.
 - Remaining: live Trigger/Kit behavior, route-idle adapter enforcement, actual
   S1/S2 preflights, core 60 execution, passive evidence capture, and review.
-- Handoff: `docs/handoff/V6_LOCALIZATION_CAUSAL_RUNNER_20260821.md`.
 
 ## 2026-08-21 — V6 formal multi-leg engineering-pilot amendment
 
@@ -372,8 +361,6 @@
 - Verdict: **PASS (implementation/build/unit only)**;
   **ENGINEERING_PILOT_NOT_RUN**. No ROS/Isaac/Nav2 pilot, scene freeze, evidence
   campaign, or formal qualification was performed.
-- Handoff:
-  `docs/handoff/V6_FORMAL_MULTILEG_ENGINEERING_PILOT_20260821.md`.
 
 ## 2026-08-21 — V6 Rivermark occupancy-only estimated bringup
 
@@ -394,8 +381,6 @@
 - Verdict: **PASS (implementation/build/unit only)**;
   **ENGINEERING_PILOT_NOT_RUN**. No ROS/Isaac/Nav2, scene freeze, evidence
   capture, or qualification was run.
-- Handoff:
-  `docs/handoff/V6_RIVERMARK_OCCUPANCY_ONLY_BRINGUP_20260821.md`.
 
 ## 2026-08-21 — V6 Estimated State calibration runner/evaluator
 
@@ -422,8 +407,6 @@
 - Verdict: **PASS (implementation/build/unit only)**;
   **CALIBRATION_NOT_RUN**. No ROS/Isaac/Nav2, tuning result, RF2O promotion, or
   qualification is claimed.
-- Handoff:
-  `docs/handoff/V6_ESTIMATED_CALIBRATION_RUNNER_20260821.md`.
 
 ## 2026-08-21 — V6 Module3 PRIMARY authority consumer amendment
 
@@ -445,8 +428,6 @@
   optional `pxr` benchmark in the unit environment.
 - Verdict: **PASS (implementation/build/unit only)**. No ROS/Isaac/Nav2/live
   PRIMARY/evidence/qualification campaign was run.
-- Handoff:
-  `docs/handoff/V6_MODULE3_PRIMARY_AUTHORITY_CONSUMER_20260821.md`.
 
 ## 2026-08-21 — V6 flat Estimated State calibration amendment
 
@@ -470,8 +451,6 @@
 - Verdict: **PASS (implementation/build/unit only)**;
   **CALIBRATION_NOT_RUN**. No Isaac/ROS/Nav2, tuning, RF2O promotion, PRIMARY
   replay, evidence campaign, or qualification was run.
-- Handoff:
-  `docs/handoff/V6_FLAT_ESTIMATED_CALIBRATION_AMENDMENT_20260821.md`.
 
 ## 2026-08-21 — V6 formal B5 cognitive bootstrap readiness
 
@@ -491,8 +470,6 @@
   `git diff --check` PASS.
 - Verdict: **PASS (implementation/build/unit only)**. No ROS/Isaac/Nav2,
   engineering pilot, evidence, or qualification campaign was run.
-- Handoff:
-  `docs/handoff/V6_FORMAL_B5_READINESS_20260821.md`.
 
 ## 2026-08-21 — V6 core sensor single physics-step publication
 
@@ -512,8 +489,6 @@
   launched, so live single-stamp publication remains to be confirmed. IMU
   covariance is still zero/unspecified pending Estimated State calibration;
   no covariance value was guessed here.
-- Handoff:
-  `docs/handoff/V6_CORE_SENSOR_PHYSICS_STEP_20260821.md`.
 
 ## 2026-08-21 — V6 motion-assist pure-yaw consistency amendment
 
@@ -533,8 +508,6 @@
 - Verdict: **PASS (implementation/static-test only)**. Live retest remains:
   six flat20 rotations plus duplicate equal-stamp sensor checks, followed by
   Estimated parameter acceptance before any affected Rivermark/PRIMARY rerun.
-- Handoff:
-  `docs/handoff/V6_MOTION_ASSIST_YAW_CONSISTENCY_20260821.md`.
 
 ## 2026-08-21 — V6 core sensor on-demand execution
 
@@ -553,8 +526,6 @@
 - Verdict: **PASS (implementation/static-test only)**. No Isaac/ROS/Nav2 was
   launched. A fresh live retry must confirm graph materialization and
   once-per-physics-step Clock/JointState/IMU publication.
-- Handoff:
-  `docs/handoff/V6_CORE_SENSOR_ONDEMAND_20260821.md`.
 
 ## 2026-08-21 — V6 IMU raw/corrected calibration seam
 
@@ -575,8 +546,6 @@
   existing checkout-sensitive frozen absolute-path comparison, not this seam.
 - Verdict: **PASS (implementation/build/unit only)**. No ROS/Isaac/Nav2 live
   retest or calibration/PRIMARY/qualification run was performed.
-- Handoff:
-  `docs/handoff/V6_IMU_RAW_CORRECTED_CALIBRATION_20260821.md`.
 
 ## 2026-08-21 — V6 Estimated final policy freeze
 
@@ -598,7 +567,6 @@
 - Verdict: **PASS (implementation/build/unit only)**. No ROS/Isaac/Nav2 or
   qualification run was launched. Rivermark/PRIMARY runtime evidence remains
   to be collected under the frozen policy.
-- Handoff: `docs/handoff/V6_ESTIMATED_FINAL_POLICY_20260821.md`.
 
 ## 2026-08-21 — V6 IMU regime dependence; global candidate rejected
 
@@ -629,7 +597,6 @@
   IMU scale conclusion.
 - Verdict: **ENGINEERING FAIL (mixed route); rotation baseline remains valid**.
   No ROS/Isaac/Nav2/evidence/qualification run was launched by this amendment.
-- Handoff: `docs/handoff/V6_IMU_REGIME_DEPENDENCE_20260821.md`.
 
 ## 2026-08-21 — V6 obstacle FRESH/continuous-validation consumer amendment
 
@@ -649,8 +616,6 @@
 - Verdict: **PASS (implementation/build/unit only)**. No ROS/Isaac/Nav2,
   engineering evidence, or qualification campaign was run; live costmap refresh
   and stale-cell clearing remain runtime validation work.
-- Handoff:
-  `docs/handoff/V6_M3_OBSTACLE_VALIDATION_CONSUMER_20260821.md`.
 
 ## 2026-08-21 — V6 obstacle status consumer identity
 
@@ -667,8 +632,6 @@
 - Verdict: **PASS (implementation/build/unit only)**. No ROS/Nav2/Isaac or live
   evidence was run; actual lifecycle node names and both consumer streams remain
   to be observed in the next authorized live campaign.
-- Handoff:
-  `docs/handoff/V6_OBSTACLE_CONSUMER_IDENTITY_20260821.md`.
 
 ## 2026-08-21 — V6 obstacle static source-age contract alignment
 
@@ -685,8 +648,6 @@
   `/tmp/v6_obstacle_static_source_age.RmMSTu`.
 - Verdict: **PASS (implementation/build/unit only)**. No ROS/Nav2/Isaac or live
   evidence was run; both live Costmap consumers still require observation.
-- Handoff:
-  `docs/handoff/V6_OBSTACLE_STATIC_SOURCE_AGE_20260821.md`.
 
 ## 2026-08-21 — V6 critic static-revalidation freshness alignment
 
@@ -713,8 +674,6 @@
   0.5 seconds with a fresh static-depth validation and confirm both Costmap and
   critic status report applied, then allow the validation TTL to expire and
   confirm zero cognitive cost.
-- Handoff:
-  `docs/handoff/V6_CRITIC_STATIC_REVALIDATION_FRESHNESS_20260821.md`.
 
 ## 2026-08-22 — V6 route terminal and graph reassert-liveness repair
 
@@ -748,7 +707,6 @@
 - Remaining risk/next step: executor/action-server/DDS timing and actual active
   reset/reassert behavior are still unverified; run the planned bounded live
   active-reset review before making an engineering-runtime claim.
-- Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
 
 ## 2026-08-22 — V6 IMU smoother-aware schedule evidence and Attempt 3 retroactive analysis
 
@@ -823,7 +781,6 @@
 - Blocker/next: active-reset live rerun remains required to prove one abort at
   HOLD, zero old-request output/motion through HOLD, same-generation completion
   and release, and a successful fresh post-release goal.
-- Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
 
 ## 2026-08-22 — V6 IMU reset/request timestamp boundary closure
 
@@ -844,8 +801,6 @@
   duration, and installed-share regressions remain passing.
 - Verdict: **PASS (code/build/unit only)**. No Isaac/ROS/MCAP/navigation live
   run or formal qualification; live regime closure remains pending.
-- Handoff:
-  `docs/handoff/V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`.
 
 ## 2026-08-22 — V6 IMU preflight sim-time and flat20 geometry closure
 
@@ -871,8 +826,6 @@
 - Verdict: **PASS (code/build/unit only)**. No Isaac, live readiness, ROS/Nav2
   navigation, stationary/primitive/MCAP run, scale selection, or formal
   qualification was performed. Attempt 3 remains **PENDING**.
-- Handoff:
-  `docs/handoff/V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`.
 
 ## 2026-08-22 — V6 RouteCoordinator late-join startup reset baseline
 
@@ -904,7 +857,6 @@
 - Verdict: **PASS (code/build/unit only)**. Attempt 2 remains STOP. Attempt 3
   is **PENDING**; no Isaac/ROS/Nav2/navigation/live engineering or formal
   qualification was run by this amendment.
-- Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
 
 ## 2026-08-22 — V6 RouteCoordinator HOLD graph-output/dispatch fence
 
@@ -932,7 +884,6 @@
 - Remaining risk/next: the planned fresh active-reset live rerun must still
   verify DDS/executor timing, zero old output/command through HOLD, and fresh
   goal recovery.
-- Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
 
 ## 2026-08-22 — V6 IMU duration, goal-MCAP, and installed-resource closure
 
@@ -959,7 +910,6 @@
 - Verdict: **PASS (code/build/unit only)**. No Isaac/ROS/MCAP/motion/goal
   runtime or formal qualification was run. `yaw_scale=0.9294` and RF2O off are
   unchanged; live regime capture remains pending.
-- Handoff: `docs/handoff/V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`.
 
 ## 2026-08-22 — V6 IMU regime diagnostic instrumentation
 
@@ -989,8 +939,6 @@
 - Next: bounded same-session stationary + CW/CCW + bilateral low/normal-speed
   arcs + S route + Kujiale goal capture, then offline scan. Missing required
   streams/attributes or stamp anomalies must remain FAIL/AMBIGUOUS.
-- Handoff:
-  `docs/handoff/V6_IMU_REGIME_DIAGNOSTIC_INSTRUMENTATION_20260822.md`.
 
 ## 2026-08-22 — MotionBenchmark STOP evidence isolation and receipt retention
 
@@ -1021,7 +969,6 @@
 - Limits/next: no Isaac, ROS graph, Nav2, navigation, visual evidence,
   engineering campaign, or formal qualification was run. Live reviewer
   closure remains **PENDING**; route handoff and route code are unchanged.
-- Handoff: `docs/handoff/V6_RESET_SEED_STOP_GATE_20260822.md`.
 
 ## 2026-08-22 — V6 RouteCoordinator reset retirement
 
@@ -1049,7 +996,6 @@
   combined read-only reviewer; verify exactly one abort terminal, no old route
   publications/action dispatch or post-release command, idempotent cancel-all,
   and successful fresh-goal restart.
-- Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
 
 ## 2026-08-22 — V6 RouteCoordinator concurrency and graph-authority amendment
 
@@ -1082,7 +1028,6 @@
 - Remaining risk/next: live reset/action-server/DDS ordering, ActivationGate
   cancel-all interaction, StopGate command behavior, and fresh-goal restart
   remain pending an explicitly authorized live review.
-- Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
 
 ## 2026-08-22 — V6 RouteCoordinator second concurrency-review amendment
 
@@ -1112,7 +1057,6 @@
 - Verdict: **PASS (code/build/unit only)**. No ROS graph, Isaac, Nav2,
   navigation, visual evidence, engineering campaign, or formal qualification
   was run. Active-reset live closure remains pending.
-- Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
 
 ## 2026-08-22 — V6 reset seed receipt and final command ResetStopGate
 
@@ -1147,7 +1091,6 @@
   formal qualification was run. Reviewer must verify unique topic publishers,
   zero HOLD through active-goal reset/recovery, no stale command, no slip, and
   no collision; any violation is FAIL/STOP.
-- Handoff: `docs/handoff/V6_RESET_SEED_STOP_GATE_20260822.md`.
 
 ## 2026-08-22 — ResetStopGate reviewer-blocker amendment
 
@@ -1179,7 +1122,6 @@
 - Remaining risk/next step: an authorized live reviewer must confirm mapping,
   Navigation recovery, R2C segment resets, MotionBenchmark delayed release,
   unique `/cmd_vel_sim` authority, and zero output throughout HOLD.
-- Handoff: `docs/handoff/V6_RESET_SEED_STOP_GATE_20260822.md`.
 
 ## 2026-08-22 — ResetStopGate final-review freshness amendment
 
@@ -1208,7 +1150,6 @@
   passing run.
 - Verdict: **PASS (code/build/unit only)**. No Isaac/ROS/Nav2/navigation run or
   formal qualification was performed; live closure remains **UNVERIFIED**.
-- Handoff: `docs/handoff/V6_RESET_SEED_STOP_GATE_20260822.md`.
 
 ## 2026-08-21 — V6 critic revalidation TF/cursor blocker rework
 
@@ -1232,8 +1173,6 @@
 - Verdict: **PASS (implementation/build/unit only)**. No active MPPI,
   ROS/Nav2/Isaac, navigation, engineering evidence, or qualification run was
   launched; live callback/TF timing remains unverified.
-- Handoff:
-  `docs/handoff/V6_CRITIC_STATIC_REVALIDATION_FRESHNESS_20260821.md`.
 
 ## 2026-08-21 — V6 critic callback admission/reset blocker repair
 
@@ -1264,8 +1203,6 @@
   launched. Live stream ordering across reset remains unverified; obstacle-first
   reset delivery safely waits for a later obstacle publication after the new
   prior is present.
-- Handoff:
-  `docs/handoff/V6_CRITIC_STATIC_REVALIDATION_FRESHNESS_20260821.md`.
 
 ## 2026-08-21 — V6 critic V3.10 component-trust contract repair
 
@@ -1293,8 +1230,6 @@
   formal qualification was run. Goal-conditioned direction is still not
   connected to the critic; live status and active-MPPI influence remain
   unverified.
-- Handoff:
-  `docs/handoff/V6_CRITIC_STATIC_REVALIDATION_FRESHNESS_20260821.md`.
 
 ## 2026-08-21 — V6 critic real-timestamp obstacle-independence amendment
 
@@ -1323,8 +1258,6 @@
   MPPI, Nav2, Isaac, navigation, visual evidence, engineering campaign, or
   formal qualification was run. Live callback/status behavior and active-MPPI
   influence remain unverified.
-- Handoff:
-  `docs/handoff/V6_CRITIC_STATIC_REVALIDATION_FRESHNESS_20260821.md`.
 
 ## 2026-08-21 — V6 official stationary fresh runtime
 
@@ -1354,7 +1287,6 @@
   after the observation window.
 - Next: fresh current-HEAD, at-most-180-second, low-speed single-goal active-M3
   pilot; any moving authority gap measured in seconds is **FAIL / STOP**.
-- Handoff: `docs/handoff/V6_OFFICIAL_STATIONARY_FRESH_20260821.md`.
 
 ## 2026-08-21 — V6 critic route-context rebind and applied-truth repair
 
@@ -1381,8 +1313,6 @@
   MPPI, Nav2, Isaac, navigation, visual evidence, engineering campaign, or
   formal qualification was run. `GoalPlanningPrior` remains unconnected; the
   stationary handoff and its bounded conclusion are unchanged.
-- Handoff:
-  `docs/handoff/V6_CRITIC_STATIC_REVALIDATION_FRESHNESS_20260821.md`.
 
 ## 2026-08-22 — V6 IMU regime evidence-contract amendment
 
@@ -1405,7 +1335,6 @@
 - Verdict: **PASS (code/build/unit only)**. No Isaac/ROS/MCAP/motion/goal
   runtime or formal qualification was run; live regime decision remains
   pending.
-- Handoff: `docs/handoff/V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`.
 
 ## 2026-08-22 — V6 deferred structural rebuild after route terminal
 
@@ -1428,7 +1357,6 @@
 - Remaining risk/next: permanently unresolved timed-out futures can accumulate;
   active-reset plus live structural-change behavior remains for the planned
   runtime review.
-- Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
 
 ## 2026-08-22 — V6 IMU single-attempt and stream-gap authority closure
 
@@ -1448,8 +1376,6 @@
 - Verdict: **PASS (code/build/unit only)**. No Isaac, ROS graph, goal MCAP,
   navigation, calibration selection, or formal qualification was run. Live
   closure remains pending; frozen `yaw_scale=0.9294` and RF2O-off unchanged.
-- Handoff:
-  `docs/handoff/V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`.
 
 ## 2026-08-22 — V6 RouteCoordinator HOLD-crossing input fences
 
@@ -1479,7 +1405,6 @@
 - Remaining risk/next: run the planned fresh active-reset live review to verify
   executor/DDS ordering, old-request silence and zero command through HOLD, and
   successful fresh-goal recovery.
-- Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
 
 ## 2026-08-22 — V6 corrected IMU header-stamp authority
 
@@ -1504,8 +1429,6 @@
   navigation, calibration choice, or formal qualification was run. Live
   regime closure remains pending; `yaw_scale=0.9294` and RF2O-off are
   unchanged.
-- Handoff:
-  `docs/handoff/V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`.
 
 ## 2026-08-22 — V6 IMU MCAP file-order authority
 
@@ -1530,8 +1453,6 @@
 - Verdict: **PASS (code/build/unit only)**. No Isaac, ROS graph, navigation,
   live MCAP, calibration choice, or formal qualification was run. Live regime
   closure remains pending; `yaw_scale=0.9294` and RF2O-off are unchanged.
-- Handoff:
-  `docs/handoff/V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`.
 
 ## 2026-08-22 — V6 reset-completion graph-retry authority
 
@@ -1564,7 +1485,6 @@
 - Remaining risk/next: run the planned fresh active-reset live review to verify
   actual executor/DDS ordering, exactly-once GVG compensation, zero old output
   and command during HOLD, and fresh-goal recovery.
-- Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
 
 ## 2026-08-22 — V6 flat20 IMU LiDAR-feature readiness closure
 
@@ -1600,8 +1520,6 @@
   ROS graph, live readiness, stationary, primitive, MCAP, navigation,
   calibration decision, or formal qualification was run. `yaw_scale=0.9294`
   and RF2O-off remain unchanged.
-- Handoff:
-  `docs/handoff/V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`.
 
 ## 2026-08-22 — V6 RouteCoordinator cross-topic late-join reset merge
 
@@ -1636,7 +1554,6 @@
   fresh invocation is the cited result.
 - Verdict: **PASS (code/build/unit only)**. No ROS/Isaac/Nav2/navigation,
   visual evidence, engineering campaign, or formal qualification was run.
-- Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
 
 ## 2026-08-22 — V6 startup reset hint authority/deadline safety
 
@@ -1668,7 +1585,6 @@
 - Verdict: **PASS (code/build/unit only)**. Attempt 3 remains **PENDING**; no
   ROS/Isaac/Nav2/navigation, visual evidence, engineering campaign, or formal
   qualification was run.
-- Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
 
 ## 2026-08-22 — V6 IMU schema-2 capture-boundary amendment
 
@@ -1698,8 +1614,6 @@
 - Verdict: **PASS (code/build/unit only)**. Existing Attempt 3 remains
   FAIL/AMBIGUOUS/no-auth with metrics retained; it was not rerun or modified.
   Attempt 4 remains **PENDING**. No ROS/Isaac/navigation/evidence/formal run.
-- Handoff:
-  `docs/handoff/V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`.
 
 ## 2026-08-22 — V6 active-reset exactly-once probe
 
@@ -1733,7 +1647,6 @@
 - Verdict: **PASS (code/build/unit only)**. No ROS/Isaac/Nav2,
   navigation, reset, evidence collection, engineering campaign, or formal
   qualification was run.
-- Handoff: `docs/handoff/V6_ACTIVE_RESET_PROBE_20260822.md`.
 
 ## 2026-08-22 — V6 active-reset probe final-contract amendment
 
@@ -1742,8 +1655,7 @@
 - Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
   `24136355b632b3b8e9abc30c790ef939e4c9438b`. Final change is the
   ledger-containing commit.
-- Changed: `active_reset_probe.py`, its focused tests, this ledger, and
-  `V6_ACTIVE_RESET_PROBE_20260822.md` only.
+- Changed: `active_reset_probe.py`, its focused tests, and this ledger only.
 - Data contract: the estimated stream is official `/odom`; GT and odometry
   require normalized `map`/`odom` frames respectively. Position, quaternion,
   source stamp, callback time, and all six Twist components are finite or
@@ -1775,7 +1687,6 @@
 - Verdict: **PASS (code/build/unit only)**. Attempt5 remains **PENDING**. No ROS
   graph, Isaac, Nav2, navigation, reset, bag/evidence episode, engineering
   campaign, or formal qualification was run.
-- Handoff: `docs/handoff/V6_ACTIVE_RESET_PROBE_20260822.md`.
 
 ## 2026-08-22 — V6 IMU schema-1 retrospective continuity and schema-2 HOLD tail
 
@@ -1784,8 +1695,8 @@
   schema-2 reset-HOLD gap through the first schedule start.
 - Worktree/branch/start: permitted Module3 `cognitive-navigation` worktree,
   `cc7debb38ad5fcf6676540ff1a828a9aa16f0f6e`.
-- Changed: `imu_regime_analysis.py`, its focused tests, this ledger, and
-  `V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`. No scale/config, reset/route,
+- Changed: `imu_regime_analysis.py`, its focused tests, and this ledger. No
+  scale/config, reset/route,
   MotionBenchmark playback, Integration, or Module2 file changed.
 - Result: schema-1 boundary/gap insufficiency is explicit capture ambiguity
   and never authorizes scale; schema-2 four-stage HOLD-tail leak/dropout is
@@ -1812,8 +1723,7 @@
 - Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
   `8825e606245df83d8bd755e84dff0730c9d11aa1`. Final change is the
   ledger-containing commit.
-- Changed: `active_reset_probe.py`, its focused tests, this ledger, and
-  `V6_ACTIVE_RESET_PROBE_20260822.md` only.
+- Changed: `active_reset_probe.py`, its focused tests, and this ledger only.
 - Contract: exact endpoint-info identities/GIDs/counts at four invariant graph
   checkpoints; exact newer request and epoch/status/reason/edge terminals;
   0.25 s edge/gap and two-sample minimum coverage for HOLD command/collision,
@@ -1838,7 +1748,6 @@
 - Verdict: **PASS (code/build/unit only)**. Attempt5 remains **PENDING**. No ROS
   graph, Isaac, Nav2, navigation, reset, bag/evidence episode, engineering
   campaign, or formal qualification was run.
-- Handoff: `docs/handoff/V6_ACTIVE_RESET_PROBE_20260822.md`.
 
 ## 2026-08-22 — Attempt5 runtime-closure amendment
 
@@ -1875,9 +1784,6 @@
   help checks passed.
 - Verdict: **PASS (code/build/unit only)**. No live runtime was launched;
   Attempt6 remains **PENDING**.
-- Handoffs: `V6_ACTIVE_RESET_PROBE_20260822.md`,
-  `V6_RESET_SEED_STOP_GATE_20260822.md`, and
-  `V6_ROUTE_RESET_RETIREMENT_20260822.md`.
 
 ## 2026-08-22 — Attempt6 coordinator-retirement-fence amendment
 
@@ -1893,8 +1799,8 @@
   recorded one old request-2 progress/lookahead/goal-update triplet about
   0.0076 s after HOLD, the exact abort pair about 0.0089 s after HOLD, and no
   old output after that pair.  Fresh navigation was not exercised.
-- Changed only the active-reset probe, focused tests, this ledger, and
-  `V6_ACTIVE_RESET_PROBE_20260822.md`.  No route, gate, IMU, control,
+- Changed only the active-reset probe, focused tests, and this ledger.  No
+  route, gate, IMU, control,
   Integration, or Module2 implementation changed.
 - Contract: dispatch-to-HOLD remains at most 0.5 s.  HOLD-to-old Bool `false`
   plus exact `aborted/simulation_reset/reset_epoch=2` JSON is at most 0.25 s.
@@ -1911,7 +1817,6 @@
   `/tmp/v6_probe_retirement_final_log.RRYMMs`; installed import and help passed.
 - Verdict: **PASS (code/build/unit only)**.  No ROS/Isaac/Nav2/navigation/reset
   or evidence campaign was run.  Attempt7 remains **PENDING**.
-- Handoff: `docs/handoff/V6_ACTIVE_RESET_PROBE_20260822.md`.
 
 ## 2026-08-22 — Attempt7 reset-owned subscriber GID-rotation amendment
 
@@ -1928,8 +1833,8 @@
   `/_World_Graphs_Control_SubscribeTwist` subscription GID changed from
   `010fa6bfc4c415930100000000000604` to
   `010fa6bfc4c415930100000000001604`; fresh navigation was not exercised.
-- Changed only `active_reset_probe.py`, focused tests, this ledger and
-  `V6_ACTIVE_RESET_PROBE_20260822.md`.  No route, reset-gate, IMU, control,
+- Changed only `active_reset_probe.py`, focused tests, and this ledger.  No
+  route, reset-gate, IMU, control,
   Integration, or Module2 implementation changed.
 - Contract: all semantic endpoints/GIDs are strict through `pre_reset`.
   `post_release`/`pre_fresh` may contain only one exact reset-owned
@@ -1947,7 +1852,6 @@
   `/tmp/v6_probe_gid_rotation_log.pnCbdh`.
 - Verdict: **PASS (code/build/unit only)**.  No live runtime was launched;
   Attempt8 remains **PENDING**.
-- Handoff: `docs/handoff/V6_ACTIVE_RESET_PROBE_20260822.md`.
 
 ## 2026-08-22 — Active-reset late-first GID-rotation checkpoint tightening
 
@@ -1956,8 +1860,8 @@
 - Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
   `41c6a02a90e2e2fa1ff8e1c040f078334388834c`.  Fixed Module3 main remained
   `22d66470c4b903349b2467dc876490bbebfc0083`.
-- Changed only `active_reset_probe.py`, its focused tests, this ledger, and
-  `V6_ACTIVE_RESET_PROBE_20260822.md`; no product, route, reset-gate, control,
+- Changed only `active_reset_probe.py`, its focused tests, and this ledger; no
+  product, route, reset-gate, control,
   obstacle, or IMU implementation changed.
 - Contract: the first reset-owned GID replacement is allowed only at
   `post_release`.  Baseline at `post_release` requires exact baseline at
@@ -1971,7 +1875,6 @@
   `/tmp/v6_probe_gid_checkpoint_clean.CnAEae`.
 - Verdict: **PASS (code/build/unit only)**.  No ROS/Isaac/Nav2/navigation/reset
   or evidence campaign was run.  Attempt8 remains **PENDING**.
-- Handoff: `docs/handoff/V6_ACTIVE_RESET_PROBE_20260822.md`.
 
 ## 2026-08-22 — Attempt8 cross-writer receive-order amendment
 
@@ -1987,8 +1890,8 @@
   recorded HOLD 0.000870 s before Bool and 0.000926 s before the exact abort
   JSON, with no old output at or after HOLD or pair completion.  Fresh route,
   post-release topology and postzero were not tested.
-- Changed only `active_reset_probe.py`, its focused tests, this ledger and
-  `V6_ACTIVE_RESET_PROBE_20260822.md`; no product, route, reset-gate, control,
+- Changed only `active_reset_probe.py`, its focused tests, and this ledger; no
+  product, route, reset-gate, control,
   obstacle, or IMU implementation changed.
 - Contract: HOLD-first and exact-terminal-first are both buffered.  The fence
   exists only after HOLD, Bool `false`, and exact old
@@ -2007,7 +1910,6 @@
   `/tmp/v6_probe_attempt9_log.EOokYP`.
 - Verdict: **PASS (code/build/unit only)**.  No ROS/Isaac/Nav2/navigation/reset
   or evidence campaign was run.  Attempt9 remains **PENDING**.
-- Handoff: `docs/handoff/V6_ACTIVE_RESET_PROBE_20260822.md`.
 
 ## 2026-08-22 — Attempt9 latest-value actuator relay and postzero amendment
 
@@ -2046,8 +1948,6 @@
 - Verdict: **PASS (code/build/unit only)**.  No ROS/Isaac/Nav2/navigation/reset
   or evidence campaign was run.  Attempt10 remains **PENDING** and must use a
   fresh isolated runtime plus finalized bag.
-- Handoffs: `V6_RESET_SEED_STOP_GATE_20260822.md` and
-  `V6_ACTIVE_RESET_PROBE_20260822.md`.
 
 ## 2026-08-22 — Attempt10 pairwise XY-span amendment
 
@@ -2056,8 +1956,8 @@
 - Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
   `932662911beff74b434e54a8f3d5064f6c4e49ca`.  Fixed Module3 main remained
   `22d66470c4b903349b2467dc876490bbebfc0083`.
-- Changed only `active_reset_probe.py`, focused tests, this ledger, and
-  `V6_ACTIVE_RESET_PROBE_20260822.md`.  Position `span_m` is now the exact
+- Changed only `active_reset_probe.py`, focused tests, and this ledger.
+  Position `span_m` is now the exact
   maximum pairwise Euclidean distance in the window.  A `+0.019/-0.019 m`
   oscillation therefore records 0.038 m and STOPs against the 0.02 m bound;
   static and monotonic straight-motion cases retain the expected span.
@@ -2075,7 +1975,6 @@
 - Verdict: **PASS (code/build/unit only)**.  No ROS/Isaac/Nav2/navigation/reset
   or evidence campaign was run.  Attempt10 remains **PENDING** and must use a
   fresh isolated runtime plus finalized bag.
-- Handoff: `docs/handoff/V6_ACTIVE_RESET_PROBE_20260822.md`.
 
 ## 2026-08-22 — Reset simplification work package R (code part R1–R4)
 
@@ -2096,8 +1995,7 @@
   `robot_experiments/test/test_active_reset_probe.py` (deleted),
   `robot_experiments/test/test_v6_formal.py`,
   `robot_experiments/test/test_reset_receipt.py`,
-  `robot_experiments/setup.py`, this ledger, and
-  `V6_RESET_SIMPLIFICATION_20260822.md`.
+  `robot_experiments/setup.py`, and this ledger.
 - R1: readiness now enforces the cold episode boundary — no pre-reset route
   traffic, zero `/cmd_vel`/`/cmd_vel_sim` and bounded odom span in the 1.0 s
   quiet window, sole-publisher ownership; violations fail-stop with explicit
@@ -2130,8 +2028,7 @@
   live reset was run.  R5 (live verification) is pending; watch items:
   warm-stack residual prior/candidate traffic vs the cumulative negative
   window, B5 baseline string equality, 0.10 m odom landing threshold, and
-  the READY detail-string timing note — all listed in the handoff.
-- Handoff: `docs/handoff/V6_RESET_SIMPLIFICATION_20260822.md`.
+  the READY detail-string timing note — all listed in this entry.
 
 ## 2026-08-22 — V6 IMU regime Attempt4: first live schema-2 capture
 
@@ -2180,7 +2077,6 @@
   failed benchmark and an unbound goal attempt. Master decisions pending:
   goal-binding contract vs probe/coordinator behavior, and arc/S tracking
   performance vs thresholds. `yaw_scale=0.9294` and RF2O-off unchanged.
-- Handoff: `docs/handoff/V6_IMU_REGIME_ATTEMPT4_20260822.md`.
 
 ## 2026-08-22 — V6 cold-boundary R5 live validation attempts 1–7 (stopped by user)
 
@@ -2206,8 +2102,6 @@
   line.
 - Evidence: `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_reset_cold_boundary_r5_20260822T095144Z`
   through `..._20260822T115942Z` (7 sessions).
-- Handoff: `docs/handoff/V6_RESET_COLD_BOUNDARY_LIVE_20260822.md` (written by
-  master from NAS evidence and commit history after the R5 agent was stopped).
 
 ## 2026-08-22 — V6 Kujiale low-obstacle layout 6 → 1 (v6_low_box_solo)
 
