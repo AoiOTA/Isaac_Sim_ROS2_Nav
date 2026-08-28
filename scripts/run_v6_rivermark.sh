@@ -139,7 +139,7 @@ exec "${SCRIPT_DIR}/run_ros.sh" navigation \
   imu_calibration_params_file:="${PROJECT_ROOT}/ros2_ws/src/robot_odometry/config/imu_calibration.yaml" \
   lidar_odometry_backend:=off \
   lidar_odometry_validated:=false \
-  nav2_profile:=v6_low_obstacle_isolation \
+  nav2_profile:=stable \
   cognitive_profile:=M0 \
   cognitive_graph_mode:=gvg \
   route_prior_enabled:=false \

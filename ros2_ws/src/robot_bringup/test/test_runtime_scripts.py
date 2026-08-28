@@ -490,7 +490,8 @@ def test_v6_rivermark_ros_argv_is_estimated_occupancy_only_m0_gvg(tmp_path):
     assert any(argument.startswith('imu_calibration_params_file:=')
                and argument.endswith('/robot_odometry/config/imu_calibration.yaml')
                for argument in arguments)
-    assert 'nav2_profile:=v6_low_obstacle_isolation' in arguments
+    assert 'nav2_profile:=stable' in arguments
+    assert 'nav2_profile:=v6_low_obstacle_isolation' not in arguments
     assert 'cognitive_profile:=M0' in arguments
     assert 'cognitive_graph_mode:=gvg' in arguments
     assert 'route_prior_enabled:=false' in arguments

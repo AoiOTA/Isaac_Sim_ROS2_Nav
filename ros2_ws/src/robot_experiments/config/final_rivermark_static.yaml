@@ -7,7 +7,7 @@ scenario:
   posegraph_version: occupancy_only_posegraph_unused
   configs:
     robot: ../../../../isaac_sim/configs/robots/jackal.yaml
-    nav2: ../../robot_navigation/config/nav2_v6_low_obstacle_isolation.yaml
+    nav2: ../../robot_navigation/config/nav2_stable.yaml
     optimal_reference: ../../../../data/rivermark_demo/rivermark_optimal_reference.json
     dynamic_obstacles: ../../../../data/rivermark_demo/final_rivermark_static_obstacles.yaml
   simulation: {physics_dt: 0.016666666666666666, rtf: 1.0}

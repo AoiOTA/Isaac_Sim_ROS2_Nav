@@ -169,8 +169,26 @@ def test_final_rivermark_scenarios_freeze_twenty_physical_matching_runs(filename
     assert scenario.map_version == "rivermark_0_05_v1"
     assert scenario.posegraph_version == "occupancy_only_posegraph_unused"
     assert scenario.nav2_config_file == (
-        "../../robot_navigation/config/nav2_v6_low_obstacle_isolation.yaml"
+        "../../robot_navigation/config/nav2_stable.yaml"
     )
+    assert "v6_low_obstacle_isolation" not in scenario.nav2_config_file
+    base = yaml.safe_load((
+        REPOSITORY_ROOT
+        / "ros2_ws/src/robot_navigation/config/nav2_params.yaml"
+    ).read_text(encoding="utf-8"))
+    stable = yaml.safe_load(
+        scenario.resolve_path(scenario.nav2_config_file).read_text(
+            encoding="utf-8"
+        )
+    )
+    for costmap_name in ("local_costmap", "global_costmap"):
+        base_parameters = base[costmap_name][costmap_name]["ros__parameters"]
+        overlay_parameters = stable.get(costmap_name, {}).get(
+            costmap_name, {}
+        ).get("ros__parameters", {})
+        merged = {**base_parameters, **overlay_parameters}
+        assert "depth_voxel_layer" in merged["plugins"]
+        assert merged["depth_voxel_layer"]["enabled"] is True
     assert len(scenario.run_matrix) == 20
     assert len({
         (row.seed, row.case_id, row.variant_id, row.appearance_profile_id)
