@@ -11,7 +11,7 @@ scenario:
     dynamic_obstacles: ../../../../isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen.yaml
   simulation: {physics_dt: 0.016666666666666666, rtf: 1.0}
   runs:
-    seeds: [8601]
+    seeds: [8601, 8602, 8603, 8604, 8605, 8606, 8607, 8608, 8609, 8610, 8611, 8612, 8613, 8614, 8615, 8616, 8617, 8618, 8619, 8620]
     timeout_sec: 600.0
     leg_timeout_sec: 180.0
   goal: {id: G1, frame_id: map, position: [0.45, -5.35], yaw_deg: 90.0, require_orientation: false}

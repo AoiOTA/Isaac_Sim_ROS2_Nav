@@ -17,6 +17,22 @@ scenario:
       - {seed: 8602, case_id: static, variant_id: v1, appearance_profile_id: dim_cool, condition_id: v6_final_kujiale_appearance}
       - {seed: 8603, case_id: static, variant_id: v1, appearance_profile_id: bright_warm, condition_id: v6_final_kujiale_appearance}
       - {seed: 8604, case_id: static, variant_id: v1, appearance_profile_id: bright_cool, condition_id: v6_final_kujiale_appearance}
+      - {seed: 8605, case_id: static, variant_id: v1, appearance_profile_id: dim_warm, condition_id: v6_final_kujiale_appearance}
+      - {seed: 8606, case_id: static, variant_id: v1, appearance_profile_id: dim_cool, condition_id: v6_final_kujiale_appearance}
+      - {seed: 8607, case_id: static, variant_id: v1, appearance_profile_id: bright_warm, condition_id: v6_final_kujiale_appearance}
+      - {seed: 8608, case_id: static, variant_id: v1, appearance_profile_id: bright_cool, condition_id: v6_final_kujiale_appearance}
+      - {seed: 8609, case_id: static, variant_id: v1, appearance_profile_id: dim_warm, condition_id: v6_final_kujiale_appearance}
+      - {seed: 8610, case_id: static, variant_id: v1, appearance_profile_id: dim_cool, condition_id: v6_final_kujiale_appearance}
+      - {seed: 8611, case_id: static, variant_id: v1, appearance_profile_id: bright_warm, condition_id: v6_final_kujiale_appearance}
+      - {seed: 8612, case_id: static, variant_id: v1, appearance_profile_id: bright_cool, condition_id: v6_final_kujiale_appearance}
+      - {seed: 8613, case_id: static, variant_id: v1, appearance_profile_id: dim_warm, condition_id: v6_final_kujiale_appearance}
+      - {seed: 8614, case_id: static, variant_id: v1, appearance_profile_id: dim_cool, condition_id: v6_final_kujiale_appearance}
+      - {seed: 8615, case_id: static, variant_id: v1, appearance_profile_id: bright_warm, condition_id: v6_final_kujiale_appearance}
+      - {seed: 8616, case_id: static, variant_id: v1, appearance_profile_id: bright_cool, condition_id: v6_final_kujiale_appearance}
+      - {seed: 8617, case_id: static, variant_id: v1, appearance_profile_id: dim_warm, condition_id: v6_final_kujiale_appearance}
+      - {seed: 8618, case_id: static, variant_id: v1, appearance_profile_id: dim_cool, condition_id: v6_final_kujiale_appearance}
+      - {seed: 8619, case_id: static, variant_id: v1, appearance_profile_id: bright_warm, condition_id: v6_final_kujiale_appearance}
+      - {seed: 8620, case_id: static, variant_id: v1, appearance_profile_id: bright_cool, condition_id: v6_final_kujiale_appearance}
     timeout_sec: 600.0
     leg_timeout_sec: 180.0
   goal: {id: G1, frame_id: map, position: [0.45, -5.35], yaw_deg: 90.0, require_orientation: false}

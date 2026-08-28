@@ -17,6 +17,21 @@ scenario:
       - {seed: 8601, case_id: single_dynamic_low_box, variant_id: v3, condition_id: v6_final_kujiale_dynamic}
       - {seed: 8601, case_id: single_dynamic_low_box, variant_id: v4, condition_id: v6_final_kujiale_dynamic}
       - {seed: 8601, case_id: single_dynamic_low_box, variant_id: v5, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8602, case_id: single_dynamic_low_box, variant_id: v1, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8602, case_id: single_dynamic_low_box, variant_id: v2, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8602, case_id: single_dynamic_low_box, variant_id: v3, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8602, case_id: single_dynamic_low_box, variant_id: v4, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8602, case_id: single_dynamic_low_box, variant_id: v5, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8603, case_id: single_dynamic_low_box, variant_id: v1, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8603, case_id: single_dynamic_low_box, variant_id: v2, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8603, case_id: single_dynamic_low_box, variant_id: v3, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8603, case_id: single_dynamic_low_box, variant_id: v4, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8603, case_id: single_dynamic_low_box, variant_id: v5, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8604, case_id: single_dynamic_low_box, variant_id: v1, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8604, case_id: single_dynamic_low_box, variant_id: v2, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8604, case_id: single_dynamic_low_box, variant_id: v3, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8604, case_id: single_dynamic_low_box, variant_id: v4, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8604, case_id: single_dynamic_low_box, variant_id: v5, condition_id: v6_final_kujiale_dynamic}
     timeout_sec: 600.0
     leg_timeout_sec: 180.0
   goal: {id: G1, frame_id: map, position: [0.45, -5.35], yaw_deg: 90.0, require_orientation: false}

@@ -116,6 +116,34 @@ def test_v6_final_kujiale_scenarios_are_canonical_single_obstacle_routes(filenam
     assert tuple(goal.goal_id for goal in scenario.route) == (
         "G2", "G3", "G4", "G5", "G1",
     )
+    assert len(scenario.run_matrix) == 20
+    assert len({
+        (row.seed, row.case_id, row.variant_id, row.appearance_profile_id)
+        for row in scenario.run_matrix
+    }) == 20
+    if category == "static":
+        assert [row.seed for row in scenario.run_matrix] == list(
+            range(8601, 8621)
+        )
+    elif category == "dynamic":
+        assert [row.seed for row in scenario.run_matrix] == [
+            seed for seed in range(8601, 8605) for _ in range(5)
+        ]
+        assert Counter(row.variant_id for row in scenario.run_matrix) == {
+            "v1": 4, "v2": 4, "v3": 4, "v4": 4, "v5": 4,
+        }
+    else:
+        assert [row.seed for row in scenario.run_matrix] == list(
+            range(8601, 8621)
+        )
+        assert Counter(
+            row.appearance_profile_id for row in scenario.run_matrix
+        ) == {
+            "dim_warm": 5,
+            "dim_cool": 5,
+            "bright_warm": 5,
+            "bright_cool": 5,
+        }
     assert (
         len(scenario.obstacles["static"]) + len(scenario.obstacle_trajectories)
     ) == 1
@@ -197,7 +225,10 @@ def test_final_dynamic_scenarios_match_their_physical_actors(filename, spawn_fil
     )
     variants = tuple(row.variant_id for row in scenario.run_matrix)
     if filename.startswith("v6_final_kujiale"):
-        assert variants == ("v1", "v2", "v3", "v4", "v5")
+        assert len(variants) == 20
+        assert Counter(variants) == {
+            "v1": 4, "v2": 4, "v3": 4, "v4": 4, "v5": 4,
+        }
     else:
         assert len(variants) == 20
         assert Counter(variants) == {
@@ -223,9 +254,13 @@ def test_v6_pilot_kujiale_dynamic_hotreset_v1_matches_final_contract():
         (8601, "single_dynamic_low_box", "v1", "dynamic_hotreset_cold"),
         (8601, "single_dynamic_low_box", "v1", "dynamic_hotreset_hot"),
     ]
-    assert tuple(row.variant_id for row in final.run_matrix) == (
-        "v1", "v2", "v3", "v4", "v5",
-    )
+    assert [
+        (row.seed, row.variant_id) for row in final.run_matrix
+    ] == [
+        (seed, variant)
+        for seed in range(8601, 8605)
+        for variant in ("v1", "v2", "v3", "v4", "v5")
+    ]
 
     assert pilot_document["schema_version"] == final_document["schema_version"]
     assert {
@@ -273,9 +308,9 @@ def test_v6_pilot_kujiale_static_hotreset_matches_final_contract():
     assert pilot.scenario_type == "static"
     assert pilot.obstacles["static"] == [{"id": "v6_low_box_solo"}]
     assert pilot.obstacle_trajectories == ()
-    assert [row.seed for row in final.run_matrix] == [8601]
+    assert [row.seed for row in final.run_matrix] == list(range(8601, 8621))
     assert final_document["scenario"]["runs"] == {
-        "seeds": [8601],
+        "seeds": list(range(8601, 8621)),
         "timeout_sec": 600.0,
         "leg_timeout_sec": 180.0,
     }
@@ -327,8 +362,13 @@ def test_v6_final_kujiale_physical_geometry_variants_and_appearance_profiles():
     ]
 
     appearance = load_scenario(CONFIG / "v6_final_kujiale_appearance.yaml")
+    assert [row.seed for row in appearance.run_matrix] == list(
+        range(8601, 8621)
+    )
     assert [row.appearance_profile_id for row in appearance.run_matrix] == [
-        "dim_warm", "dim_cool", "bright_warm", "bright_cool",
+        profile
+        for _ in range(5)
+        for profile in ("dim_warm", "dim_cool", "bright_warm", "bright_cool")
     ]
 
 

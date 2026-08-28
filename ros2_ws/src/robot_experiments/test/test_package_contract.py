@@ -1,4 +1,5 @@
 import ast
+from collections import Counter
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
@@ -251,6 +252,53 @@ def test_source_examples_validate_against_source_schema(filename):
     schema = yaml.safe_load((PACKAGE_ROOT / "config" / "scenario.schema.yaml").read_text())
     instance = yaml.safe_load((PACKAGE_ROOT / "config" / filename).read_text())
     jsonschema.Draft202012Validator(schema).validate(instance)
+
+
+def test_v6_final_kujiale_configs_freeze_twenty_unique_balanced_runs():
+    config_root = PACKAGE_ROOT / "config"
+    schema = yaml.safe_load((config_root / "scenario.schema.yaml").read_text())
+    documents = {
+        category: yaml.safe_load(
+            (config_root / f"v6_final_kujiale_{category}.yaml").read_text()
+        )
+        for category in ("static", "dynamic", "appearance")
+    }
+    for document in documents.values():
+        jsonschema.Draft202012Validator(schema).validate(document)
+
+    static_seeds = documents["static"]["scenario"]["runs"]["seeds"]
+    assert static_seeds == list(range(8601, 8621))
+    assert len(static_seeds) == len(set(static_seeds)) == 20
+
+    dynamic_rows = documents["dynamic"]["scenario"]["runs"]["matrix"]
+    assert len(dynamic_rows) == 20
+    assert len({
+        (row["seed"], row["case_id"], row["variant_id"], row["condition_id"])
+        for row in dynamic_rows
+    }) == 20
+    assert Counter(row["seed"] for row in dynamic_rows) == {
+        seed: 5 for seed in range(8601, 8605)
+    }
+    assert Counter(row["variant_id"] for row in dynamic_rows) == {
+        f"v{variant}": 4 for variant in range(1, 6)
+    }
+
+    appearance_rows = documents["appearance"]["scenario"]["runs"]["matrix"]
+    assert len(appearance_rows) == 20
+    assert len({
+        (
+            row["seed"], row["case_id"], row["variant_id"],
+            row["appearance_profile_id"], row["condition_id"],
+        )
+        for row in appearance_rows
+    }) == 20
+    assert [row["seed"] for row in appearance_rows] == list(range(8601, 8621))
+    assert Counter(row["appearance_profile_id"] for row in appearance_rows) == {
+        "dim_warm": 5,
+        "dim_cool": 5,
+        "bright_warm": 5,
+        "bright_cool": 5,
+    }
 
 
 def test_package_does_not_install_a_second_spawn_pose_truth_source():
