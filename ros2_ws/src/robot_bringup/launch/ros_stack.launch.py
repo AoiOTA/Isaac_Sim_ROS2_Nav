@@ -97,6 +97,18 @@ def _include(package, launch_file, arguments):
     )
 
 
+def _load_localization_spawn(selection, spawn_poses_file, spawn_pose_name):
+    """Load the calibrated map origin required by the Ideal TF owner."""
+    if (selection.operation in {'localization', 'navigation'}
+            and selection.localization_owner == 'ideal'):
+        return load_spawn_pose(
+            spawn_poses_file,
+            spawn_pose_name,
+            require_calibrated=True,
+        )
+    return None
+
+
 def _launch_setup(context):
     initial_pose_source = LaunchConfiguration(
         'initial_pose_source').perform(context).strip().lower()
@@ -128,15 +140,11 @@ def _launch_setup(context):
         route_graph_file=LaunchConfiguration(
             'route_graph_file').perform(context),
     )
-    selected_spawn = None
-    if (selection.operation in {'localization', 'navigation'}
-            and selection.odometry_mode == 'ideal'
-            and initial_pose_source == 'auto'):
-        selected_spawn = load_spawn_pose(
-            spawn_poses_file,
-            LaunchConfiguration('spawn_pose_name').perform(context),
-            require_calibrated=True,
-        )
+    selected_spawn = _load_localization_spawn(
+        selection,
+        spawn_poses_file,
+        LaunchConfiguration('spawn_pose_name').perform(context),
+    )
     use_sim_time = LaunchConfiguration('use_sim_time').perform(context)
     posegraph_calibration_value = LaunchConfiguration(
         'posegraph_calibration').perform(context).strip().lower()

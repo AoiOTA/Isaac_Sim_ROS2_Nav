@@ -227,7 +227,20 @@ def test_localization_requires_existing_occupancy_map(tmp_path):
         )
 
 
-def test_rivermark_occupancy_only_accepts_amcl_without_posegraph(tmp_path):
+@pytest.mark.parametrize(
+    ('odometry_mode', 'localization_owner', 'expected_owner'),
+    (
+        ('mixed', 'auto', 'amcl'),
+        ('mixed', 'amcl', 'amcl'),
+        ('mixed', 'ideal', 'ideal'),
+        ('ideal', 'auto', 'ideal'),
+        ('ideal', 'ideal', 'ideal'),
+        ('estimated', 'auto', 'amcl'),
+        ('realistic', 'amcl', 'amcl'),
+    ),
+)
+def test_occupancy_only_accepts_supported_localization_owner_matrix(
+        tmp_path, odometry_mode, localization_owner, expected_owner):
     occupancy_map = tmp_path / 'rivermark_selected.yaml'
     occupancy_map.write_text('image: rivermark_selected.pgm\n')
     route_graph = tmp_path / 'rivermark_selected.geojson'
@@ -235,12 +248,12 @@ def test_rivermark_occupancy_only_accepts_amcl_without_posegraph(tmp_path):
 
     selection = validate_mode(
         'navigation',
-        'estimated',
+        odometry_mode,
         'isaac',
         posegraph_file='',
         map_file=str(occupancy_map),
         localization_map_contract='occupancy_only',
-        localization_owner='amcl',
+        localization_owner=localization_owner,
         route_graph_file=str(route_graph),
     )
 
@@ -248,7 +261,7 @@ def test_rivermark_occupancy_only_accepts_amcl_without_posegraph(tmp_path):
     assert selection.occupancy_map_file == str(occupancy_map)
     assert selection.route_graph_file == str(route_graph)
     assert selection.localization_map_contract == 'occupancy_only'
-    assert selection.localization_owner == 'amcl'
+    assert selection.localization_owner == expected_owner
     assert selection.map_manifest_file == ''
 
 
@@ -274,11 +287,12 @@ def test_occupancy_only_rejects_missing_assets_and_wrong_owner(tmp_path):
             localization_owner='amcl',
             route_graph_file=str(tmp_path / 'missing.geojson'),
         )
-    with pytest.raises(ValueError, match='requires localization_owner=amcl'):
+    with pytest.raises(ValueError, match='conflicts with odometry_mode'):
         validate_mode(
             'navigation', 'ideal', 'isaac',
             map_file=str(occupancy_map),
             localization_map_contract='occupancy_only',
+            localization_owner='amcl',
             route_graph_file=str(route_graph),
         )
     with pytest.raises(ValueError, match='conflicts with odometry_mode'):
@@ -332,7 +346,7 @@ def test_documented_mode_matrix_has_no_duplicate_tf_owners():
     assert document['localization_map_contracts']['posegraph_bundle'][
         'posegraph_required'] is True
     assert document['localization_map_contracts']['occupancy_only'] == {
-        'localization_owner': 'amcl',
+        'localization_owners': ['amcl', 'ideal'],
         'posegraph_required': False,
         'occupancy_map_required': True,
         'route_graph_required': True,

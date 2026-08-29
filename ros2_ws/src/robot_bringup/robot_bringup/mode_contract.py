@@ -396,19 +396,23 @@ def validate_mode(
             'is reserved for the realistic/standard ROS ownership mode')
 
     localization_operation = operation in {'localization', 'navigation'}
-    expected_localization_owner = (
-        'ideal' if odometry_mode == 'ideal' else 'amcl')
     if localization_operation:
-        resolved_localization_owner = (
-            expected_localization_owner
-            if requested_localization_owner == 'auto'
-            else requested_localization_owner
-        )
-        if resolved_localization_owner != expected_localization_owner:
+        if requested_localization_owner == 'auto':
+            resolved_localization_owner = (
+                'ideal' if odometry_mode == 'ideal' else 'amcl')
+        else:
+            resolved_localization_owner = requested_localization_owner
+        if (odometry_mode == 'ideal'
+                and resolved_localization_owner != 'ideal'):
             raise ValueError(
                 f'localization_owner={resolved_localization_owner} conflicts '
                 f'with odometry_mode={odometry_mode}; expected '
-                f'{expected_localization_owner}')
+                'ideal')
+        if (odometry_mode in {'realistic', 'estimated'}
+                and resolved_localization_owner != 'amcl'):
+            raise ValueError(
+                f'localization_owner={resolved_localization_owner} conflicts '
+                f'with odometry_mode={odometry_mode}; expected amcl')
     else:
         if requested_localization_owner != 'auto':
             raise ValueError(
@@ -421,10 +425,6 @@ def validate_mode(
             raise ValueError(
                 'localization_map_contract=occupancy_only is valid only for '
                 'localization or navigation mode')
-        if resolved_localization_owner != 'amcl':
-            raise ValueError(
-                'localization_map_contract=occupancy_only requires '
-                'localization_owner=amcl')
         if prefix:
             raise ValueError(
                 'posegraph_file must be empty for the occupancy_only '

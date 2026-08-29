@@ -108,10 +108,6 @@ if [[ "${operation}" == "localization" || "${operation}" == "navigation" ]]; the
   if [[ "${localization_map_contract}" == "occupancy_only" ]]; then
     [[ -z "${posegraph_file}" ]] || die \
       "posegraph_file must be empty for localization_map_contract=occupancy_only"
-    [[ "${localization_owner}" != "ideal" ]] || die \
-      "localization_map_contract=occupancy_only requires localization_owner=amcl"
-    [[ "${odometry_mode}" != "ideal" ]] || die \
-      "localization_map_contract=occupancy_only requires AMCL odometry ownership"
     [[ -n "${map_file}" ]] || die \
       "map_file is required for localization_map_contract=occupancy_only"
     [[ -n "${route_graph_file}" ]] || die \

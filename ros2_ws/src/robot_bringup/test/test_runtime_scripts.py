@@ -484,7 +484,7 @@ def test_v6_rivermark_ros_argv_is_full_mixed_m3_gvg_chain(tmp_path):
     assert 'odometry_mode:=mixed' in arguments
     assert 'structure_tf_source:=isaac' in arguments
     assert 'localization_map_contract:=occupancy_only' in arguments
-    assert 'localization_owner:=amcl' in arguments
+    assert 'localization_owner:=ideal' in arguments
     assert 'localization_profile:=rivermark' in arguments
     assert 'ekf_profile:=wheel_imu' in arguments
     assert 'lidar_odometry_backend:=off' in arguments
@@ -1167,3 +1167,7 @@ def test_ros_launcher_defaults_navigation_to_warehouse_new_bundle():
     assert 'mixed mode requires structure_tf_source=isaac' in source
     assert 'mixed mode forbids LiDAR odometry and LiDAR EKF fusion' in source
     assert 'mixed mode fixes ekf_params_file' in source
+    assert ('localization_map_contract=occupancy_only requires '
+            'localization_owner=amcl') not in source
+    assert ('localization_map_contract=occupancy_only requires '
+            'AMCL odometry ownership') not in source

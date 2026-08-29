@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Paired final-runtime entrypoints for the three Rivermark scene classes.
 # Isaac and ROS remain separate processes so a cold stage can be started once
-# and inspected before the estimated-state navigation stack joins the graph.
+# and inspected before the mixed-odometry navigation stack joins the graph.
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -78,7 +78,7 @@ if [[ "${entrypoint}" == "isaac" ]]; then
       --dynamic-obstacle-config|--dynamic-obstacle-config=*|\
       --appearance-config|--appearance-config=*|\
       --appearance-profile|--appearance-profile=*)
-        die "V6 Rivermark fixes the scene/estimated-state contract; rejected override: ${argument}"
+        die "V6 Rivermark fixes the scene/runtime contract; rejected override: ${argument}"
         ;;
     esac
   done
@@ -129,7 +129,7 @@ for argument in "$@"; do
     region_config_file:=*|\
     initial_pose_source:=*|\
     interactive:=*|use_rviz:=*)
-      die "V6 Rivermark fixes the estimated-navigation contract; rejected override: ${argument}"
+      die "V6 Rivermark fixes the navigation contract; rejected override: ${argument}"
       ;;
   esac
 done
@@ -140,7 +140,7 @@ exec "${SCRIPT_DIR}/run_ros.sh" navigation \
   odometry_mode:=mixed \
   structure_tf_source:=isaac \
   localization_map_contract:=occupancy_only \
-  localization_owner:=amcl \
+  localization_owner:=ideal \
   map_file:="${occupancy_map}" \
   route_graph_file:="${route_graph}" \
   localization_profile:=rivermark \
