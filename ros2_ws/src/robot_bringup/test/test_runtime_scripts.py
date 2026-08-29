@@ -25,6 +25,7 @@ RUN_ROS = REPOSITORY_ROOT / 'scripts' / 'run_ros.sh'
 RUN_V6_LOW_OBSTACLES = (
     REPOSITORY_ROOT / 'scripts' / 'run_v6_kujiale_low_obstacles.sh')
 RUN_V6_RIVERMARK = REPOSITORY_ROOT / 'scripts' / 'run_v6_rivermark.sh'
+RUN_RIVERMARK_VISUAL = REPOSITORY_ROOT / 'scripts' / 'run_rivermark_visual.sh'
 SAVE_MAP = REPOSITORY_ROOT / 'scripts' / 'save_map.sh'
 SETUP_ROS_ENV = REPOSITORY_ROOT / 'scripts' / 'setup_ros_env.sh'
 V6_DYNAMIC_STARTUP = (
@@ -661,6 +662,61 @@ def test_v6_rivermark_isaac_argv_covers_three_pilot_scenes(tmp_path):
     assert call_log.read_text(encoding='utf-8').splitlines() == [
         f'import_assets::asset_root={static_root / "explicit assets"}',
     ]
+
+
+@pytest.mark.parametrize(
+    ('scenario_args', 'expected_call'),
+    [
+        (('static',), 'module2 static baseline'),
+        (('dynamic',), 'module2 dynamic baseline'),
+        (('appearance', 'dim_cool'), 'module2 appearance dim_cool'),
+    ],
+)
+def test_attempt31_rivermark_visual_preserves_legacy_demo_defaults(
+        tmp_path, scenario_args, expected_call):
+    scripts = tmp_path / 'scripts'
+    scripts.mkdir()
+    shutil.copy2(RUN_RIVERMARK_VISUAL, scripts / RUN_RIVERMARK_VISUAL.name)
+    fake_demo = scripts / 'run_rivermark_demo.sh'
+    fake_demo.write_text(
+        '''#!/usr/bin/env bash
+printf 'CALL=%s\n' "$*"
+printf 'CONFIG=%s\n' "${RIVERMARK_OBSTACLE_CONFIG-unset}"
+printf 'PHYSICAL=%s\n' "${RIVERMARK_PHYSICAL_OBSTACLES-unset}"
+printf 'CASE=%s\n' "$RIVERMARK_DYNAMIC_CASE"
+printf 'VARIANT=%s\n' "$RIVERMARK_DYNAMIC_VARIANT"
+''',
+        encoding='utf-8',
+    )
+    fake_demo.chmod(0o755)
+
+    result = subprocess.run(
+        [str(scripts / RUN_RIVERMARK_VISUAL.name), *scenario_args],
+        cwd=tmp_path,
+        env=_environment(RIVERMARK_VISUAL_REVISION='attempt31'),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f'CALL={expected_call}' in result.stdout
+    assert 'CONFIG=unset' in result.stdout
+    assert 'PHYSICAL=unset' in result.stdout
+    assert 'CASE=full_route_four_stage' in result.stdout
+    assert 'VARIANT=v3' in result.stdout
+
+    demo_source = (
+        REPOSITORY_ROOT / 'scripts' / 'run_rivermark_demo.sh'
+    ).read_text(encoding='utf-8')
+    assert 'RIVERMARK_OBSTACLE_CONFIG:-${demo_dir}/rivermark_dynamic.yaml' in (
+        demo_source
+    )
+    assert 'physical_obstacles="0"' in demo_source
+    assert '[[ "${scenario}" == "dynamic" ]] && physical_obstacles="1"' in (
+        demo_source
+    )
+    assert 'RIVERMARK_DYNAMIC_CASE:-full_route_four_stage' in demo_source
 
 
 @pytest.mark.parametrize(

@@ -5,15 +5,10 @@ module3_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 integration_root="${BIO_NAV_INTEGRATION_ROOT:-/home/lyb/Workspace/Bio_Nav/worktrees/integration/final-indoor-outdoor-navigation}"
 demo_dir="${RIVERMARK_DEMO_DIR:-${module3_root}/data/rivermark_demo}"
 asset="${RIVERMARK_USD:-/home/lyb/Rivermark/rivermark.usd}"
+obstacle_config="${RIVERMARK_OBSTACLE_CONFIG:-${demo_dir}/rivermark_dynamic.yaml}"
 mode="${1:-off}"
 scenario="${2:-static}"
 appearance_profile="${3:-${RIVERMARK_APPEARANCE_PROFILE:-}}"
-obstacle_config="${RIVERMARK_OBSTACLE_CONFIG:-}"
-if [[ -z "${obstacle_config}" ]]; then
-  obstacle_config="${demo_dir}/final_rivermark_dynamic.yaml"
-  [[ "${scenario}" != "dynamic" ]] && \
-    obstacle_config="${demo_dir}/final_rivermark_static_obstacles.yaml"
-fi
 domain_id="${ROS_DOMAIN_ID:-231}"
 runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bionav-rivermark-${domain_id}"
 auto_goal="${RIVERMARK_AUTO_GOAL:-1}"
@@ -262,7 +257,8 @@ trap 'exit 130' INT TERM
 
 physical_obstacles="${RIVERMARK_PHYSICAL_OBSTACLES:-}"
 if [[ -z "${physical_obstacles}" ]]; then
-  physical_obstacles="1"
+  physical_obstacles="0"
+  [[ "${scenario}" == "dynamic" ]] && physical_obstacles="1"
 fi
 if [[ "${physical_obstacles}" != "0" && "${physical_obstacles}" != "1" ]]; then
   echo "RIVERMARK_PHYSICAL_OBSTACLES must be 0 or 1" >&2
@@ -273,7 +269,7 @@ if [[ "${physical_obstacles}" == "1" ]]; then
   dynamic_args=(--dynamic-obstacles)
 fi
 if [[ "${scenario}" == "dynamic" ]]; then
-  dynamic_case="${RIVERMARK_DYNAMIC_CASE:-crossing}"
+  dynamic_case="${RIVERMARK_DYNAMIC_CASE:-full_route_four_stage}"
   dynamic_variant="${RIVERMARK_DYNAMIC_VARIANT:-v3}"
   dynamic_args=(
     --dynamic-obstacles
