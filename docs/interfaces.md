@@ -11,19 +11,21 @@ historical and do not override this document.
 | `/clock`, sensors, ground truth, scene physics | Isaac Sim | Simulation-time and physical-world source. |
 | `/odom` | Isaac Compute Odometry | Canonical odometry consumed by Nav2 and route execution. |
 | `odom -> base_link` | Isaac Compute Odometry | The only publisher of this dynamic TF in mixed mode. |
-| `/amcl_pose` | AMCL | Global estimated pose observation. |
-| `map -> odom` | AMCL | The only publisher of global-localization TF. |
+| `/amcl_pose` | AMCL, indoor only | Indoor global estimated pose observation; absent from the outdoor runtime. |
+| `map -> odom` | AMCL indoors; `ideal_localization_tf` outdoors | Exactly one scene-selected global-localization TF owner. |
 | `/bio_nav/module1/odom` | wheel + corrected-IMU EKF | Module1 observation topic; `publish_tf=false`. It does not replace `/odom`. |
 | robot structure TF | Isaac Sim | Mixed mode requires `structure_tf_source:=isaac`. |
 
-The active wrappers fix `odometry_mode:=mixed`,
-`localization_map_contract:=occupancy_only`, and `localization_owner:=amcl`.
-LiDAR odometry and LiDAR EKF fusion are off in this substrate. A second
+The active wrappers fix `odometry_mode:=mixed` and
+`localization_map_contract:=occupancy_only`. Kujiale fixes
+`localization_owner:=amcl`; Rivermark fixes `localization_owner:=ideal`, loads
+the calibrated `rivermark_start`, and rejects a mismatched map bundle. LiDAR
+odometry and LiDAR EKF fusion are off in both substrates. A second
 `map -> odom` or `odom -> base_link` publisher is a contract violation.
 
 ## Scene, map, and route identity
 
-The current exact-scene combination is:
+The current indoor exact-scene combination is:
 
 - original USD:
   `/home/lyb/kujiale_usd_rooms_20260717/kujiale_0026/kujiale_0026_A_to_B_door_open.usd`;
@@ -33,16 +35,26 @@ The current exact-scene combination is:
 - GVG:
   `ros2_ws/src/robot_route_planner/config/v6_kujiale_isaacgen_v1_gvg_v1.geojson`.
 
+The current outdoor combination retains:
+
+- frozen USD:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/assets/rivermark_plaza_v6_final_20260829/rivermark.usd`;
+- occupancy map: `data/rivermark_demo/rivermark_selected.yaml`;
+- spawn calibration: `data/rivermark_demo/rivermark.spawn.yaml`;
+- route graph: `data/rivermark_demo/rivermark_selected.geojson`;
+- regions: `data/rivermark_demo/rivermark_regions.yaml`;
+- 30-tile SR/DR catalog:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/assets/rivermark_a_srdr_tile_catalog_v1`.
+
 Module3 owns physical traversability, graph legality, the selected route,
 local avoidance, and final control. Module2 may provide bounded additive
 priors and cognitive-obstacle observations. Missing, stale, invalid, or
 unhealthy Module2 input must not grant traversability, publish TF, or command
 the robot.
 
-Appearance selection is non-geometric: the runner selects a profile and records
-its state, but does not add, remove, or move collision geometry. The historical
-candidate layout used low obstacles for Kujiale appearance and no low obstacle
-for Rivermark appearance; both remain unfrozen for current appearance work.
+Appearance selection does not move collision geometry: the runner selects and
+records a profile while each scene keeps its selected one-low-obstacle physical
+layout.
 
 ## Current data-plane topics
 
@@ -90,15 +102,14 @@ the [experiment ledger](handoff/EXPERIMENT_LEDGER.md) and are not restated here.
 ## Reset contract
 
 Isaac `ResetServiceBridge` is the sole owner of the `/simulation/reset` service
-and reset transaction. Each run has one orchestrating episode caller:
+and reset transaction. Each current Pilot run has one orchestrating caller:
 
 ```text
-Phase B: v6_formal_episode (run_v6_formal_episode.sh) -> ResetServiceBridge (/simulation/reset)
-Phase F: ExperimentRunner                            -> ResetServiceBridge (/simulation/reset)
+Phase F: ExperimentRunner -> ResetServiceBridge (/simulation/reset)
 ```
 
-The two callers are phase-specific alternatives, never concurrent owners in
-one run. The Isaac transaction holds the ResetStopGate, restores the selected
+Historical Phase B has its own alternative caller; it is never concurrent with
+ExperimentRunner in one run. The Isaac transaction holds the ResetStopGate, restores the selected
 spawn and simulation state, invokes required ROS odometry reset hooks, then
 publishes `/simulation/reset_event`. Consumers clear or re-seed their episode
 state from that event; they do not initiate independent resets. The gate status

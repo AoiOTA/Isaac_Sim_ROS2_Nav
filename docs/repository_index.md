@@ -1,7 +1,8 @@
 # Current V6 repository index
 
-This index covers the canonical Kujiale V6 runtime. Dated reports and the
-historical ledger are evidence records, not current execution entrypoints.
+This index covers the canonical indoor Kujiale and outdoor Rivermark V6
+runtimes. Dated reports and the historical ledger are evidence records, not
+current execution entrypoints.
 
 ## Start and operate
 
@@ -16,11 +17,10 @@ historical ledger are evidence records, not current execution entrypoints.
 | `scripts/run_ros.sh` | Single ROS/Nav2 bringup owner and installed-space gate. |
 | `scripts/run_v6_kujiale_low_obstacles.sh` | Phase F condition/profile selector on the Phase B substrate. |
 | `scripts/run_v6_low_obstacle_phase_f_stack.sh` | Phase F owner for Module3 ROS and, for M1-M3, the Integration bridge and Module2 server. |
-| `scripts/run_v6_rivermark.sh` | Rivermark Final selector for `isaac|ros` by `static|dynamic|appearance`; requires an explicit frozen `RIVERMARK_USD` and fixes M0 + GVG + RoutePrior OFF. |
+| `scripts/run_v6_rivermark.sh` | Rivermark selector for `isaac|ros` by `static|dynamic|appearance`; requires frozen `RIVERMARK_USD`, fixes mixed Compute Odometry plus calibrated fixed localization, enables the M3 cognitive chain, and disables DLSS only outdoors. |
 
-The only current environment entry is the paired Integration file
-`../bio_nav_integration/env/v6_pilot_setup.sh` when the three repositories are
-checked out as siblings in the canonical V6 worktree.
+The current environment entry is
+`/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration/env/v6_pilot_setup.sh`.
 
 ## Scene and navigation identity
 
@@ -34,11 +34,16 @@ checked out as siblings in the canonical V6 worktree.
 | `ros2_ws/src/robot_navigation/config/nav2_v6_low_obstacle_isolation.yaml` | Phase F low-obstacle isolation overlay. |
 | `isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen.yaml` | Frozen static low-obstacle condition. |
 | `isaac_sim/configs/experiments/v6_single_dynamic_low_obstacle.yaml` | Single dynamic low-obstacle condition. |
-| `isaac_sim/configs/experiments/kujiale_appearance_profiles.yaml` | Appearance profiles only; the runner selects a profile and records state without changing geometry. Current appearance layout candidates remain unfrozen. |
+| `isaac_sim/configs/experiments/kujiale_appearance_profiles.yaml` | Appearance profiles only; the runner selects and records a profile without changing the selected one-low-obstacle physical layout. |
+| `data/rivermark_demo/rivermark_selected.yaml` | Original retained Rivermark occupancy map. |
+| `data/rivermark_demo/rivermark.spawn.yaml` | Calibrated outdoor fixed `map -> odom` source. |
+| `data/rivermark_demo/rivermark_selected.geojson` | Outdoor route graph. |
+| `data/rivermark_demo/rivermark_regions.yaml` | Outdoor cognitive tile regions. |
 
-Rivermark has no repository-local USD. Pass the frozen external scene through
-`RIVERMARK_USD`; the wrapper requires that exact file to be readable and does
-not infer a historical host-local path.
+Rivermark has no repository-local USD. Pass the frozen NAS scene through
+`RIVERMARK_USD`; the wrapper requires it to be readable and does not infer a
+historical host-local path. Its SR/DR catalog is also a required external NAS
+asset; see `docs/CURRENT_STATE.md` for the exact paths.
 
 ## Core implementation
 
@@ -51,15 +56,15 @@ not infer a historical host-local path.
 | `isaac_sim/src/bridge/tf_ownership.py` | Supported TF publisher ownership. |
 | `ros2_ws/src/robot_bringup/launch/ros_stack.launch.py` | Unified localization/odometry/profile selection. |
 | `ros2_ws/src/robot_bringup/config/modes.yaml` | Dual-state mode and TF ownership declaration. |
-| `ros2_ws/src/robot_mapping/launch/localization.launch.py` | AMCL `map -> odom` owner. |
+| `ros2_ws/src/robot_mapping/launch/localization.launch.py` | Scene-selected AMCL or calibrated ideal `map -> odom` owner. |
 | `ros2_ws/src/robot_route_planner/robot_route_planner/ros_node.py` | GVG routing, runtime edge state, and route publications. |
 | `ros2_ws/src/robot_navigation/launch/navigation.launch.py` | Nav2, smoothing, Collision Monitor, and cognitive consumers. |
 | `ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py` | Episode owner and `/simulation/reset` client. |
 
 ## Evidence and outputs
 
-- Live bags, logs, images, and run results belong under
-  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/`.
+- Live bags, logs, images, and run results belong under the selected fresh
+  `/mnt/nas_home/Bio_Nav_Data/experiments/{pilots,runs}/` root.
 - `docs/handoff/EXPERIMENT_LEDGER.md` retains historical engineering context
   without changing its evidence classification; no V6 micro-handoff files
   remain.

@@ -1,14 +1,14 @@
 # Documentation status
 
-Reviewed for the V6 convergence baseline on 2026-08-28.
+Reviewed for the current V6 handoff on 2026-08-29.
 
 ## Current documents
 
 | Document | Role |
 | --- | --- |
 | [`../README.md`](../README.md) | Current entry links and shortest wrapper commands. |
-| [`CURRENT_STATE.md`](CURRENT_STATE.md) | Repository pins, evidence boundary, and open work. |
-| [`RUNBOOK.md`](RUNBOOK.md) | Clean-shell setup, Phase B/Phase F operation, NAS, and cleanup. |
+| [`CURRENT_STATE.md`](CURRENT_STATE.md) | Module3 runtime boundary and pointer to the authoritative Integration handoff. |
+| [`RUNBOOK.md`](RUNBOOK.md) | Clean-shell setup, current indoor/outdoor operation, NAS, and cleanup. |
 | [`interfaces.md`](interfaces.md) | Current ownership, topics, TF, reset, and control contracts. |
 | [`repository_index.md`](repository_index.md) | Current implementation/config/asset lookup. |
 | [`handoff/EXPERIMENT_LEDGER.md`](handoff/EXPERIMENT_LEDGER.md) | Historical engineering ledger; entries retain their original evidence scope. |
@@ -17,8 +17,8 @@ Reviewed for the V6 convergence baseline on 2026-08-28.
 
 For current behavior, use this order:
 
-1. the pinned Module3/Integration/Module2 commit combination in
-   [`CURRENT_STATE.md`](CURRENT_STATE.md);
+1. the exact Module3/Integration/Module2 runtime tuple in Integration
+   `docs/CURRENT_STATE.md`, referenced by [`CURRENT_STATE.md`](CURRENT_STATE.md);
 2. current wrappers and launch/config implementation;
 3. [`interfaces.md`](interfaces.md) and [`RUNBOOK.md`](RUNBOOK.md);
 4. focused tests and current-run evidence;
@@ -48,7 +48,3 @@ evidence classification. `docs/report_assets/`, `docs/videos/`, and
   or formal qualification.
 - A result from another repository may be linked at its current-state page;
   do not duplicate detailed metrics into Module3.
-
-This convergence amendment retains the experiment ledger while removing all
-V6 micro-handoff files. Report assets, data, scripts, configs, and unrelated
-historical documents are retained.

@@ -1,91 +1,86 @@
 # V6 Module3 runbook
 
-This runbook records the current component topology. It does not authorize a
-live run by itself; use the current experiment plan and a new NAS run root.
+This runbook contains the current component commands. It does not authorize a
+live run. Read `docs/CURRENT_STATE.md` and the authoritative Integration
+`docs/CURRENT_STATE.md` before using it.
 
-## 1. Clean shell and one setup
+## 1. Clean shell and one underlay
 
-Open fresh terminals. In every terminal, ensure `python3` resolves to the system
-interpreter, select the explicit Module2 Conda executable, then source only the
-paired Integration V6 setup. Do not activate Conda, stack old workspace
-installs, or manually edit ROS path variables. Set the same values in every
-terminal:
+Use the same values in every terminal. Source ROS/setup scripts before enabling
+shell nounset.
 
 ```bash
-export V6_DOMAIN=150
+export V6_DOMAIN=<fresh-domain-0-to-232>
 export PATH="/usr/bin:/bin:${PATH}"
 hash -r
 test "$(readlink -f "$(command -v python3)")" = /usr/bin/python3
+
+export BIO_NAV_INTEGRATION_ROOT=/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration
+export BIO_NAV_MODULE3_ROOT=/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3
+export BIO_NAV_MODULE2_ROOT=/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module2
 export BIO_NAV_MODULE2_CONDA_EXE=/home/lyb/miniconda3/bin/conda
-export BIO_NAV_INTEGRATION_ROOT=/home/lyb/Workspace/Bio_Nav/worktrees/cleanup-v6-integration-convergence/bio_nav_integration
-export BIO_NAV_MODULE3_ROOT=/home/lyb/Workspace/Bio_Nav/worktrees/cleanup-v6-module3-convergence/bio_nav_module3
-export BIO_NAV_MODULE2_ROOT=/home/lyb/Workspace/Bio_Nav/worktrees/cleanup-v6-module2-convergence/bio_nav_module2
+
 export BIO_NAV_MODULE2_ASSET_ROOT=/mnt/nas_home/Bio_Nav_Data/experiments/assets/module2_v310_runtime_assets_v6_cleanup_d176498b
 export BIO_NAV_ROUTE_PRIOR_SNAPSHOT=/mnt/nas_home/Bio_Nav_Data/experiments/assets/v6_kujiale_isaacgen_v1_sr_snapshot_d7db461171893953
+export BIO_NAV_ROUTE_PRIOR_CATALOG=/mnt/nas_home/Bio_Nav_Data/experiments/assets/rivermark_a_srdr_tile_catalog_v1
+export RIVERMARK_USD=/mnt/nas_home/Bio_Nav_Data/experiments/assets/rivermark_plaza_v6_final_20260829/rivermark.usd
+
 source "${BIO_NAV_INTEGRATION_ROOT}/env/v6_pilot_setup.sh" "${V6_DOMAIN}"
 cd "${BIO_NAV_MODULE3_ROOT}"
 ```
 
-The compatible checkout must pair the intended Integration, Module3, and
-Module2 runtime. The setup exports the same value as `ROS_DOMAIN_ID`,
-`ISAAC_NAV_EXPECTED_DOMAIN_ID`, `ISAAC_NAV__ROS2__DOMAIN_ID`,
-`BIO_NAV_PHASE_B_DOMAIN_ID`, and `BIO_NAV_PHASE_F_DOMAIN_ID`; do not override
-any of those variables per terminal.
-
-Before a data-producing run, choose one unique `V6_DOMAIN` and one new NAS root:
+Before a data-producing attempt, select an absent NAS root and a short absent
+socket path:
 
 ```bash
-export BIO_NAV_RUN_ROOT=/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_<run_id>
-export BIO_NAV_PHASE_F_SOCKET=/tmp/bio_nav_phase_f_${UID}_${V6_DOMAIN}.sock
+export BIO_NAV_RUN_ROOT=/mnt/nas_home/Bio_Nav_Data/experiments/pilots/<new-run-id>
+export BIO_NAV_PHASE_F_SOCKET=/tmp/bio_nav_v6_${UID}_${V6_DOMAIN}.sock
+test ! -e "${BIO_NAV_RUN_ROOT}"
+test ! -e "${BIO_NAV_PHASE_F_SOCKET}"
 ```
 
-`BIO_NAV_RUN_ROOT` must not already contain another run. If NAS is unavailable,
-stop; do not redirect bags or experiment data into the repository or `/tmp`.
+Stop if NAS is unavailable. Do not redirect bags into the repository or `/tmp`.
 
-## 2. Phase B exact-scene baseline
+## 2. Provenance and idle checks
 
-The wrapper fixes the original USD, `v6_kujiale_isaacgen_v1` occupancy/spawn/GVG,
-mixed odometry, AMCL ownership, `stable` Nav2, and M0/GVG routing. Validate the
-manifest without launching a runtime:
+Require all three repositories to be on `v6-compute-amcl-dual-odom`, tracked
+clean, and `0/0` relative to upstream. Check live `ls-remote`, not only the
+cached remote-tracking ref.
+
+Source the environment above and verify:
 
 ```bash
-./scripts/run_v6_r5_phase_b_kujiale.sh \
-  --run-root "${BIO_NAV_RUN_ROOT}" --domain "${V6_DOMAIN}" manifest
+ros2 pkg prefix bio_nav_interfaces
+ros2 pkg prefix bio_nav_ros_bridge
+ros2 pkg prefix robot_experiments
+python3 - <<'PY'
+import robot_experiments.experiment_runner as runner
+print(runner.__file__)
+PY
 ```
 
-Start components in the order printed by the wrapper:
+The first two paths must resolve under the canonical Integration worktree; the
+last two must resolve under canonical Module3. No product owner or GPU compute
+process may already be running.
 
-```bash
-./scripts/run_v6_r5_phase_b_kujiale.sh --run-root "${BIO_NAV_RUN_ROOT}" --domain "${V6_DOMAIN}" ros
-./scripts/run_v6_r5_phase_b_kujiale.sh --run-root "${BIO_NAV_RUN_ROOT}" --domain "${V6_DOMAIN}" isaac
-./scripts/run_v6_r5_phase_b_kujiale.sh --run-root "${BIO_NAV_RUN_ROOT}" --domain "${V6_DOMAIN}" module1-shadow
-./scripts/run_v6_r5_phase_b_kujiale.sh --run-root "${BIO_NAV_RUN_ROOT}" --domain "${V6_DOMAIN}" bridge
-./scripts/run_v6_r5_phase_b_kujiale.sh --run-root "${BIO_NAV_RUN_ROOT}" --domain "${V6_DOMAIN}" record
-./scripts/run_v6_r5_phase_b_kujiale.sh --run-root "${BIO_NAV_RUN_ROOT}" --domain "${V6_DOMAIN}" runner
-```
+## 3. Startup ordering
 
-Each command owns its terminal. The ROS component starts before Isaac because
-Isaac waits for the required ROS reset service. Start the runner last, after
-the observable readiness conditions are satisfied.
+T1 must start before T2. Isaac performs a startup reset that calls ROS
+`/wheel_odometry/reset` and EKF `/set_pose`; T2-first therefore fails by
+design. T3 always starts last, after observable readiness.
 
-## 3. Current three-terminal Pilot composition
+Rivermark uses a 240 s fail-closed activation timeout because cold USD/RTX
+startup has exceeded 120 s. This is an upper bound, not a fixed sleep, and does
+not relax any readiness predicate.
 
-The current Integration semantics are fixed: T1 owns the stack, T2 owns Isaac,
-and T3 owns the runner. This is the present adapter, not a reason to add another
-runner.
+## 4. Indoor M3 stack
 
-The example below uses the static M3 arm with the frozen RoutePrior snapshot.
-Select another authorized condition or arm only through the current experiment
-plan.
-
-Terminal T1 owns Module3 ROS, the Module2 server, and the Integration bridge.
-Start from a clean shell and run the Section 1 setup with the shared
-`V6_DOMAIN` before this command:
+Terminal T1:
 
 ```bash
 ./scripts/run_v6_low_obstacle_phase_f_stack.sh M3 \
   --domain "${V6_DOMAIN}" \
-  --run-dir "${BIO_NAV_RUN_ROOT}/stack/m3" \
+  --run-dir "${BIO_NAV_RUN_ROOT}/runtime" \
   --socket "${BIO_NAV_PHASE_F_SOCKET}" \
   --module2-root "${BIO_NAV_MODULE2_ROOT}" \
   --module2-asset-root "${BIO_NAV_MODULE2_ASSET_ROOT}" \
@@ -93,88 +88,94 @@ Start from a clean shell and run the Section 1 setup with the shared
   --route-prior-snapshot "${BIO_NAV_ROUTE_PRIOR_SNAPSHOT}"
 ```
 
-Terminal T2 owns Isaac. Start it from another clean shell after the same setup
-and after T1 reports the required pre-Isaac reset service ready:
+Terminal T2, after the ROS reset services exist:
 
 ```bash
 ./scripts/run_v6_kujiale_low_obstacles.sh --condition static isaac
 ```
 
-Terminal T3 owns `ExperimentRunner` and its evidence output. Start from a third
-clean shell, run the same Section 1 setup, wait for T1 and T2 readiness, and use
-the selected static or dynamic config. The current Pilot invocation includes
-the observed hot-reset tolerance explicitly:
+Indoor keeps mixed Compute Odometry plus AMCL.
+
+## 5. Outdoor Rivermark startup discriminator
+
+At the current handoff, run only this startup discriminator. Do not start T3.
+
+Terminal T1:
+
+```bash
+./scripts/run_v6_low_obstacle_phase_f_stack.sh M3 \
+  --domain "${V6_DOMAIN}" \
+  --run-dir "${BIO_NAV_RUN_ROOT}/runtime" \
+  --socket "${BIO_NAV_PHASE_F_SOCKET}" \
+  --scene rivermark \
+  --condition static \
+  --module2-root "${BIO_NAV_MODULE2_ROOT}" \
+  --module2-asset-root "${BIO_NAV_MODULE2_ASSET_ROOT}" \
+  --route-prior-catalog-root "${BIO_NAV_ROUTE_PRIOR_CATALOG}"
+```
+
+Terminal T2, after the ROS reset services exist:
+
+```bash
+./scripts/run_v6_rivermark.sh isaac static --headless
+```
+
+The wrapper fixes the original map/route/regions, mixed Compute Odometry,
+calibrated fixed `map -> odom`, Module2/GVG/RoutePrior M3 chain, RGB-D profile,
+and Rivermark-only DLSS disable. Caller overrides are rejected.
+
+The startup discriminator passes only when Isaac and Nav2 are READY, no DLSS
+internal-upscale warning or GPU page fault/device-lost occurs, and live RGB,
+depth, CameraInfo, scan, odom, GT, fixed TF, Module2, and catalog identities are
+current. Hold a bounded stability window, then stop without an episode.
+
+## 6. Outdoor static runner after startup PASS
+
+Only after Section 5 passes on a separate fresh root may Terminal T3 run:
 
 ```bash
 ./scripts/run_experiment.sh \
-  ros2_ws/src/robot_experiments/config/v6_pilot_kujiale_static_hotreset.yaml \
-  "${BIO_NAV_RUN_ROOT}/runner" \
+  ros2_ws/src/robot_experiments/config/final_rivermark_static.yaml \
+  "${BIO_NAV_RUN_ROOT}/rep1" \
   nav2_profile:=v6_low_obstacle_isolation \
   nav2_config_file:="${BIO_NAV_MODULE3_ROOT}/ros2_ws/src/robot_navigation/config/nav2_v6_low_obstacle_isolation.yaml" \
   navigation_execution_backend:=route_guided \
-  record_evidence:=true record_bag:=true \
+  require_module2_planning_ready:=true \
+  record_evidence:=true \
+  record_bag:=true \
   clear_slam_localization_buffer:=false \
   reset_map_base_translation_tolerance_m:=0.15 \
-  run_indices:=1 resume:=false
+  run_indices:=1 \
+  resume:=false
 ```
 
-The selected wrapper fixes `nav2_profile:=v6_low_obstacle_isolation`. Do not
-override the Phase B map, spawn, GVG, localization owner, or mixed-odometry
-substrate from these commands.
+Omit `experiment_arm`; the Phase-F stack already owns the M3 arm. For the
+sufficient static Pilot, repeat index 1 in fresh `rep1`, `rep2`, and `rep3`
+outputs on one stack, stopping after the first valid product failure or invalid
+episode.
 
-## 4. Independent current RViz view
+## 7. Readiness essentials
 
-From another clean shell, use the same setup and `V6_DOMAIN` as the active
-stack, then start the existing navigation view independently:
+- exactly one `/odom` publisher and one `odom -> base_link` owner;
+- indoor: AMCL alone owns `map -> odom`;
+- outdoor: AMCL absent and `ideal_localization_tf` alone owns `map -> odom`;
+- `/bio_nav/module1/odom` fresh with no Module1 TF;
+- all required Nav2 lifecycle nodes active;
+- ResetStopGate released for the current generation before dispatch;
+- Module2 socket/READY/current 0.10 m depth config;
+- current RoutePrior snapshot or Rivermark tile catalog;
+- cognitive obstacle layer and critic active; raw depth voxel plugin absent;
+- exactly the selected one-low-obstacle scene contract.
 
-```bash
-./scripts/run_rviz.sh navigation
-```
+Topic names alone are insufficient; inspect fresh messages, QoS, timestamps,
+TF values, and actual process/package provenance.
 
-This display is optional and may be closed without stopping the run. It is not
-a readiness condition and must not be used to publish a goal or initial pose.
+## 8. Owned shutdown
 
-## 5. Rivermark Final runtime boundary
+Stop in reverse dispatch order: T3, T2, then T1. Signal only process groups
+created by the current run. Stop the current domain daemon if owned, remove only
+the current socket/runtime directory, and verify product processes, GPU compute
+apps, and owned locks are gone. Never use global `pkill`.
 
-`scripts/run_v6_rivermark.sh` exposes `isaac|ros` for each of `static`,
-`dynamic`, and `appearance`. Set `RIVERMARK_USD` to the readable, frozen USD
-before either half is started; there is no host-local fallback. The ROS half is
-fixed to the M0 + GVG + RoutePrior-OFF arm. Static uses the four-box layout,
-dynamic uses the four-stage route interaction, and appearance changes only the
-selected appearance profile. These selectors are configured but have not yet
-been live-validated on the current heads.
-
-## 6. Reset and episode boundary
-
-Isaac `ResetServiceBridge` owns the `/simulation/reset` service and its reset
-transaction. Phase B has one orchestrating episode caller, `v6_formal_episode`,
-invoked through `run_v6_formal_episode.sh`; Phase F has one orchestrating caller,
-`ExperimentRunner`. A run must use exactly one of those callers. The Isaac
-transaction holds motion, restores the scene/spawn, runs required ROS reset
-hooks, and emits the reset event. Do not call component reset services
-independently during an owned episode and do not treat a process restart as a
-reset receipt.
-
-## 7. Owned shutdown
-
-For the Phase F three-terminal composition, stop in reverse dispatch order:
-
-1. T3: stop `ExperimentRunner` and allow its current output to close.
-2. T2: stop Isaac after the runner has closed.
-3. T1: stop the stack owner; it stops only its registered Module3,
-   Integration, and Module2 process groups and removes its exact socket.
-
-For the Phase B component layout, stop `runner`, `record`, `bridge`,
-`module1-shadow`, `isaac`, then `ros`. Allow the recorder to close its bag before
-the run root is evaluated.
-
-Do not use global `pkill`, delete a socket with a live listener, or clean another
-run's PID/runtime directory. If a wrapper reports that an owned child remains,
-preserve the logs and diagnose that exact process identity.
-
-## 8. Evidence boundary
-
-Keep logs, bags, JSONL, images, and evaluator results inside the new NAS run
-root. A successful startup, a focused test, or a historical campaign is not a
-current live result. Record the three commit pins, domain, scene/condition,
-arm, and output path with every engineering run.
+Preserve NAS logs and bags for any failure or invalid attempt. Record invalid
+operator/startup runs separately and do not count them as Pilot episodes.

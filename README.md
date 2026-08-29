@@ -1,64 +1,42 @@
 # Bio_Nav Module3
 
-Module3 owns the V6 physical navigation chain: Isaac Sim scene and sensors,
-occupancy map, TF, GVG Route Server, Nav2, collision monitoring, and the final
-velocity path to the simulated robot. The current line is the Kujiale V6
-compute-odometry + AMCL dual-state stack. Rivermark and earlier campaigns remain
-historical material; they are not the current runtime baseline.
+Module3 owns the V6 physical navigation chain: Isaac Sim scenes and sensors,
+map/TF ownership, GVG routing, Nav2, collision monitoring, and the final
+velocity path to the simulated robot.
 
 ## Start here
 
-- [Current state](docs/CURRENT_STATE.md): current implementation boundary,
-  Pilot index, evidence boundary, and open work.
-- [Runbook](docs/RUNBOOK.md): clean-shell setup, current Phase B and Phase F
-  commands, NAS output, and owned shutdown order.
-- [Runtime interfaces](docs/interfaces.md): current topic, TF, reset, and control
+- [Current state](docs/CURRENT_STATE.md): current runtime boundary, evidence
+  level, GPU blocker, and exact resume point.
+- [Runbook](docs/RUNBOOK.md): clean-shell environment, indoor/outdoor component
+  commands, startup ordering, and owned cleanup.
+- [Runtime interfaces](docs/interfaces.md): topic, TF, reset, and control
   ownership.
-- [Repository index](docs/repository_index.md): current wrappers, assets,
-  configs, and implementation locations.
+- [Repository index](docs/repository_index.md): implementation and asset index.
 
-## Current implementation boundary
+The authoritative cross-repository handoff is Integration
+`docs/CURRENT_STATE.md` on branch `v6-compute-amcl-dual-odom`.
 
-| Repository | Commit |
-| --- | --- |
-| Integration | `ea157871` |
-| Module3 | `ec3c8326` |
-| Module2 | `a6b1b216` |
-
-`ec3c8326` is the Module3 implementation/runtime head validated by the current
-cleanup Pilot; this documentation commit is its descendant. The authoritative
-final three-repository tuple and detailed experiment ledger live in
-Integration `docs/CURRENT_STATE.md` and `docs/handoff/EXPERIMENT_LEDGER.md`.
-
-Use the paired cleanup worktrees and one environment source:
+## Canonical worktrees
 
 ```bash
-export BIO_NAV_INTEGRATION_ROOT=/home/lyb/Workspace/Bio_Nav/worktrees/cleanup-v6-integration-convergence/bio_nav_integration
-export BIO_NAV_MODULE3_ROOT=/home/lyb/Workspace/Bio_Nav/worktrees/cleanup-v6-module3-convergence/bio_nav_module3
-source "${BIO_NAV_INTEGRATION_ROOT}/env/v6_pilot_setup.sh" "${ROS_DOMAIN_ID}"
-cd "${BIO_NAV_MODULE3_ROOT}"
+export BIO_NAV_INTEGRATION_ROOT=/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration
+export BIO_NAV_MODULE3_ROOT=/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3
+export BIO_NAV_MODULE2_ROOT=/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module2
 ```
 
-The Phase B exact-scene baseline is selected through the wrapper; do not bypass
-it with hand-written launch arguments:
+Do not substitute similarly named cleanup, Attempt, or historical worktrees.
+Use a fresh ROS domain, short socket, and absent NAS output root for every live
+attempt. Generated data belongs on NAS, not in Git.
 
-```bash
-./scripts/run_v6_r5_phase_b_kujiale.sh manifest
-./scripts/run_v6_r5_phase_b_kujiale.sh --domain "${ROS_DOMAIN_ID}" ros
-./scripts/run_v6_r5_phase_b_kujiale.sh --domain "${ROS_DOMAIN_ID}" isaac
-```
+## Current scene split
 
-The current Pilot composition keeps the same scene/localization substrate and
-selects the frozen low-obstacle/Nav2 isolation entrypoints:
+- Indoor: mixed Compute Odometry plus AMCL localization.
+- Outdoor: mixed Compute Odometry plus calibrated fixed `map -> odom`; AMCL is
+  not started and the original Rivermark map remains active.
+- Both: Module1 wheel+IMU odometry without TF, Module2 obstacle output, GVG,
+  SR/DR RoutePrior, cognitive obstacle layers, and risk critic in the M3 arm.
 
-```bash
-./scripts/run_v6_kujiale_low_obstacles.sh --condition static isaac
-./scripts/run_v6_low_obstacle_phase_f_stack.sh M0 --domain 150 \
-  --run-dir /mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_example/stack/m0 \
-  --socket /tmp/bio_nav_phase_f_example.sock --dry-run
-```
-
-These are component commands, not a one-terminal campaign. Follow
-[the runbook](docs/RUNBOOK.md) for terminal ownership and cleanup. Store live
-outputs under `/mnt/nas_home/Bio_Nav_Data/experiments/runs/`; do not silently
-substitute a local data root when NAS is unavailable.
+At the current stop boundary, the Rivermark-only DLSS-disabled startup is an
+unlive candidate. Read [Current state](docs/CURRENT_STATE.md) before launching
+anything.
