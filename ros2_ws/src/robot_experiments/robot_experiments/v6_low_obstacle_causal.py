@@ -377,7 +377,7 @@ def load_manifest(path: str | Path) -> CausalManifest:
     identity = _mapping(raw.get("identity"), "identity")
     fixed_identity = {
         "scene_id": "v6_kujiale_low_obstacles_static",
-        "obstacle_layout_id": "kujiale_v6_low_obstacles_phase_f_r2_20260826",
+        "obstacle_layout_id": "kujiale_v6_low_obstacles_indoor_feasible_r3_20260829",
         "scene_contract_frozen": True,
         "seed": 8601,
         "ros_domain_id": 150,
@@ -2267,7 +2267,7 @@ def dispatch_episode(
     dynamic_group = str(manifest.identity.get("trigger_group", ""))
     dynamic_case_id = str(manifest.identity.get("dynamic_case_id", "static"))
     dynamic_variant_id = str(
-        manifest.identity.get("dynamic_variant_id", "v6_phase_f_r2")
+        manifest.identity.get("dynamic_variant_id", "v6_phase_f_r3")
     )
     if dynamic_actors_enabled and not dynamic_group:
         raise CausalContractError("dynamic experiment requires identity.trigger_group")

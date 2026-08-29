@@ -73,9 +73,9 @@ def test_v6_low_obstacle_scenario_selects_only_the_frozen_layout():
         "v6_kujiale_low_obstacles_frozen.yaml"
     )
     assert scenario.obstacles["layout_id"] == (
-        "kujiale_v6_low_obstacles_phase_f_r2_20260826"
+        "kujiale_v6_low_obstacles_indoor_feasible_r3_20260829"
     )
-    assert scenario.run_matrix[0].variant_id == "v6_phase_f_r2"
+    assert scenario.run_matrix[0].variant_id == "v6_phase_f_r3"
     assert scenario.goal.require_orientation is False
     assert tuple(goal.goal_id for goal in scenario.route) == (
         "G2", "G3", "G4", "G5", "G1",
@@ -99,7 +99,7 @@ def test_v6_low_obstacle_scenario_selects_only_the_frozen_layout():
     assert frozen["obstacles"] == [{
         "id": "v6_low_box_solo", "mode": "stationary", "trigger_group": None,
         "size": [0.30, 0.30, 0.16], "mass": 5.0,
-        "start": [-0.45, -0.35, 0.08], "end": [-0.45, -0.35, 0.08],
+        "start": [-0.75, -0.35, 0.08], "end": [-0.75, -0.35, 0.08],
         "speed": 0.0, "delay_sec": 0.0, "jitter_sec": 0.0,
         "post_motion": "hold",
     }]
@@ -371,7 +371,7 @@ def test_v6_final_kujiale_physical_geometry_variants_and_appearance_profiles():
     ).read_text(encoding="utf-8"))
     assert len(static["obstacles"]) == 1
     assert static["obstacles"][0]["id"] == "v6_low_box_solo"
-    assert static["obstacles"][0]["start"] == [-0.45, -0.35, 0.08]
+    assert static["obstacles"][0]["start"] == [-0.75, -0.35, 0.08]
     assert static["obstacles"][0]["size"] == [0.30, 0.30, 0.16]
 
     dynamic = yaml.safe_load((

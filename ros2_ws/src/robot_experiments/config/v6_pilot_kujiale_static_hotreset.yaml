@@ -25,6 +25,6 @@ scenario:
     - {id: G1, frame_id: map, position: [0.45, -5.35], yaw_deg: 90.0, require_orientation: false}
   success: {position_tolerance_m: 0.25, orientation_tolerance_deg: 10.0, final_linear_speed_mps: 0.02, final_angular_speed_radps: 0.05, final_still_duration_sec: 1.0, final_still_timeout_sec: 20.0, require_safety_observations: true, minimum_ground_truth_path_length_m: 20.0}
   obstacles:
-    layout_id: kujiale_v6_low_obstacles_phase_f_r2_20260826
+    layout_id: kujiale_v6_low_obstacles_indoor_feasible_r3_20260829
     static: [{id: v6_low_box_solo}]
     trajectories: []

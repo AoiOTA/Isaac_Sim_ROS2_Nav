@@ -78,7 +78,7 @@ variants:
       config: module3://isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen.yaml
       id: v6_low_box_solo
       mode: stationary
-      position_m: [-0.45, -0.35, 0.08]
+      position_m: [-0.75, -0.35, 0.08]
       size_m: [0.30, 0.30, 0.16]
     fault_pose: {x: -2.20, y: -2.95, yaw_deg: -42.0,
                  xy_variance_m2: 0.04, yaw_variance_rad2: 0.030461742}

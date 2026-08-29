@@ -467,7 +467,7 @@ def load_config(
         ),
         "id": "v6_low_box_solo",
         "mode": "stationary",
-        "position_m": [-0.45, -0.35, 0.08],
+        "position_m": [-0.75, -0.35, 0.08],
         "size_m": [0.30, 0.30, 0.16],
     }
     if dict(obstacle_asset) != expected_obstacle_asset:

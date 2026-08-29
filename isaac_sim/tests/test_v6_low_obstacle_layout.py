@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 import math
 from pathlib import Path
 
@@ -19,6 +20,7 @@ RUNNER_SCENARIO = (
     ROOT
     / "ros2_ws/src/robot_experiments/config/v6_kujiale_low_obstacles_static.yaml"
 )
+NAV2_CONFIG = ROOT / "ros2_ws/src/robot_navigation/config/nav2_params.yaml"
 
 
 def _manifest():
@@ -62,6 +64,101 @@ def _rectangle_is_free(metadata, image, position, size):
         for x in xs
         for y in ys
     )
+
+
+def _rectangle_wall_clearance(metadata, image, position, size):
+    resolution = float(metadata["resolution"])
+    origin_x, origin_y, _ = metadata["origin"]
+    height, _ = image.shape
+    left, right = position[0] - size[0] / 2.0, position[0] + size[0] / 2.0
+    bottom, top = position[1] - size[1] / 2.0, position[1] + size[1] / 2.0
+    clearance = math.inf
+    for row, column in np.argwhere(image < 250):
+        cell_left = origin_x + column * resolution
+        cell_right = cell_left + resolution
+        cell_bottom = origin_y + (height - row - 1) * resolution
+        cell_top = cell_bottom + resolution
+        dx = max(cell_left - right, left - cell_right, 0.0)
+        dy = max(cell_bottom - top, bottom - cell_top, 0.0)
+        clearance = min(clearance, math.hypot(dx, dy))
+    return clearance
+
+
+def _world_to_cell(metadata, image, point):
+    origin_x, origin_y, _ = metadata["origin"]
+    resolution = float(metadata["resolution"])
+    height, width = image.shape
+    column = int((point[0] - origin_x) / resolution)
+    row = height - 1 - int((point[1] - origin_y) / resolution)
+    assert 0 <= column < width and 0 <= row < height
+    return row, column
+
+
+def _bfs_passable_grid(metadata, image, position, size, clearance):
+    resolution = float(metadata["resolution"])
+    origin_x, origin_y, _ = metadata["origin"]
+    height, width = image.shape
+    blocked = image < 250
+    half_x, half_y = size[0] / 2.0, size[1] / 2.0
+    for row in range(height):
+        y = origin_y + (height - row - 0.5) * resolution
+        for column in range(width):
+            x = origin_x + (column + 0.5) * resolution
+            if abs(x - position[0]) <= half_x + resolution / 2.0 and \
+                    abs(y - position[1]) <= half_y + resolution / 2.0:
+                blocked[row, column] = True
+
+    inflated = blocked.copy()
+    cells = int(math.ceil(clearance / resolution))
+    for row_delta in range(-cells, cells + 1):
+        for column_delta in range(-cells, cells + 1):
+            if math.hypot(row_delta, column_delta) * resolution > clearance:
+                continue
+            target_rows = slice(max(0, row_delta), min(height, height + row_delta))
+            target_columns = slice(
+                max(0, column_delta), min(width, width + column_delta)
+            )
+            source_rows = slice(
+                max(0, -row_delta), min(height, height - row_delta)
+            )
+            source_columns = slice(
+                max(0, -column_delta), min(width, width - column_delta)
+            )
+            inflated[target_rows, target_columns] |= blocked[
+                source_rows, source_columns
+            ]
+    return ~inflated
+
+
+def _bfs_connected(metadata, passable, start, goal):
+    height, width = passable.shape
+    start_cell = _world_to_cell(metadata, passable, start)
+    goal_cell = _world_to_cell(metadata, passable, goal)
+    if not passable[start_cell] or not passable[goal_cell]:
+        return False
+    frontier = deque([start_cell])
+    reached = {start_cell}
+    while frontier:
+        row, column = frontier.popleft()
+        if (row, column) == goal_cell:
+            return True
+        for row_delta, column_delta in (
+            (-1, 0), (1, 0), (0, -1), (0, 1),
+            (-1, -1), (-1, 1), (1, -1), (1, 1),
+        ):
+            candidate = row + row_delta, column + column_delta
+            if not (0 <= candidate[0] < height and 0 <= candidate[1] < width):
+                continue
+            if candidate in reached or not passable[candidate]:
+                continue
+            if row_delta and column_delta and (
+                not passable[row + row_delta, column]
+                or not passable[row, column + column_delta]
+            ):
+                continue
+            reached.add(candidate)
+            frontier.append(candidate)
+    return False
 
 
 def _open_side_clearance(metadata, image, position, size, axis, direction):
@@ -134,8 +231,11 @@ def test_v6_layout_identity_is_frozen_and_separate_from_the_source_usd():
     manifest = _manifest()
     assert manifest["status"] == "frozen"
     assert "draft" not in manifest["layout_id"]
-    assert manifest["revision"] == 2
-    assert manifest["frozen_date"] == "2026-08-26"
+    assert manifest["layout_id"] == \
+        "kujiale_v6_low_obstacles_indoor_feasible_r3_20260829"
+    assert manifest["revision"] == 3
+    assert manifest["frozen_date"] == "2026-08-29"
+    assert manifest["live_validation_pending"] is True
     assert manifest["source_usd_mutated"] is False
     assert manifest["source_usd"] == "kujiale_0026_A_to_B_door_open.usd"
     assert manifest["activation_profile"] == "v6-low-obstacles"
@@ -183,44 +283,58 @@ def test_v6_obstacle_is_on_free_map_with_open_bypass():
             for direction in (-1, 1)
         ]
         assert max(clearances) >= geometry["minimum_open_bypass_side_m"]
+        assert _rectangle_wall_clearance(
+            metadata, image, obstacle.start, obstacle.size
+        ) >= geometry["nav2_inflation_radius_m"]
 
 
-def test_v6_layout_challenges_g1_g2_and_keeps_measured_east_bypass():
+def test_v6_layout_candidate_keeps_g1_g2_and_g2_g3_connected_with_padding():
     scenario = load_dynamic_scenario(OBSTACLE_CONFIG)
     manifest = _manifest()
     runner = yaml.safe_load(RUNNER_SCENARIO.read_text(encoding="utf-8"))[
         "scenario"
     ]
     obstacle = scenario.obstacles[0]
-    placement = manifest["causal_placement"]
-    assert obstacle.start[:2] == pytest.approx((-0.45, -0.35))
-    assert placement["route"] == "G1_to_G2"
-    assert placement["ground_truth_center_min_distance_m"] <= 0.02
-    assert placement["compute_center_min_distance_m"] <= 0.02
-    assert placement["padded_overlap_interval_sec"][1] > \
-        placement["padded_overlap_interval_sec"][0]
-    assert placement["initial_spawn_clearance_m"] > 4.0
-    assert placement["static_boundary_clearance_m"] >= 0.65
-    lateral_clearance = (
-        abs(placement["east_bypass_robot_center_x_m"] - obstacle.start[0])
-        - obstacle.size[0] / 2.0
-        - manifest["geometry_contract"]["robot_lateral_half_width_m"]
-    )
-    assert lateral_clearance == pytest.approx(
-        placement["east_bypass_box_clearance_m"], abs=1.0e-4
-    )
-    assert placement["east_bypass_static_clearance_m"] >= 0.20
+    geometry = manifest["geometry_contract"]
+    qualification = manifest["offline_geometry_qualification"]
+    assert obstacle.start == pytest.approx((-0.75, -0.35, 0.08))
+    assert qualification == {
+        "algorithm": "occupancy_grid_bfs_8_connected",
+        "unknown_is_occupied": True,
+        "required_legs": ["G1_to_G2", "G2_to_G3"],
+        "padded_clearance_target_m": 0.05,
+        "minimum_static_wall_clearance_m": 0.40,
+    }
+    assert qualification["minimum_static_wall_clearance_m"] == \
+        geometry["nav2_inflation_radius_m"]
+
+    nav2 = yaml.safe_load(NAV2_CONFIG.read_text(encoding="utf-8"))
+    local = nav2["local_costmap"]["local_costmap"]["ros__parameters"]
+    global_costmap = nav2["global_costmap"]["global_costmap"]["ros__parameters"]
+    expected_footprint = yaml.safe_load(local["footprint"])
+    assert expected_footprint == geometry["nav2_footprint_m"]
+    assert yaml.safe_load(global_costmap["footprint"]) == expected_footprint
+    assert local["footprint_padding"] == \
+        global_costmap["footprint_padding"] == \
+        geometry["nav2_footprint_padding_m"] == pytest.approx(0.005)
+    assert min(abs(point[1]) for point in expected_footprint) + \
+        geometry["nav2_footprint_padding_m"] == pytest.approx(
+            geometry["padded_inscribed_radius_m"]
+        )
+    assert local["inflation_layer"]["inflation_radius"] == \
+        global_costmap["inflation_layer"]["inflation_radius"] == \
+        geometry["nav2_inflation_radius_m"] == pytest.approx(0.40)
+
     metadata, image = _map()
-    robot_size = [
-        2.0 * manifest["geometry_contract"]["robot_lateral_half_width_m"],
-        manifest["geometry_contract"]["robot_max_footprint_dimension_m"],
-    ]
-    assert _rectangle_is_free(
-        metadata,
-        image,
-        [placement["east_bypass_robot_center_x_m"], obstacle.start[1]],
-        robot_size,
+    passable = _bfs_passable_grid(
+        metadata, image, obstacle.start, obstacle.size,
+        geometry["padded_inscribed_radius_m"]
+        + qualification["padded_clearance_target_m"],
     )
+    goals = {"G1": tuple(runner["goal"]["position"])}
+    goals.update({row["id"]: tuple(row["position"]) for row in runner["route"]})
+    assert _bfs_connected(metadata, passable, goals["G1"], goals["G2"])
+    assert _bfs_connected(metadata, passable, goals["G2"], goals["G3"])
 
     map_yaml = (MANIFEST.parent / manifest["occupancy_map"]).resolve().read_text(
         encoding="utf-8"
@@ -234,12 +348,8 @@ def test_v6_layout_challenges_g1_g2_and_keeps_measured_east_bypass():
 
 def test_v6_box_is_depth_visible_but_below_scan_plane():
     manifest = _manifest()
-    placement = manifest["causal_placement"]
     sensors = manifest["sensors"]
     geometry = manifest["geometry_contract"]
-    assert placement["rgbd_first_line_of_sight_sec"] < \
-        placement["rgbd_within_2m_sec"]
-    assert placement["lidar_plane_above_obstacle"] is True
     assert geometry["obstacle_top_z_m"] < sensors["lidar_plane_z_m"]
     assert geometry["obstacle_top_z_m"] < sensors["rgbd_origin_z_m"]
 

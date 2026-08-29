@@ -1,9 +1,10 @@
 schema_version: 1
 kind: v6_kujiale_low_obstacle_layout
-layout_id: kujiale_v6_low_obstacles_phase_f_r2_20260826
+layout_id: kujiale_v6_low_obstacles_indoor_feasible_r3_20260829
 status: frozen
-revision: 2
-frozen_date: "2026-08-26"
+revision: 3
+frozen_date: "2026-08-29"
+live_validation_pending: true
 coordinate_frame: map
 source_usd: kujiale_0026_A_to_B_door_open.usd
 source_usd_mutated: false
@@ -28,20 +29,17 @@ geometry_contract:
   wheel_vertical_extent_m: [0.0, 0.196]
   robot_max_footprint_dimension_m: 0.485
   robot_lateral_half_width_m: 0.2134
+  nav2_footprint_m: [[0.255, 0.210], [0.255, -0.210], [-0.230, -0.210], [-0.230, 0.210]]
+  nav2_footprint_padding_m: 0.005
+  padded_inscribed_radius_m: 0.215
+  nav2_inflation_radius_m: 0.40
   lateral_safety_margin_each_side_m: 0.05
   minimum_open_bypass_side_m: 0.65
-causal_placement:
-  route: G1_to_G2
-  ground_truth_center_min_distance_m: 0.0136
-  compute_center_min_distance_m: 0.0126
-  padded_overlap_interval_sec: [19.17, 21.42]
-  initial_spawn_clearance_m: 4.622
-  static_boundary_clearance_m: 0.680
-  east_bypass_robot_center_x_m: -0.035
-  east_bypass_box_clearance_m: 0.0516
-  east_bypass_static_clearance_m: 0.234
-  rgbd_first_line_of_sight_sec: 6.97
-  rgbd_within_2m_sec: 13.72
-  lidar_plane_above_obstacle: true
+offline_geometry_qualification:
+  algorithm: occupancy_grid_bfs_8_connected
+  unknown_is_occupied: true
+  required_legs: [G1_to_G2, G2_to_G3]
+  padded_clearance_target_m: 0.05
+  minimum_static_wall_clearance_m: 0.40
 obstacles:
-  - {id: v6_low_box_solo, map_position: [-0.450000, -0.350000, 0.08], usd_position: [3.350000, 0.150000, 0.08], size: [0.30, 0.30, 0.16]}
+  - {id: v6_low_box_solo, map_position: [-0.750000, -0.350000, 0.08], usd_position: [3.650000, 0.150000, 0.08], size: [0.30, 0.30, 0.16]}

@@ -126,7 +126,7 @@ def test_whole_house_onebox_variant_freezes_identity_seed_asset_and_actions():
         ),
         "id": "v6_low_box_solo",
         "mode": "stationary",
-        "position_m": [-0.45, -0.35, 0.08],
+        "position_m": [-0.75, -0.35, 0.08],
         "size_m": [0.30, 0.30, 0.16],
     }
     assert variant.route == ("G2", "F2", "recover", "G3", "G4", "G5", "G1")
@@ -156,8 +156,8 @@ def test_whole_house_onebox_variant_freezes_identity_seed_asset_and_actions():
             "trigger_group": None,
             "size": [0.30, 0.30, 0.16],
             "mass": 5.0,
-            "start": [-0.45, -0.35, 0.08],
-            "end": [-0.45, -0.35, 0.08],
+            "start": [-0.75, -0.35, 0.08],
+            "end": [-0.75, -0.35, 0.08],
             "speed": 0.0,
             "delay_sec": 0.0,
             "jitter_sec": 0.0,

@@ -6,4 +6,4 @@ enabled: false
 coordinate_frame: map
 spawn_pose_name: long_route_start_g1
 obstacles:
-  - {id: v6_low_box_solo, mode: stationary, trigger_group: null, size: [0.30, 0.30, 0.16], mass: 5.0, start: [-0.450000, -0.350000, 0.08], end: [-0.450000, -0.350000, 0.08], speed: 0.0, delay_sec: 0.0, jitter_sec: 0.0, post_motion: hold}
+  - {id: v6_low_box_solo, mode: stationary, trigger_group: null, size: [0.30, 0.30, 0.16], mass: 5.0, start: [-0.750000, -0.350000, 0.08], end: [-0.750000, -0.350000, 0.08], speed: 0.0, delay_sec: 0.0, jitter_sec: 0.0, post_motion: hold}

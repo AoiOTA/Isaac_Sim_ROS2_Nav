@@ -1240,7 +1240,7 @@ class _LiveProbeAdapter:
         )
         episode = Episode(
             seed=int(manifest.identity["seed"]),
-            variant_id="v6_phase_f_r2",
+            variant_id="v6_phase_f_r3",
             appearance_profile_id=None,
             reset_pose_name="long_route_start_g1",
             dynamic_case_id="static",
