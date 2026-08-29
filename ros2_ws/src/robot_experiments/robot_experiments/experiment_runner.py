@@ -62,6 +62,7 @@ from .metrics import (
     path_length,
     wrap_angle,
 )
+from .motion_benchmark import parse_reset_stop_gate_status
 from .report import configuration_sha256, write_run_report
 from .reset_receipt import parse_reset_receipt
 from .scenario import (
@@ -867,6 +868,16 @@ class ExperimentRunner(Node):
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
+        self._reset_stop_gate_status = None
+        self._reset_stop_gate_status_error: str | None = None
+        self._reset_stop_gate_status_received = False
+        self._reset_call_barrier_monotonic: float | None = None
+        self._reset_stop_gate_status_subscription = self.create_subscription(
+            String,
+            "/simulation/reset_stop_gate/status",
+            self._reset_stop_gate_status_callback,
+            route_qos,
+        )
         self._route_goal_publisher = self.create_publisher(
             PoseStamped, "/bio_nav/route_goal", reliable
         )
@@ -1332,6 +1343,17 @@ class ExperimentRunner(Node):
     def _route_goal_complete_callback(self, message: Bool) -> None:
         self._route_goal_complete_epoch += 1
         self._latest_route_goal_complete = bool(message.data)
+
+    def _reset_stop_gate_status_callback(self, message: String) -> None:
+        self._reset_stop_gate_status_received = True
+        try:
+            self._reset_stop_gate_status = parse_reset_stop_gate_status(
+                message.data,
+                received_at=time.monotonic(),
+            )
+            self._reset_stop_gate_status_error = None
+        except RuntimeError as exc:
+            self._reset_stop_gate_status_error = str(exc)
 
     def _edge_prior_callback(self, message: EdgePriorArray) -> None:
         if not self._navigation_active:
@@ -2249,6 +2271,7 @@ class ExperimentRunner(Node):
         if not self._reset_client.wait_for_service(timeout_sec=self._service_timeout_sec):
             self._raise_if_shutdown()
             raise RuntimeError(f"reset service unavailable: {self._reset_service_name}")
+        reset_call_barrier = time.monotonic()
         future = self._reset_client.call_async(Trigger.Request())
         deadline = time.monotonic() + self._service_timeout_sec
         if not self._wait_future(future, deadline):
@@ -2267,6 +2290,7 @@ class ExperimentRunner(Node):
         self._clear_navigation_costmaps()
         self._clear_run_state()
         self._reset_receipt = receipt
+        self._reset_call_barrier_monotonic = reset_call_barrier
         if not self._wait_until(
             lambda: self._localization_seed_epoch > previous_seed_epoch,
             self._localization_seed_event_grace_sec,
@@ -2590,6 +2614,7 @@ class ExperimentRunner(Node):
             raise RuntimeError(
                 "A21 route-guided backend unavailable: graph or coordinator missing"
             )
+        self._wait_for_reset_stop_gate_release()
         specifications = (
             self._scenario.route
             if self._scenario.route
@@ -2716,6 +2741,43 @@ class ExperimentRunner(Node):
         finally:
             self._navigation_end_stamp_s = self._clock_seconds()
             self._navigation_active = False
+
+    def _wait_for_reset_stop_gate_release(self) -> None:
+        """Fence route dispatch on the release for this reset generation."""
+
+        if (
+            not self._reset_stop_gate_status_received
+            and self._reset_stop_gate_status_subscription.get_publisher_count() == 0
+        ):
+            return
+        receipt = self._reset_receipt
+        barrier = self._reset_call_barrier_monotonic
+        if receipt is None or barrier is None:
+            raise RuntimeError(
+                "route-guided dispatch is missing the reset receipt barrier"
+            )
+        generation = int(receipt["generation"])
+
+        def released() -> bool:
+            if self._reset_stop_gate_status_error is not None:
+                raise RuntimeError(self._reset_stop_gate_status_error)
+            status = self._reset_stop_gate_status
+            if status is None or status.received_at <= barrier:
+                return False
+            if status.generation > generation:
+                raise RuntimeError(
+                    "reset stop gate generation advanced before route dispatch: "
+                    f"receipt={generation}, status={status.generation}"
+                )
+            if status.generation < generation:
+                return False
+            return not status.held and status.eligible_generation is None
+
+        if not self._wait_until(released, self._reset_recovery_timeout_sec):
+            raise TimeoutError(
+                "reset stop gate release timed out before route dispatch: "
+                f"generation={generation}"
+            )
 
     def _arm_next_terminal_fence(self) -> None:
         """Synchronously reserve the final route request before publishing it."""

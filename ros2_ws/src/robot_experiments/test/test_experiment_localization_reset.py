@@ -1,5 +1,5 @@
 import math
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import pytest
 
@@ -10,6 +10,7 @@ from robot_experiments.experiment_runner import (
     OdometrySample,
     _positive_finite_float,
 )
+from robot_experiments.motion_benchmark import ResetStopGateStatus
 
 
 class _UnavailableClient:
@@ -291,6 +292,7 @@ def test_route_guided_arms_only_after_four_legs_and_before_final_goal():
         _trigger_obstacle_group=lambda _goal_id: None,
         _complete_obstacle_group=lambda _goal_id: None,
         _spin_once=lambda _timeout: None,
+        _wait_for_reset_stop_gate_release=lambda: None,
     )
     runner._route_goal_publisher = _RouteGoalPublisher(runner)
     arm_publication_counts = []
@@ -323,6 +325,206 @@ def test_route_goal_complete_bool_does_not_arm_terminal_fence():
     assert runner._route_goal_complete_epoch == 1
     assert runner._latest_route_goal_complete is True
     assert client.call_count == 0
+
+
+class _PublisherCount:
+    def __init__(self, count: int) -> None:
+        self.count = count
+
+    def get_publisher_count(self) -> int:
+        return self.count
+
+
+def _gate_status(generation: int, held: bool, received_at: float):
+    return ResetStopGateStatus(
+        generation=generation,
+        held=held,
+        eligible_generation=generation if held else None,
+        received_at=received_at,
+    )
+
+
+def _route_guided_gate_runner(
+    *,
+    status,
+    status_received: bool = True,
+    publisher_count: int = 1,
+    status_updates=(),
+):
+    events = []
+    specification = SimpleNamespace(goal_id="G1")
+    runner = SimpleNamespace(
+        _navigation_graph=object(),
+        _service_timeout_sec=1.0,
+        _reset_recovery_timeout_sec=0.25,
+        _scenario=SimpleNamespace(
+            route=(specification,),
+            goal=specification,
+            timeout_sec=30.0,
+            leg_timeout_sec=5.0,
+        ),
+        _navigation_active=False,
+        _navigation_start_stamp_s=None,
+        _navigation_end_stamp_s=None,
+        _minimum_poses_remaining=None,
+        _canonical_route_epoch=0,
+        _route_goal_complete_epoch=0,
+        _latest_route_goal_complete=False,
+        _canonical_routes=[],
+        _ground_truth_samples=[],
+        _leg_results=[],
+        _goal_dispatch_recorded=False,
+        _dynamic_guard_aborted=False,
+        _reset_receipt={"generation": 4},
+        _reset_call_barrier_monotonic=1.0,
+        _reset_stop_gate_status=status,
+        _reset_stop_gate_status_error=None,
+        _reset_stop_gate_status_received=status_received,
+        _reset_stop_gate_status_subscription=_PublisherCount(publisher_count),
+        _clock_seconds=lambda: 1.0,
+        _pose_message=lambda value: value,
+        _trigger_obstacle_group=lambda _goal_id: None,
+        _complete_obstacle_group=lambda _goal_id: None,
+        _arm_next_terminal_fence=lambda: None,
+    )
+
+    class OrderedRouteGoalPublisher(_RouteGoalPublisher):
+        def publish(self, message):
+            events.append("publish")
+            super().publish(message)
+
+    updates = list(status_updates)
+
+    def spin_once(_timeout):
+        if updates:
+            label, payload = updates.pop(0)
+            events.append(label)
+            if isinstance(payload, str):
+                ExperimentRunner._reset_stop_gate_status_callback(
+                    runner, SimpleNamespace(data=payload)
+                )
+            else:
+                runner._reset_stop_gate_status = payload
+                runner._reset_stop_gate_status_received = True
+
+    def wait_until(predicate, _timeout):
+        for _ in range(3):
+            if predicate():
+                return True
+            spin_once(0.0)
+        return False
+
+    def record_dispatch():
+        events.append("dispatch")
+        runner._goal_dispatch_recorded = True
+
+    runner._spin_once = spin_once
+    runner._wait_until = wait_until
+    runner._record_trial_dispatched = record_dispatch
+    runner._route_goal_publisher = OrderedRouteGoalPublisher(runner)
+    runner._wait_for_reset_stop_gate_release = MethodType(
+        ExperimentRunner._wait_for_reset_stop_gate_release, runner
+    )
+    return runner, events
+
+
+def test_route_dispatch_waits_for_delayed_same_generation_release():
+    runner, events = _route_guided_gate_runner(
+        status=_gate_status(4, True, 1.1),
+        status_updates=((
+            "release",
+            '{"generation":4,"held":false,"eligible_generation":null}',
+        ),),
+    )
+
+    result = ExperimentRunner._navigate_route_guided(runner)
+
+    assert result == (
+        True,
+        False,
+        experiment_runner_module.GoalStatus.STATUS_SUCCEEDED,
+    )
+    assert events == ["release", "dispatch", "publish"]
+    assert runner._reset_stop_gate_status.received_at > 1.0
+
+
+def test_route_dispatch_waits_on_stale_generation_without_writing_or_publishing():
+    runner, events = _route_guided_gate_runner(
+        status=_gate_status(3, False, 1.1)
+    )
+
+    with pytest.raises(TimeoutError, match="generation=4"):
+        ExperimentRunner._navigate_route_guided(runner)
+
+    assert events == []
+
+
+def test_route_dispatch_current_generation_hold_uses_reset_recovery_timeout():
+    runner, events = _route_guided_gate_runner(
+        status=_gate_status(4, True, 1.1)
+    )
+    observed_timeouts = []
+
+    def wait_until(predicate, timeout):
+        if predicate():
+            return True
+        observed_timeouts.append(timeout)
+        return False
+
+    runner._wait_until = wait_until
+
+    with pytest.raises(TimeoutError, match="release timed out"):
+        ExperimentRunner._navigate_route_guided(runner)
+
+    assert observed_timeouts == [runner._reset_recovery_timeout_sec]
+    assert events == []
+
+
+def test_route_dispatch_future_generation_fails_before_write_or_publish():
+    runner, events = _route_guided_gate_runner(
+        status=_gate_status(5, False, 1.1)
+    )
+
+    with pytest.raises(RuntimeError, match="generation advanced"):
+        ExperimentRunner._navigate_route_guided(runner)
+
+    assert events == []
+
+
+def test_route_dispatch_malformed_status_fails_before_write_or_publish():
+    runner, events = _route_guided_gate_runner(
+        status=None,
+        status_updates=(("malformed", "not-json"),),
+    )
+
+    with pytest.raises(RuntimeError, match="invalid reset stop gate status"):
+        ExperimentRunner._navigate_route_guided(runner)
+
+    assert events == ["malformed"]
+
+
+def test_route_dispatch_skips_gate_only_when_never_seen_and_no_publisher():
+    runner, events = _route_guided_gate_runner(
+        status=None,
+        status_received=False,
+        publisher_count=0,
+    )
+
+    result = ExperimentRunner._navigate_route_guided(runner)
+
+    assert result[0] is True
+    assert events == ["dispatch", "publish"]
+
+
+def test_direct_backend_does_not_consult_reset_stop_gate():
+    runner = SimpleNamespace(
+        _navigation_execution_backend="navigate_to_pose",
+        _navigate_direct=lambda: (True, False, 4),
+        _navigate_route_guided=lambda: pytest.fail("route gate must not run"),
+        _reset_stop_gate_status_error="malformed",
+    )
+
+    assert ExperimentRunner._navigate(runner) == (True, False, 4)
 
 
 def test_terminal_fence_arm_service_unavailable_fails_before_request():
