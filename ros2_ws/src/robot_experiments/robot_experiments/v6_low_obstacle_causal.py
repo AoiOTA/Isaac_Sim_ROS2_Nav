@@ -377,7 +377,7 @@ def load_manifest(path: str | Path) -> CausalManifest:
     identity = _mapping(raw.get("identity"), "identity")
     fixed_identity = {
         "scene_id": "v6_kujiale_low_obstacles_static",
-        "obstacle_layout_id": "kujiale_v6_low_obstacles_indoor_feasible_r3_20260829",
+        "obstacle_layout_id": "kujiale_v6_low_obstacles_indoor_center_connected_r3_20260829",
         "scene_contract_frozen": True,
         "seed": 8601,
         "ros_domain_id": 150,

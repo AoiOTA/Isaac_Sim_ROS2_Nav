@@ -73,7 +73,7 @@ def test_v6_low_obstacle_scenario_selects_only_the_frozen_layout():
         "v6_kujiale_low_obstacles_frozen.yaml"
     )
     assert scenario.obstacles["layout_id"] == (
-        "kujiale_v6_low_obstacles_indoor_feasible_r3_20260829"
+        "kujiale_v6_low_obstacles_indoor_center_connected_r3_20260829"
     )
     assert scenario.run_matrix[0].variant_id == "v6_phase_f_r3"
     assert scenario.goal.require_orientation is False

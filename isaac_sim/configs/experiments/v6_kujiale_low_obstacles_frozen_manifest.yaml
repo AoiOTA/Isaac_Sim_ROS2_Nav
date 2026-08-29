@@ -1,10 +1,13 @@
 schema_version: 1
 kind: v6_kujiale_low_obstacle_layout
-layout_id: kujiale_v6_low_obstacles_indoor_feasible_r3_20260829
+layout_id: kujiale_v6_low_obstacles_indoor_center_connected_r3_20260829
 status: frozen
 revision: 3
 frozen_date: "2026-08-29"
 live_validation_pending: true
+offline_center_connectivity_only: true
+footprint_aware_feasibility: unproven
+smac_feasibility: unproven
 coordinate_frame: map
 source_usd: kujiale_0026_A_to_B_door_open.usd
 source_usd_mutated: false
@@ -30,16 +33,12 @@ geometry_contract:
   robot_max_footprint_dimension_m: 0.485
   robot_lateral_half_width_m: 0.2134
   nav2_footprint_m: [[0.255, 0.210], [0.255, -0.210], [-0.230, -0.210], [-0.230, 0.210]]
+  nav2_footprint_extents_m: {x_min: -0.230, x_max: 0.255, y_min: -0.210, y_max: 0.210}
   nav2_footprint_padding_m: 0.005
-  padded_inscribed_radius_m: 0.215
   nav2_inflation_radius_m: 0.40
-  lateral_safety_margin_each_side_m: 0.05
-  minimum_open_bypass_side_m: 0.65
-offline_geometry_qualification:
-  algorithm: occupancy_grid_bfs_8_connected
+offline_geometry_evidence:
+  algorithm: occupancy_grid_bfs_8_connected_robot_center
   unknown_is_occupied: true
   required_legs: [G1_to_G2, G2_to_G3]
-  padded_clearance_target_m: 0.05
-  minimum_static_wall_clearance_m: 0.40
 obstacles:
   - {id: v6_low_box_solo, map_position: [-0.750000, -0.350000, 0.08], usd_position: [3.650000, 0.150000, 0.08], size: [0.30, 0.30, 0.16]}
