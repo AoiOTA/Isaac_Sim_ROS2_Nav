@@ -51,6 +51,7 @@ def generate_launch_description():
         DeclareLaunchArgument('module2_enabled', default_value='true'),
         DeclareLaunchArgument(
             'route_graph_file', default_value=str(default_route_graph)),
+        DeclareLaunchArgument('region_config_file', default_value=''),
         DeclareLaunchArgument(
             'feasible_only_largest_component', default_value='false'),
         DeclareLaunchArgument('module2_prior_ttl_s', default_value='2.0'),
@@ -123,6 +124,8 @@ def generate_launch_description():
                     'cognitive_profile'),
                 'module2_enabled': LaunchConfiguration('module2_enabled'),
                 'route_graph_file': LaunchConfiguration('route_graph_file'),
+                'region_config_file': LaunchConfiguration(
+                    'region_config_file'),
                 'feasible_only_largest_component': LaunchConfiguration(
                     'feasible_only_largest_component'),
                 'module2_prior_ttl_s': LaunchConfiguration(

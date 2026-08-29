@@ -3308,6 +3308,7 @@ class RouteCoordinator:
             return
         now_s = self._now().nanoseconds / 1.0e9
         changed = False
+        refresh_prior = False
         selected = None
         with self._route_output_lock():
             with self._route_state_lock():
@@ -3321,12 +3322,21 @@ class RouteCoordinator:
                 changed = selected != previous
                 if changed:
                     self.cognitive_constraints_identity = None
+                    self._clear_latest_priors()
+                    refresh_prior = bool(
+                        self.pending_goal is not None
+                        and self._route_prior_is_enabled()
+                    )
+                    if refresh_prior:
+                        self._arm_prior_request(int(self._now().nanoseconds))
             if changed:
                 self.node.get_logger().info(
                     f"active cognitive region: {selected.region_id}"
                 )
         if changed:
             self._publish_cognitive_constraints_if_input_current(input_generation)
+            if refresh_prior:
+                self._publish_route_context_if_input_current(input_generation)
 
     def _on_global_costmap(self, message) -> None:
         with self._route_state_lock():

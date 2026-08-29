@@ -1,8 +1,19 @@
 from __future__ import annotations
 
-import numpy as np
+from pathlib import Path
 
-from robot_route_planner.regions import RegionSelector, rectangular_region_config
+import numpy as np
+import yaml
+
+from robot_route_planner.regions import (
+    RegionSelector,
+    load_region_config,
+    rectangular_region_config,
+)
+
+
+ROOT = Path(__file__).resolve().parents[4]
+RIVERMARK_DATA = ROOT / "data/rivermark_demo"
 
 
 def test_map_to_canvas_transform_centers_region_and_rotates_axes() -> None:
@@ -36,3 +47,19 @@ def test_region_selector_switches_core_without_losing_global_coordinates() -> No
     assert selector.select((18.0, 6.0), 0.2) == first
     second = selector.select((18.0, 6.0), 0.6)
     assert second.region_id.endswith("r00c01")
+
+
+def test_rivermark_catalog_region_ids_are_a_subset_of_runtime_regions() -> None:
+    config = load_region_config(RIVERMARK_DATA / "rivermark_regions.yaml")
+    selection = yaml.safe_load(
+        (RIVERMARK_DATA / "rivermark_srdr_tile_selection_v1.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    runtime_ids = {region.region_id for region in config.regions}
+    catalog_ids = set(selection["route_region_ids"]) | set(
+        selection["ring_region_ids"]
+    )
+
+    assert catalog_ids
+    assert catalog_ids <= runtime_ids

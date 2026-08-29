@@ -45,6 +45,7 @@ environment_usd="${RIVERMARK_USD}"
 spawn_poses_file="${demo_dir}/rivermark.spawn.yaml"
 occupancy_map="${demo_dir}/rivermark_selected.yaml"
 route_graph="${demo_dir}/rivermark_selected.geojson"
+region_config_file="${demo_dir}/rivermark_regions.yaml"
 goals_file="${demo_dir}/rivermark_demo_goals.yaml"
 static_config="${demo_dir}/final_rivermark_static_obstacles.yaml"
 dynamic_config="${demo_dir}/final_rivermark_dynamic.yaml"
@@ -55,6 +56,7 @@ for required in \
   "${spawn_poses_file}" \
   "${occupancy_map}" \
   "${route_graph}" \
+  "${region_config_file}" \
   "${goals_file}" \
   "${static_config}" \
   "${dynamic_config}" \
@@ -103,7 +105,7 @@ if [[ "${entrypoint}" == "isaac" ]]; then
     --spawn-poses-file "${spawn_poses_file}" \
     --spawn-pose rivermark_start \
     --navigation-mode localization \
-    --mode realistic \
+    --mode mixed \
     --structure-tf-source isaac \
     --camera-profile rgbd_navigation \
     --dynamic-obstacle-config "${obstacle_config}" \
@@ -124,6 +126,7 @@ for argument in "$@"; do
     nav2_profile_params_file:=*|nav2_params_file:=*|\
     cognitive_profile:=*|cognitive_graph_mode:=*|route_prior_enabled:=*|\
     module2_enabled:=*|\
+    region_config_file:=*|\
     initial_pose_source:=*|\
     interactive:=*|use_rviz:=*)
       die "V6 Rivermark fixes the estimated-navigation contract; rejected override: ${argument}"
@@ -134,7 +137,7 @@ done
 export ISAAC_NAV_REQUIRE_V6_INTEGRATION=1
 export ISAAC_NAV_SPAWN_POSES="${spawn_poses_file}"
 exec "${SCRIPT_DIR}/run_ros.sh" navigation \
-  odometry_mode:=estimated \
+  odometry_mode:=mixed \
   structure_tf_source:=isaac \
   localization_map_contract:=occupancy_only \
   localization_owner:=amcl \
@@ -145,11 +148,12 @@ exec "${SCRIPT_DIR}/run_ros.sh" navigation \
   imu_calibration_params_file:="${PROJECT_ROOT}/ros2_ws/src/robot_odometry/config/imu_calibration.yaml" \
   lidar_odometry_backend:=off \
   lidar_odometry_validated:=false \
-  nav2_profile:=stable \
-  cognitive_profile:=M0 \
+  nav2_profile:=v6_low_obstacle_isolation \
+  cognitive_profile:=M3 \
   cognitive_graph_mode:=gvg \
-  route_prior_enabled:=false \
-  module2_enabled:=false \
+  route_prior_enabled:=true \
+  module2_enabled:=true \
+  region_config_file:="${region_config_file}" \
   spawn_poses_file:="${spawn_poses_file}" \
   spawn_pose_name:=rivermark_start \
   initial_pose_source:=isaac \

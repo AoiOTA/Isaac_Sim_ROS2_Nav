@@ -3287,6 +3287,93 @@ def test_final_route_prior_pilot_dry_run_defaults_off(tmp_path):
     assert "goal_prior_retry_window_s" not in result.stdout
 
 
+@pytest.mark.parametrize("condition", ("static", "dynamic", "appearance"))
+def test_phase_f_rivermark_m3_dry_run_uses_catalog_and_generic_assets(
+    tmp_path, condition
+):
+    root = PACKAGE.parents[2]
+    catalog = tmp_path / "rivermark catalog"
+    catalog.mkdir()
+    (catalog / "catalog.json").write_text("{}\n", encoding="utf-8")
+    result = subprocess.run(
+        [
+            str(root / "scripts/run_v6_low_obstacle_phase_f_stack.sh"),
+            "M3",
+            "--scene", "rivermark",
+            "--condition", condition,
+            "--run-dir", str(tmp_path / "run"),
+            "--socket", str(tmp_path / "module2.sock"),
+            "--module2-asset-root", str(tmp_path / "module2-assets"),
+            "--route-prior-catalog-root", str(catalog),
+            "--dry-run",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert "scene=rivermark" in result.stdout
+    assert f"condition={condition}" in result.stdout
+    assert "route_prior_enabled=true" in result.stdout
+    assert f"route_prior_snapshot_catalog_root={catalog}" in result.stdout
+    assert "route_prior_snapshot_path" not in result.stdout
+    assert (
+        "module2_assets: --config configs/module2_pdf_v310_module3.yaml "
+        "--checkpoint weights/module2_srdr_v310_seed20260822.pt"
+        in result.stdout
+    )
+    assert "--shadow-config" not in result.stdout
+    assert "--candidate-manifest" not in result.stdout
+    lines = result.stdout.splitlines()
+    module3 = next(line for line in lines if line.startswith("module3:"))
+    bridge = next(line for line in lines if line.startswith("bridge:"))
+    escaped_catalog = str(catalog).replace(" ", "\\ ")
+    assert "run_v6_rivermark.sh ros" in module3
+    assert module3.endswith(condition)
+    assert f"route_prior_snapshot_catalog_root:={escaped_catalog}" in bridge
+    assert "outdoor_context_switch_enabled:=true" in bridge
+    assert "startup_profile:=module2_causal_obstacle_active" in bridge
+
+
+def test_phase_f_rivermark_rejects_non_m3_invalid_condition_and_snapshot(
+    tmp_path,
+):
+    stack = PACKAGE.parents[2] / "scripts/run_v6_low_obstacle_phase_f_stack.sh"
+    catalog = tmp_path / "catalog"
+    catalog.mkdir()
+    (catalog / "catalog.json").write_text("{}\n", encoding="utf-8")
+    common = [
+        "--scene", "rivermark",
+        "--run-dir", str(tmp_path / "run"),
+        "--socket", str(tmp_path / "module2.sock"),
+        "--module2-asset-root", str(tmp_path / "module2-assets"),
+        "--route-prior-catalog-root", str(catalog),
+        "--dry-run",
+    ]
+    non_m3 = subprocess.run(
+        [str(stack), "M2", *common], capture_output=True, text=True)
+    assert non_m3.returncode == 2
+    assert "Rivermark requires the M3 obstacle arm" in non_m3.stderr
+
+    invalid = subprocess.run(
+        [str(stack), "M3", *common, "--condition", "rain"],
+        capture_output=True,
+        text=True,
+    )
+    assert invalid.returncode == 2
+    assert "condition must be static, dynamic, or appearance" in invalid.stderr
+
+    snapshot = tmp_path / "indoor"
+    snapshot.mkdir()
+    conflict = subprocess.run(
+        [str(stack), "M3", *common, "--route-prior-snapshot", str(snapshot)],
+        capture_output=True,
+        text=True,
+    )
+    assert conflict.returncode == 2
+    assert "mutually exclusive" in conflict.stderr
+
+
 def test_phase_f_asset_root_required_only_for_server_arms(tmp_path):
     stack = PACKAGE.parents[2] / "scripts/run_v6_low_obstacle_phase_f_stack.sh"
     common = [
@@ -3885,8 +3972,9 @@ def test_exact_stack_adapter_maps_profiles_and_keeps_phase_f_isolation():
     assert 'export BIO_NAV_MODULE2_V310_ROOT="${module2_root}"' in stack
     assert "canonical_constraints_file" in stack
     assert stack.index('require_file "${canonical_constraints_file}"') < stack.index(
-        'setsid --wait -- "${script_dir}/run_v6_kujiale_low_obstacles.sh"'
+        'module3_entry=("${script_dir}/run_v6_kujiale_low_obstacles.sh"'
     )
+    assert 'setsid --wait -- "${module3_entry[@]}"' in stack
     assert (
         "/home/lyb/Workspace/Bio_Nav/worktrees/"
         "v6-compute-amcl-dual-odom/bio_nav_module2"

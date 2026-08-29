@@ -484,6 +484,8 @@ def _launch_setup(context):
                 'structural_map_file': selection.occupancy_map_file,
                 'module2_enabled': module2_enabled,
                 'route_graph_file': selection.route_graph_file,
+                'region_config_file': LaunchConfiguration(
+                    'region_config_file').perform(context),
                 'feasible_only_largest_component': LaunchConfiguration(
                     'feasible_only_largest_component').perform(context),
                 'module2_response_timeout_s': LaunchConfiguration(
@@ -695,6 +697,7 @@ def generate_launch_description():
                 'independent from cognitive_graph_mode')),
         DeclareLaunchArgument('module2_enabled', default_value='true'),
         DeclareLaunchArgument('route_graph_file', default_value=''),
+        DeclareLaunchArgument('region_config_file', default_value=''),
         DeclareLaunchArgument(
             'feasible_only_largest_component', default_value='false'),
         DeclareLaunchArgument(

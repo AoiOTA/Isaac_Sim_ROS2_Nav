@@ -3423,6 +3423,56 @@ def test_region_tick_crossing_hold_cannot_select_or_publish() -> None:
     assert constraint_calls == []
 
 
+def test_region_switch_retires_prior_rearms_context_without_nav_reset() -> None:
+    handle = _AcceptedHandle()
+    coordinator = _reset_route_coordinator(active=True, handle=handle)
+    goal = coordinator.pending_goal
+    request_id = coordinator.request_id
+    old_region = SimpleNamespace(region_id='old')
+    new_region = SimpleNamespace(region_id='new')
+
+    class Selector:
+        current = old_region
+
+        def select(self, _xy, _now_s):
+            self.current = new_region
+            return self.current
+
+    coordinator.region_selector = Selector()
+    coordinator.module2_enabled = True
+    coordinator.route_prior_enabled = True
+    coordinator.module2_response_timeout_s = 0.0
+    coordinator.defaults = {
+        'module2_edge_prior': {'response_timeout_s': 0.5},
+    }
+    coordinator._current_xy = lambda: (1.0, 2.0)
+    coordinator._now = lambda: SimpleNamespace(nanoseconds=9_000_000_000)
+    constraints = []
+    contexts = []
+    coordinator._publish_cognitive_constraints_if_input_current = (
+        lambda generation: constraints.append(generation)
+    )
+    coordinator._publish_route_context_if_input_current = (
+        lambda generation: contexts.append(generation)
+    )
+
+    coordinator._region_tick()
+
+    assert coordinator.region_selector.current is new_region
+    assert coordinator.latest_priors == {}
+    assert coordinator.latest_prior_model_id is None
+    assert coordinator.pending_prior_request_id == request_id
+    assert coordinator.pending_prior_started_ns == 9_000_000_000
+    assert coordinator.pending_deadline_ns == 9_500_000_000
+    assert len(constraints) == len(contexts) == 1
+    assert contexts == constraints
+    assert coordinator.request_id == request_id
+    assert coordinator.pending_goal is goal
+    assert coordinator.navigation_goal_handle is handle
+    assert coordinator.route_active is True
+    assert handle.cancel_calls == 0
+
+
 def test_navigation_action_status_is_authoritative_over_error_detail() -> None:
     assert navigation_result_succeeded(SimpleNamespace(
         status=4,

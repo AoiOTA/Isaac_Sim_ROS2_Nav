@@ -424,6 +424,7 @@ die() {{ printf '%s\\n' "$*" >&2; return 1; }}
         'rivermark.spawn.yaml',
         'rivermark_selected.yaml',
         'rivermark_selected.geojson',
+        'rivermark_regions.yaml',
         'rivermark_demo_goals.yaml',
         'final_rivermark_static_obstacles.yaml',
         'final_rivermark_dynamic.yaml',
@@ -475,12 +476,12 @@ die() {{ printf '%s\\n' "$*" >&2; return 1; }}
     return lines[3:], metadata
 
 
-def test_v6_rivermark_ros_argv_is_estimated_occupancy_only_m0_gvg(tmp_path):
+def test_v6_rivermark_ros_argv_is_full_mixed_m3_gvg_chain(tmp_path):
     arguments, metadata = _v6_rivermark_argv(
         tmp_path, 'ros', 'static')
 
     assert arguments[0] == 'navigation'
-    assert 'odometry_mode:=estimated' in arguments
+    assert 'odometry_mode:=mixed' in arguments
     assert 'structure_tf_source:=isaac' in arguments
     assert 'localization_map_contract:=occupancy_only' in arguments
     assert 'localization_owner:=amcl' in arguments
@@ -491,18 +492,22 @@ def test_v6_rivermark_ros_argv_is_estimated_occupancy_only_m0_gvg(tmp_path):
     assert any(argument.startswith('imu_calibration_params_file:=')
                and argument.endswith('/robot_odometry/config/imu_calibration.yaml')
                for argument in arguments)
-    assert 'nav2_profile:=stable' in arguments
+    assert 'nav2_profile:=v6_low_obstacle_isolation' in arguments
     assert not any(argument.startswith('nav2_profile_params_file:=')
                    or argument.startswith('nav2_params_file:=')
                    for argument in arguments)
-    assert 'nav2_profile:=v6_low_obstacle_isolation' not in arguments
-    assert 'cognitive_profile:=M0' in arguments
+    assert 'cognitive_profile:=M3' in arguments
     assert 'cognitive_graph_mode:=gvg' in arguments
-    assert 'route_prior_enabled:=false' in arguments
-    assert 'module2_enabled:=false' in arguments
+    assert 'route_prior_enabled:=true' in arguments
+    assert 'module2_enabled:=true' in arguments
+    assert any(argument.startswith('region_config_file:=')
+               and argument.endswith('/rivermark_regions.yaml')
+               for argument in arguments)
     assert 'initial_pose_source:=isaac' in arguments
     assert 'use_rviz:=false' in arguments
     assert not any(argument.startswith('posegraph_file:=')
+                   for argument in arguments)
+    assert not any('depth' in argument.lower() or 'stvl' in argument.lower()
                    for argument in arguments)
     assert any(argument.endswith('/rivermark_selected.yaml')
                for argument in arguments)
@@ -559,6 +564,7 @@ die() {{ printf '%s\\n' "$*" >&2; return 1; }}
     ('cognitive_profile:=M3', 'cognitive_graph_mode:=primary',
      'route_prior_enabled:=true',
      'module2_enabled:=true',
+     'region_config_file:=/tmp/regions.yaml',
      'initial_pose_source:=auto',
      'nav2_profile_params_file:=/tmp/caller-nav2.yaml',
      'nav2_params_file:=/tmp/caller-nav2.yaml'),
@@ -579,6 +585,7 @@ die() {{ printf '%s\\n' "$*" >&2; return 1; }}
     for name in (
         'rivermark.spawn.yaml', 'rivermark_selected.yaml',
         'rivermark_selected.geojson', 'rivermark_demo_goals.yaml',
+        'rivermark_regions.yaml',
         'final_rivermark_static_obstacles.yaml',
         'final_rivermark_dynamic.yaml', 'rivermark_appearance_profiles.yaml',
     ):
@@ -613,7 +620,7 @@ def test_v6_rivermark_isaac_argv_covers_three_pilot_scenes(tmp_path):
         assert '--spawn-pose' in arguments
         assert 'rivermark_start' in arguments
         assert '--mode' in arguments
-        assert 'realistic' in arguments
+        assert 'mixed' in arguments
         assert '--structure-tf-source' in arguments
         assert 'isaac' in arguments
         assert '--camera-profile' in arguments

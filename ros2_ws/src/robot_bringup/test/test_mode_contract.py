@@ -538,6 +538,25 @@ def test_mixed_stack_selects_amcl_and_dedicated_module1_ekf_without_lidar():
     assert 'must not use ground-truth data' in route_source
 
 
+def test_navigation_forwards_region_config_to_route_coordinator_in_mixed_mode():
+    launch_dir = PACKAGE_ROOT / 'launch'
+    wrapper_source = (
+        launch_dir / 'navigation_bringup.launch.py').read_text()
+    core_source = (launch_dir / 'ros_stack.launch.py').read_text()
+    navigation_source = (
+        PACKAGE_ROOT.parent / 'robot_navigation' / 'launch'
+        / 'navigation.launch.py').read_text()
+
+    assert "DeclareLaunchArgument('region_config_file', default_value='')" \
+        in wrapper_source
+    assert "'region_config_file': LaunchConfiguration(" in wrapper_source
+    assert "DeclareLaunchArgument('region_config_file', default_value='')" \
+        in core_source
+    assert "'region_config_file': LaunchConfiguration(" in core_source
+    assert "'region_config_file': region_config_file" in navigation_source
+    assert "'odometry_topic': '/odom'" in navigation_source
+
+
 def test_incremental_and_localization_modes_include_initial_pose():
     core_source = (
         PACKAGE_ROOT / 'launch' / 'ros_stack.launch.py').read_text()

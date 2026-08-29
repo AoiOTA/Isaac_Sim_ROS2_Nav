@@ -7,8 +7,10 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 usage() {
   echo "usage: $0 M0|M1|M2|M3 --domain ID --run-dir PATH --socket PATH [--module2-root PATH]" >&2
   echo "       [--module2-asset-root PATH]" >&2
+  echo "       [--scene kujiale|rivermark --condition static|dynamic|appearance]" >&2
   echo "       [--localization-supervisor-mode shadow|active --candidate-manifest PATH]" >&2
-  echo "       [--enable-route-prior --route-prior-snapshot PATH] [--dry-run]" >&2
+  echo "       [--enable-route-prior --route-prior-snapshot PATH]" >&2
+  echo "       [--route-prior-catalog-root PATH] [--dry-run]" >&2
   echo "       BIO_NAV_MODULE2_V310_ROOT or --module2-root must name the canonical Module2 root" >&2
   echo "       $0 stop-producer --run-dir PATH --socket PATH" >&2
 }
@@ -323,6 +325,9 @@ localization_supervisor_mode=""
 candidate_manifest=""
 route_prior_enabled="false"
 route_prior_snapshot=""
+route_prior_catalog_root=""
+scene="kujiale"
+condition="static"
 dry_run=false
 while (($#)); do
   case "$1" in
@@ -330,6 +335,11 @@ while (($#)); do
     --socket) socket_path="${2:?--socket requires a path}"; shift 2 ;;
     --domain) domain_id="${2:?--domain requires an ID}"; shift 2 ;;
     --module2-root) module2_root="${2:?--module2-root requires a path}"; shift 2 ;;
+    --scene) scene="${2:?--scene requires kujiale or rivermark}"; shift 2 ;;
+    --condition)
+      condition="${2:?--condition requires static, dynamic, or appearance}"
+      shift 2
+      ;;
     --module2-asset-root)
       module2_asset_root="${2:?--module2-asset-root requires a path}"
       shift 2
@@ -347,11 +357,23 @@ while (($#)); do
       route_prior_snapshot="${2:?--route-prior-snapshot requires a path}"
       shift 2
       ;;
+    --route-prior-catalog-root)
+      route_prior_catalog_root="${2:?--route-prior-catalog-root requires a path}"
+      shift 2
+      ;;
     --dry-run) dry_run=true; shift ;;
     *) usage; echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 [[ -n "${run_dir}" && -n "${socket_path}" ]] || { usage; exit 2; }
+[[ "${scene}" =~ ^(kujiale|rivermark)$ ]] || {
+  echo "scene must be kujiale or rivermark" >&2
+  exit 2
+}
+[[ "${condition}" =~ ^(static|dynamic|appearance)$ ]] || {
+  echo "condition must be static, dynamic, or appearance" >&2
+  exit 2
+}
 [[ -z "${localization_supervisor_mode}" \
     || "${localization_supervisor_mode}" =~ ^(shadow|active)$ ]] || {
   echo "localization supervisor mode must be shadow or active" >&2
@@ -367,6 +389,41 @@ if [[ -n "${localization_supervisor_mode}" || -n "${candidate_manifest}" ]]; the
     exit 2
   }
 fi
+if [[ -n "${route_prior_snapshot}" && -n "${route_prior_catalog_root}" ]]; then
+  echo "--route-prior-snapshot and --route-prior-catalog-root are mutually exclusive" >&2
+  exit 2
+fi
+if [[ "${scene}" == "rivermark" ]]; then
+  [[ "${arm}" == "M3" ]] || {
+    echo "Rivermark requires the M3 obstacle arm" >&2
+    exit 2
+  }
+  [[ -z "${localization_supervisor_mode}" && -z "${candidate_manifest}" ]] || {
+    echo "Rivermark does not use localization candidate/shadow assets" >&2
+    exit 2
+  }
+  [[ -z "${route_prior_snapshot}" ]] || {
+    echo "Rivermark uses --route-prior-catalog-root, not an indoor snapshot" >&2
+    exit 2
+  }
+  [[ -n "${route_prior_catalog_root}" ]] || {
+    echo "--route-prior-catalog-root is required for Rivermark" >&2
+    exit 2
+  }
+  [[ -d "${route_prior_catalog_root}" ]] || {
+    echo "route prior catalog root does not exist: ${route_prior_catalog_root}" >&2
+    exit 2
+  }
+  [[ -r "${route_prior_catalog_root}/catalog.json" ]] || {
+    echo "route prior catalog is not readable: ${route_prior_catalog_root}/catalog.json" >&2
+    exit 2
+  }
+  route_prior_catalog_root="$(cd "${route_prior_catalog_root}" && pwd -P)"
+  route_prior_enabled="true"
+elif [[ -n "${route_prior_catalog_root}" ]]; then
+  echo "--route-prior-catalog-root requires --scene rivermark" >&2
+  exit 2
+fi
 if [[ "${route_prior_enabled}" == true ]]; then
   [[ "${arm}" == "M3" ]] || {
     echo "route prior pilot requires the M3 obstacle arm" >&2
@@ -376,19 +433,21 @@ if [[ "${route_prior_enabled}" == true ]]; then
     echo "route prior pilot is incompatible with W0/W1 localization recovery" >&2
     exit 2
   }
-  [[ -n "${route_prior_snapshot}" ]] || {
+  [[ "${scene}" == "rivermark" || -n "${route_prior_snapshot}" ]] || {
     echo "--route-prior-snapshot is required with --enable-route-prior" >&2
     exit 2
   }
-  [[ -d "${route_prior_snapshot}" ]] || {
+  [[ "${scene}" == "rivermark" || -d "${route_prior_snapshot}" ]] || {
     echo "route prior snapshot directory does not exist: ${route_prior_snapshot}" >&2
     exit 2
   }
-  [[ -r "${route_prior_snapshot}/manifest.json" ]] || {
+  [[ "${scene}" == "rivermark" || -r "${route_prior_snapshot}/manifest.json" ]] || {
     echo "route prior snapshot manifest is not readable: ${route_prior_snapshot}/manifest.json" >&2
     exit 2
   }
-  route_prior_snapshot="$(cd "${route_prior_snapshot}" && pwd -P)"
+  if [[ "${scene}" == "kujiale" ]]; then
+    route_prior_snapshot="$(cd "${route_prior_snapshot}" && pwd -P)"
+  fi
 elif [[ -n "${route_prior_snapshot}" ]]; then
   echo "--route-prior-snapshot requires --enable-route-prior" >&2
   exit 2
@@ -400,10 +459,15 @@ fi
 module2_asset_args=(
   --shadow-config configs/kujiale_0026_module1_visual_shadow_v310.yaml
 )
-if [[ -n "${candidate_manifest}" ]]; then
+if [[ "${scene}" == "rivermark" ]]; then
+  module2_asset_args=(
+    --config configs/module2_pdf_v310_module3.yaml
+    --checkpoint weights/module2_srdr_v310_seed20260822.pt
+  )
+elif [[ -n "${candidate_manifest}" ]]; then
   module2_asset_args=(--candidate-manifest "${candidate_manifest}")
 fi
-((${#module2_asset_args[@]} == 2)) || {
+(( ${#module2_asset_args[@]} == 2 || ${#module2_asset_args[@]} == 4 )) || {
   echo "exactly one Module2 planning asset must be selected" >&2
   exit 2
 }
@@ -425,21 +489,33 @@ if [[ "${dry_run}" == true ]]; then
   printf 'arm=%s\n' "${arm}"
   printf 'graph_mode=gvg\n'
   printf 'route_prior_enabled=%s\n' "${route_prior_enabled}"
-  if [[ "${route_prior_enabled}" == true ]]; then
+  if [[ "${scene}" == "kujiale" && "${route_prior_enabled}" == true ]]; then
     printf 'route_prior_snapshot_path=%s\n' "${route_prior_snapshot}"
     printf 'route_prior_semantics=frozen_snapshot_main_compatible\n'
   fi
   printf 'cognitive_profile=%s\n' "${arm}"
   printf 'active_effect_scope=%s\n' "${dry_scope}"
   printf 'cpg_navigation_writes=false\n'
+  if [[ "${scene}" == "rivermark" ]]; then
+    printf 'scene=rivermark\n'
+    printf 'condition=%s\n' "${condition}"
+    printf 'route_prior_snapshot_catalog_root=%s\n' \
+      "${route_prior_catalog_root}"
+    printf 'route_prior_semantics=region_catalog_context_switch\n'
+  fi
   if [[ "${arm}" != "M0" ]]; then
     printf 'module2_assets:'
     printf ' %q' "${module2_asset_args[@]}"
     printf '\n'
   fi
-  printf 'module3: %q ros %q route_prior_enabled:=%s' \
-    "${script_dir}/run_v6_kujiale_low_obstacles.sh" "${arm}" "${route_prior_enabled}"
-  if [[ "${route_prior_enabled}" == true ]]; then
+  if [[ "${scene}" == "rivermark" ]]; then
+    printf 'module3: %q ros %q' \
+      "${script_dir}/run_v6_rivermark.sh" "${condition}"
+  else
+    printf 'module3: %q ros %q route_prior_enabled:=%s' \
+      "${script_dir}/run_v6_kujiale_low_obstacles.sh" "${arm}" "${route_prior_enabled}"
+  fi
+  if [[ "${scene}" == "kujiale" && "${route_prior_enabled}" == true ]]; then
     printf ' route_prior_snapshot_path:=%q' "${route_prior_snapshot}"
   fi
   printf '\n'
@@ -449,7 +525,10 @@ if [[ "${dry_run}" == true ]]; then
     printf ' cognitive_graph_mode:=gvg route_prior_enabled:=%s' \
       "${route_prior_enabled}"
     printf ' module2_asset_root:=%q' "${module2_asset_root}"
-    if [[ "${route_prior_enabled}" == true ]]; then
+    if [[ "${scene}" == "rivermark" ]]; then
+      printf ' route_prior_snapshot_catalog_root:=%q outdoor_context_switch_enabled:=true' \
+        "${route_prior_catalog_root}"
+    elif [[ "${route_prior_enabled}" == true ]]; then
       printf ' route_prior_snapshot_path:=%q' "${route_prior_snapshot}"
     fi
     printf ' socket_path:=%q use_sim_time:=true trajectory_topic:=/ground_truth/odom\n' \
@@ -474,7 +553,10 @@ require_directory "${integration_root}"
 require_directory "${module2_root}"
 module2_root="$(cd "${module2_root}" && pwd -P)"
 canonical_constraints_file="${module2_root}/configs/kujiale_0026_module1_visual_shadow_v310.yaml"
-if [[ -n "${candidate_manifest}" ]]; then
+if [[ "${scene}" == "rivermark" ]]; then
+  require_file "${module2_root}/configs/module2_pdf_v310_module3.yaml"
+  require_file "${module2_root}/weights/module2_srdr_v310_seed20260822.pt"
+elif [[ -n "${candidate_manifest}" ]]; then
   require_file "${candidate_manifest}"
 else
   require_file "${canonical_constraints_file}"
@@ -672,7 +754,13 @@ bridge_route_args=(
   cognitive_graph_mode:=gvg
   "route_prior_enabled:=${route_prior_enabled}"
 )
-if [[ "${route_prior_enabled}" == true ]]; then
+if [[ "${scene}" == "rivermark" ]]; then
+  module3_route_args=()
+  bridge_route_args+=(
+    "route_prior_snapshot_catalog_root:=${route_prior_catalog_root}"
+    outdoor_context_switch_enabled:=true
+  )
+elif [[ "${route_prior_enabled}" == true ]]; then
   module3_route_args+=("route_prior_snapshot_path:=${route_prior_snapshot}")
   bridge_route_args+=("route_prior_snapshot_path:=${route_prior_snapshot}")
 fi
@@ -687,8 +775,13 @@ if [[ -n "${localization_supervisor_mode}" ]]; then
   )
 fi
 
+module3_entry=("${script_dir}/run_v6_kujiale_low_obstacles.sh" ros "${arm}")
+if [[ "${scene}" == "rivermark" ]]; then
+  module3_entry=("${script_dir}/run_v6_rivermark.sh" ros "${condition}")
+fi
+
 exit_if_terminating
-setsid --wait -- "${script_dir}/run_v6_kujiale_low_obstacles.sh" ros "${arm}" \
+setsid --wait -- "${module3_entry[@]}" \
   "${module3_route_args[@]}" \
   "${module3_localization_args[@]}" \
   >"${run_dir}/module3_ros.log" 2>&1 &

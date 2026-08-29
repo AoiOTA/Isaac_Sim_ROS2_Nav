@@ -6,6 +6,9 @@ from xml.etree import ElementTree
 
 import yaml
 
+from robot_bringup.mode_contract import cognitive_nav2_parameters
+from robot_bringup.mode_contract import validate_cognitive_profile
+
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
@@ -31,6 +34,26 @@ def _navigation_launch_module():
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
+
+
+def test_v6_m3_isolation_disables_raw_depth_and_activates_cognitive_inputs():
+    profile = _profile('v6_low_obstacle_isolation')
+    local = profile['local_costmap']['local_costmap']['ros__parameters']
+    global_costmap = profile['global_costmap']['global_costmap'][
+        'ros__parameters']
+    for costmap in (local, global_costmap):
+        assert 'depth_voxel_layer' not in costmap['plugins']
+        assert costmap['depth_voxel_layer']['enabled'] is False
+        assert 'cognitive_obstacle_layer' in costmap['plugins']
+
+    modes_file = PACKAGE_ROOT.parent / 'robot_bringup/config/modes.yaml'
+    final = cognitive_nav2_parameters(
+        validate_cognitive_profile('M3', modes_file))
+    assert final['controller_server']['ros__parameters']['FollowPath'][
+        'CognitiveRiskCritic']['mode'] == 'active'
+    for name in ('local_costmap', 'global_costmap'):
+        assert final[name][name]['ros__parameters'][
+            'cognitive_obstacle_layer']['mode'] == 'active'
 
 
 def test_planner_controller_and_costmaps_are_strictly_two_dimensional():
