@@ -1,7 +1,9 @@
 """Exercise legacy Ideal wrappers without starting ROS processes."""
 
 import importlib.util
+from dataclasses import replace
 from pathlib import Path
+import shutil
 from types import SimpleNamespace
 
 from launch import LaunchContext
@@ -151,6 +153,25 @@ def test_outdoor_mixed_ideal_uses_calibrated_spawn_and_indoor_amcl_is_unchanged(
     assert selected_spawn.map.position == (21.2068, 119.978)
     assert selected_spawn.map.yaw_deg == pytest.approx(136.49593386440827)
     assert selected_spawn.map_calibrated is True
+
+    copied_map = tmp_path / map_file.name
+    copied_image = tmp_path / 'rivermark_selected.pgm'
+    shutil.copy2(map_file, copied_map)
+    shutil.copy2(demo / copied_image.name, copied_image)
+    copied_selection = replace(
+        outdoor, occupancy_map_file=str(copied_map))
+    assert stack._load_localization_spawn(
+        copied_selection, str(spawn_file), 'rivermark_start') is not None
+    copied_image.write_bytes(copied_image.read_bytes() + b'\n')
+    with pytest.raises(RuntimeError, match='map_bundle_sha256 does not match'):
+        stack._load_localization_spawn(
+            copied_selection, str(spawn_file), 'rivermark_start')
+    shutil.copy2(demo / copied_image.name, copied_image)
+    copied_map.write_bytes(copied_map.read_bytes() + b'# mutation\n')
+    with pytest.raises(RuntimeError, match='map_bundle_sha256 does not match'):
+        stack._load_localization_spawn(
+            copied_selection, str(spawn_file), 'rivermark_start')
+
     uncalibrated_spawn_file = tmp_path / 'uncalibrated.spawn.yaml'
     uncalibrated_spawn_file.write_text(
         spawn_file.read_text(encoding='utf-8').replace(

@@ -16,6 +16,7 @@ from launch_ros.actions import Node
 
 from robot_bringup.interactive_policy import resolve_interactive_selection
 from robot_bringup.interactive_policy import teleop_terminal_command
+from robot_bringup.map_manifest import compute_occupancy_map_bundle_sha256
 from robot_bringup.mode_contract import cognitive_nav2_parameters
 from robot_bringup.mode_contract import resolve_ekf_profile
 from robot_bringup.mode_contract import resolve_route_prior_enabled
@@ -101,11 +102,20 @@ def _load_localization_spawn(selection, spawn_poses_file, spawn_pose_name):
     """Load the calibrated map origin required by the Ideal TF owner."""
     if (selection.operation in {'localization', 'navigation'}
             and selection.localization_owner == 'ideal'):
-        return load_spawn_pose(
+        selected_spawn = load_spawn_pose(
             spawn_poses_file,
             spawn_pose_name,
             require_calibrated=True,
         )
+        actual_bundle = compute_occupancy_map_bundle_sha256(
+            selection.occupancy_map_file)
+        if selected_spawn.map_bundle_sha256 != actual_bundle:
+            raise RuntimeError(
+                'calibrated spawn map_bundle_sha256 does not match the '
+                'selected occupancy map YAML/image bundle: '
+                f'spawn={selected_spawn.map_bundle_sha256}, '
+                f'actual={actual_bundle}')
+        return selected_spawn
     return None
 
 

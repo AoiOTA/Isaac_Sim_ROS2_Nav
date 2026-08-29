@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import sys
@@ -15,8 +14,12 @@ import yaml
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPOSITORY_ROOT / "ros2_ws/src/robot_bringup"))
 sys.path.insert(0, str(REPOSITORY_ROOT / "ros2_ws/src/robot_route_planner"))
 
+from robot_bringup.map_manifest import (  # noqa: E402
+    compute_occupancy_map_bundle_sha256,
+)
 from robot_route_planner.cognitive_constraints import (  # noqa: E402
     build_cognitive_constraints,
     occupancy_grid_version,
@@ -51,17 +54,6 @@ def _referenced_path(selection_path: Path, raw: object, field: str) -> Path:
 def _assert_reference(actual: Path, expected: Path, field: str) -> None:
     if actual.resolve() != expected:
         raise ValueError(f"--{field} does not match selection reference")
-
-
-def _map_bundle_sha256(map_yaml: Path) -> str:
-    metadata = _load_mapping(map_yaml, "map YAML")
-    image = Path(str(metadata["image"]))
-    if not image.is_absolute():
-        image = map_yaml.parent / image
-    digest = hashlib.sha256()
-    digest.update(map_yaml.read_bytes())
-    digest.update(image.resolve().read_bytes())
-    return digest.hexdigest()
 
 
 def _runtime_map_version(map_yaml: Path) -> str:
@@ -224,7 +216,8 @@ def build_catalog(
     map_version = _runtime_map_version(map_path)
     if map_version != selection["expected_map_version"]:
         raise ValueError("map bytes do not match expected_map_version")
-    if _map_bundle_sha256(map_path) != selection["map_bundle_sha256"]:
+    map_bundle_sha256 = compute_occupancy_map_bundle_sha256(map_path)
+    if map_bundle_sha256 != selection["map_bundle_sha256"]:
         raise ValueError("map YAML/image bundle differs from selection")
     graph = json.loads(graph_path.read_text(encoding="utf-8"))
     if graph.get("type") != "FeatureCollection" or not isinstance(graph.get("features"), list):

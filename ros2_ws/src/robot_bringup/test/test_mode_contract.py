@@ -370,6 +370,12 @@ def test_documented_mode_matrix_has_no_duplicate_tf_owners():
         'structure_tf_source': 'isaac',
         'odom_to_base_publisher': 'Isaac Compute Odometry',
         'map_to_odom_publisher': 'AMCL',
+        'fixed_localization': {
+            'localization_owner': 'ideal',
+            'map_to_odom_publisher': 'ideal_localization_tf',
+            'localization_map_contract': 'occupancy_only',
+            'initial_pose_source': 'isaac',
+        },
         'structure_tf_publisher': 'Isaac Sim',
         'module1_odometry_topic': '/bio_nav/module1/odom',
         'module1_odometry_publisher': 'wheel_imu_ekf',
@@ -394,8 +400,11 @@ def test_documented_mode_matrix_has_no_duplicate_tf_owners():
         'route_graph_required': True,
     }
     assert document['operations']['navigation']['starts_nav2'] is True
-    assert document['operations']['localization'][
-        'localization_backend'] == 'amcl'
+    for operation in ('localization', 'navigation'):
+        assert document['operations'][operation][
+            'localization_backends'] == ['amcl', 'ideal']
+        assert document['operations'][operation][
+            'localization_backend_default'] == 'amcl'
 
 
 def test_stable_operation_launch_entries_delegate_to_core_contract():

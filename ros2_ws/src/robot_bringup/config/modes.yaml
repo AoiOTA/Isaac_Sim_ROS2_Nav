@@ -35,6 +35,11 @@ modes:
     structure_tf_source: isaac
     odom_to_base_publisher: Isaac Compute Odometry
     map_to_odom_publisher: AMCL
+    fixed_localization:
+      localization_owner: ideal
+      map_to_odom_publisher: ideal_localization_tf
+      localization_map_contract: occupancy_only
+      initial_pose_source: isaac
     structure_tf_publisher: Isaac Sim
     module1_odometry_topic: /bio_nav/module1/odom
     module1_odometry_publisher: wheel_imu_ekf
@@ -52,12 +57,14 @@ operations:
     publishes_initialpose: true
     starts_nav2: false
   localization:
-    localization_backend: amcl
+    localization_backends: [amcl, ideal]
+    localization_backend_default: amcl
     posegraph_required: true
     occupancy_map_required: true
     starts_nav2: false
   navigation:
-    localization_backend: amcl
+    localization_backends: [amcl, ideal]
+    localization_backend_default: amcl
     posegraph_required: true
     occupancy_map_required: true
     starts_nav2: true

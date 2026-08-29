@@ -8,6 +8,7 @@ import yaml
 
 from robot_bringup.map_manifest import MapManifestError
 from robot_bringup.map_manifest import compute_bundle_sha256
+from robot_bringup.map_manifest import compute_occupancy_map_bundle_sha256
 from robot_bringup.map_manifest import create_uncalibrated_manifest
 from robot_bringup.map_manifest import load_map_manifest
 from robot_bringup.map_manifest import validate_initial_pose_contract
@@ -15,6 +16,40 @@ from robot_bringup.mode_contract import validate_mode
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
+
+
+def test_repository_rivermark_occupancy_bundle_binds_exact_yaml_and_image(
+        tmp_path):
+    source_root = REPOSITORY_ROOT / "data/rivermark_demo"
+    source_yaml = source_root / "rivermark_selected.yaml"
+    source_image = source_root / "rivermark_selected.pgm"
+    expected = "01173f02f973f25c94ada35ef4e7b8ba84e74469520d953a8aad967fd0b2e6bb"
+
+    assert compute_occupancy_map_bundle_sha256(source_yaml) == expected
+
+    copied_yaml = tmp_path / source_yaml.name
+    copied_image = tmp_path / source_image.name
+    copied_yaml.write_bytes(source_yaml.read_bytes())
+    copied_image.write_bytes(source_image.read_bytes())
+    assert compute_occupancy_map_bundle_sha256(copied_yaml) == expected
+
+    copied_image.write_bytes(source_image.read_bytes() + b"\n")
+    assert compute_occupancy_map_bundle_sha256(copied_yaml) != expected
+    copied_image.write_bytes(source_image.read_bytes())
+    copied_yaml.write_bytes(source_yaml.read_bytes() + b"# mutation\n")
+    assert compute_occupancy_map_bundle_sha256(copied_yaml) != expected
+
+    copied_yaml.write_bytes(source_yaml.read_bytes())
+    copied_image.unlink()
+    with pytest.raises(MapManifestError, match="image does not exist"):
+        compute_occupancy_map_bundle_sha256(copied_yaml)
+    copied_yaml.write_text("- not-a-map\n", encoding="utf-8")
+    with pytest.raises(MapManifestError, match="must be a mapping"):
+        compute_occupancy_map_bundle_sha256(copied_yaml)
+    linked_yaml = tmp_path / "linked_map.yaml"
+    linked_yaml.symlink_to(source_yaml)
+    with pytest.raises(MapManifestError, match="must not be a symlink"):
+        compute_occupancy_map_bundle_sha256(linked_yaml)
 
 
 def _write_bundle(root: Path, version: str = "warehouse_v2") -> Path:

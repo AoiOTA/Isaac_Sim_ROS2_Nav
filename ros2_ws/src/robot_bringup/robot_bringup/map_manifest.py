@@ -225,6 +225,43 @@ def compute_bundle_sha256(entries: Sequence[tuple[str, str, int, str]]) -> str:
     return digest.hexdigest()
 
 
+def compute_occupancy_map_bundle_sha256(map_yaml: str | Path) -> str:
+    """Hash exact map YAML bytes followed by its resolved image bytes."""
+    yaml_path = Path(os.path.abspath(Path(map_yaml).expanduser()))
+    document = _load_yaml(yaml_path, "occupancy map YAML")
+    raw_image = document.get("image")
+    if not isinstance(raw_image, str) or not raw_image.strip():
+        raise MapManifestError(
+            "occupancy map YAML image must be a non-empty path"
+        )
+    declared_image = Path(raw_image)
+    image_path = Path(os.path.abspath(
+        declared_image
+        if declared_image.is_absolute()
+        else yaml_path.parent / declared_image
+    ))
+    if not image_path.is_file():
+        raise MapManifestError(
+            f"occupancy map image does not exist: {image_path}"
+        )
+    if image_path.is_symlink():
+        raise MapManifestError(
+            f"occupancy map image must not be a symlink: {image_path}"
+        )
+    _validate_occupancy_metadata({}, document, image_path)
+    digest = hashlib.sha256()
+    for path in (yaml_path, image_path):
+        try:
+            with path.open("rb") as stream:
+                while chunk := stream.read(1024 * 1024):
+                    digest.update(chunk)
+        except OSError as exc:
+            raise MapManifestError(
+                f"cannot read occupancy map artifact {path}: {exc}"
+            ) from exc
+    return digest.hexdigest()
+
+
 def _validate_artifact(
     project_root: Path,
     section_name: str,
