@@ -65,9 +65,12 @@ process may already be running.
 
 ## 3. Startup ordering
 
-T1 must start before T2. Isaac performs a startup reset that calls ROS
-`/wheel_odometry/reset` and EKF `/set_pose`; T2-first therefore fails by
-design. T3 always starts last, after observable readiness.
+T1 must start before T2. Before T2, wait only for
+`/wheel_odometry/reset`; do not wait for EKF `/set_pose`. The mixed EKF
+advertises `/set_pose` only after Isaac bootstraps `/clock`, and Isaac's
+bounded fail-closed startup reset discovers the required reset services.
+T2-first therefore fails by design. T3 always starts last, after observable
+readiness.
 
 Rivermark uses a 240 s fail-closed activation timeout because cold USD/RTX
 startup has exceeded 120 s. This is an upper bound, not a fixed sleep, and does
@@ -114,9 +117,13 @@ Terminal T1:
   --route-prior-catalog-root "${BIO_NAV_ROUTE_PRIOR_CATALOG}"
 ```
 
-Terminal T2, after the ROS reset services exist:
+Terminal T2, after only `/wheel_odometry/reset` exists (do not wait for EKF
+`/set_pose` before Isaac starts):
 
 ```bash
+/usr/bin/python3 "${BIO_NAV_MODULE3_ROOT}/scripts/wait_for_empty_service.py" \
+  --service /wheel_odometry/reset \
+  --timeout 120
 ./scripts/run_v6_rivermark.sh isaac static --headless
 ```
 
@@ -133,7 +140,13 @@ current. Hold a bounded stability window, then stop without an episode.
 
 Only after Section 5 passes on a separate fresh root may Terminal T3 run:
 
+`run_experiment.sh` otherwise falls back to the Kujiale spawn manifest, which
+does not define `rivermark_start`.
+
 ```bash
+export ISAAC_NAV_SPAWN_POSES="${BIO_NAV_MODULE3_ROOT}/data/rivermark_demo/rivermark.spawn.yaml"
+test -f "${ISAAC_NAV_SPAWN_POSES}"
+
 ./scripts/run_experiment.sh \
   ros2_ws/src/robot_experiments/config/final_rivermark_static.yaml \
   "${BIO_NAV_RUN_ROOT}/rep1" \
