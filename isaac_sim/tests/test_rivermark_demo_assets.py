@@ -3,7 +3,9 @@ import json
 
 import cv2
 import math
+import numpy as np
 import pytest
+from scipy.ndimage import distance_transform_edt, label
 import yaml
 
 from isaac_sim.src.experiment.scenario import load_dynamic_scenario
@@ -44,6 +46,42 @@ def test_demo_start_and_goal_are_inside_current_map_extent():
         x, y, _ = (float(value) for value in goals[name])
         assert origin_x <= x < maximum_x
         assert origin_y <= y < maximum_y
+
+
+def test_frozen_start_and_g1_through_g5_are_free_connected_and_clear():
+    metadata = yaml.safe_load(
+        (DEMO_ROOT / "rivermark_selected.yaml").read_text(encoding="utf-8")
+    )
+    image = cv2.imread(
+        str(DEMO_ROOT / metadata["image"]), cv2.IMREAD_GRAYSCALE
+    )
+    free = image >= 250
+    resolution = float(metadata["resolution"])
+    origin_x, origin_y, _ = (float(value) for value in metadata["origin"])
+    clearance = distance_transform_edt(free) * resolution
+    components, _ = label(free, structure=np.ones((3, 3), dtype=np.uint8))
+    spawn = yaml.safe_load(
+        (DEMO_ROOT / "rivermark.spawn.yaml").read_text(encoding="utf-8")
+    )["spawn_poses"]["rivermark_start"]["map"]["position"]
+    route = yaml.safe_load(
+        (DEMO_ROOT / "rivermark_demo_goals.yaml").read_text(encoding="utf-8")
+    )["route"]
+    points = [("start", spawn)] + [
+        (str(item["id"]), item["position"]) for item in route
+    ]
+    assert [name for name, _ in points] == ["start", "G1", "G2", "G3", "G4", "G5"]
+
+    component_ids = set()
+    for name, point in points:
+        column = math.floor((float(point[0]) - origin_x) / resolution)
+        row = image.shape[0] - 1 - math.floor(
+            (float(point[1]) - origin_y) / resolution
+        )
+        assert image[row, column] >= 250, name
+        assert clearance[row, column] >= 0.34, name
+        component_ids.add(int(components[row, column]))
+    assert len(component_ids) == 1
+    assert component_ids != {0}
 
 
 def test_campaign_uses_external_goal_ground_truth_and_all_module2_arms():
