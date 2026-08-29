@@ -199,46 +199,6 @@ def test_valid_map_pose_can_claim_manual_ownership():
     assert statuses == ["manual_override"]
 
 
-def test_publish_count_one_completes_and_cancels_after_first_tick(monkeypatch):
-    timer = FakeTimer()
-    statuses = []
-    published = []
-    logger = FakeLogger()
-    node = SimpleNamespace(
-        _manual_override=False,
-        complete=False,
-        _last_clock=SimpleNamespace(sec=1, nanosec=0),
-        _started_at=0.0,
-        _clock_ready_at=0.0,
-        _scan_ready_at=0.0,
-        _scan_barrier=SimpleNamespace(ready=True),
-        _tf_ready=lambda: True,
-        _clear_recoverable_failure=lambda: None,
-        _set_status=statuses.append,
-        _map_frame="map",
-        _pose=SimpleNamespace(
-            name="rivermark_start",
-            map=SimpleNamespace(position=(1.0, 2.0), yaw_deg=0.0),
-            position_stddev_m=0.5,
-            yaw_stddev_deg=10.0,
-        ),
-        _publisher=SimpleNamespace(publish=published.append),
-        _published=0,
-        _publish_count=1,
-        _timer=timer,
-        get_logger=lambda: logger,
-    )
-    monkeypatch.setattr(initial_pose_module.time, "monotonic", lambda: 0.0)
-
-    InitialPosePublisher._tick(node)
-
-    assert len(published) == 1
-    assert node._published == 1
-    assert node.complete
-    assert timer.cancelled
-    assert statuses == ["publishing", "complete"]
-
-
 @pytest.mark.parametrize(
     ("exception", "should_raise"),
     [

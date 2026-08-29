@@ -567,24 +567,15 @@ def test_posegraph_calibration_is_explicitly_retired_from_localization():
 def test_initial_pose_source_is_forwarded_and_rviz_disables_auto_publisher():
     launch_dir = PACKAGE_ROOT / 'launch'
     core_source = (launch_dir / 'ros_stack.launch.py').read_text()
-    navigation_source = (
-        launch_dir / 'navigation_bringup.launch.py').read_text()
-    assert "initial_pose_source not in {'auto', 'rviz'}" in core_source
+    assert "initial_pose_source not in {'auto', 'rviz', 'isaac'}" in core_source
     assert "if initial_pose_source == 'auto':" in core_source
+    assert core_source.count("'initial_pose.launch.py'") == 2
     assert "'initial_pose_source': initial_pose_source" in core_source
     assert "executable='initial_pose_policy'" in core_source
     assert "DeclareLaunchArgument(\n            'map_manifest_file'" \
         in core_source
-    assert "DeclareLaunchArgument(\n            'initial_pose_publish_count', " \
-        "default_value='5')" in core_source
-    assert "'publish_count': LaunchConfiguration(\n" \
-        "                        'initial_pose_publish_count')" in core_source
-    assert core_source.count("'publish_count': LaunchConfiguration(") == 2
-    assert "DeclareLaunchArgument(\n            'initial_pose_publish_count', " \
-        "default_value='5')" in navigation_source
-    assert "'initial_pose_publish_count': LaunchConfiguration(\n" \
-        "                    'initial_pose_publish_count')" \
-        in navigation_source
+    assert "initial_pose_source == 'isaac'" not in core_source
+    assert 'initial_pose_publish_count' not in core_source
     setup_source = (PACKAGE_ROOT / 'setup.py').read_text()
     assert 'initial_pose_policy = robot_bringup.initial_pose_policy:main' \
         in setup_source

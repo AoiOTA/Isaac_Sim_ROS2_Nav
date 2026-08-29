@@ -71,8 +71,6 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'spawn_pose_name', default_value='mapping_start'),
         DeclareLaunchArgument('initial_pose_source', default_value='auto'),
-        DeclareLaunchArgument(
-            'initial_pose_publish_count', default_value='5'),
         DeclareLaunchArgument('interactive', default_value='true'),
         DeclareLaunchArgument('use_rviz', default_value='true'),
         DeclareLaunchArgument('rviz_config', default_value='auto'),
@@ -143,8 +141,6 @@ def generate_launch_description():
                 'spawn_pose_name': LaunchConfiguration('spawn_pose_name'),
                 'initial_pose_source': LaunchConfiguration(
                     'initial_pose_source'),
-                'initial_pose_publish_count': LaunchConfiguration(
-                    'initial_pose_publish_count'),
                 'interactive': LaunchConfiguration('interactive'),
                 'use_rviz': LaunchConfiguration('use_rviz'),
                 'rviz_config': LaunchConfiguration('rviz_config'),

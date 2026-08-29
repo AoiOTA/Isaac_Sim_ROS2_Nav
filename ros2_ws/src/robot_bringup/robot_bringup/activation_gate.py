@@ -129,8 +129,9 @@ class Nav2ActivationGate(Node):
                 'immutable_map_node must be independent from managed_nodes')
         self._initial_pose_source = str(
             self.get_parameter('initial_pose_source').value)
-        if self._initial_pose_source not in {'auto', 'rviz'}:
-            raise ValueError('initial_pose_source must be auto or rviz')
+        if self._initial_pose_source not in {'auto', 'rviz', 'isaac'}:
+            raise ValueError(
+                'initial_pose_source must be auto, rviz, or isaac')
 
         self._tracker = ReadinessTracker(readiness_config)
         self._started_at = time.monotonic()
@@ -1229,9 +1230,15 @@ class Nav2ActivationGate(Node):
                         required=True,
                     )
                 else:
-                    self.get_logger().warning(
-                        'initial_pose_source=rviz: waiting for a new RViz '
-                        '2D Pose Estimate in the current simulation epoch')
+                    if self._initial_pose_source == 'rviz':
+                        self.get_logger().warning(
+                            'initial_pose_source=rviz: waiting for a new RViz '
+                            '2D Pose Estimate in the current simulation epoch')
+                    else:
+                        self.get_logger().info(
+                            'initial_pose_source=isaac: waiting for Isaac '
+                            'reset localization readiness in the current '
+                            'simulation epoch')
                     self._set_recovery_stage('waiting_readiness')
             elif stage == 'waiting_readiness':
                 missing = self._tracker.missing_requirements(now)

@@ -121,7 +121,7 @@ for argument in "$@"; do
     nav2_profile_params_file:=*|nav2_params_file:=*|\
     cognitive_profile:=*|cognitive_graph_mode:=*|route_prior_enabled:=*|\
     module2_enabled:=*|\
-    initial_pose_publish_count:=*|\
+    initial_pose_source:=*|\
     interactive:=*|use_rviz:=*)
       die "V6 Rivermark fixes the estimated-navigation contract; rejected override: ${argument}"
       ;;
@@ -149,8 +149,7 @@ exec "${SCRIPT_DIR}/run_ros.sh" navigation \
   module2_enabled:=false \
   spawn_poses_file:="${spawn_poses_file}" \
   spawn_pose_name:=rivermark_start \
-  initial_pose_source:=auto \
-  initial_pose_publish_count:=1 \
+  initial_pose_source:=isaac \
   interactive:=false \
   use_rviz:=false \
   use_teleop:=false \

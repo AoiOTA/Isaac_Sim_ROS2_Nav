@@ -714,6 +714,71 @@ def test_initial_pose_republisher_uses_clock_evidence_across_epoch_rollback():
     assert not republisher.pending
 
 
+@pytest.mark.parametrize("source", ["auto", "isaac"])
+def test_automatic_pose_policy_publishes_once_after_each_reset_scan(source):
+    initial_poses = []
+    seeded = []
+    simulation_time = [10.0]
+    bridge = SimpleNamespace(
+        _initial_pose_source=source,
+        _deferred_initial_pose_name=None,
+        _simulation_time=lambda: simulation_time[0],
+        spawn_manager=SimpleNamespace(get_map_pose=lambda *_args, **_kwargs:
+                                      SimpleNamespace(
+                                          position=(1.0, 2.0),
+                                          yaw_deg=30.0,
+                                          position_stddev_m=0.1,
+                                          yaw_stddev_deg=5.0,
+                                      )),
+        _PoseWithCovarianceStamped=lambda: SimpleNamespace(
+            header=SimpleNamespace(),
+            pose=SimpleNamespace(
+                pose=SimpleNamespace(
+                    position=SimpleNamespace(),
+                    orientation=SimpleNamespace(),
+                ),
+                covariance=[0.0] * 36,
+            ),
+        ),
+        node=SimpleNamespace(get_clock=lambda: SimpleNamespace(
+            now=lambda: SimpleNamespace(to_msg=lambda: object()))),
+        _initial_pose_publisher=SimpleNamespace(publish=initial_poses.append),
+        _localization_seeded_publisher=SimpleNamespace(publish=seeded.append),
+        _EmptyMessage=lambda: object(),
+    )
+    bridge._initial_pose_republisher = InitialPoseRepublisher(
+        lambda pose_name: ResetServiceBridge._publish_map_initial_pose_once(
+            bridge, pose_name))
+
+    for _episode in ("startup", "reset"):
+        bridge._deferred_initial_pose_name = "mapping_start"
+        ResetServiceBridge._apply_initial_pose_policy(bridge)
+        simulation_time[0] += 0.1
+        bridge._initial_pose_republisher.observe_scan(
+            simulation_time[0], clock_stamp_s=simulation_time[0])
+
+    assert len(initial_poses) == 2
+    assert len(seeded) == 2
+
+
+def test_rviz_policy_cancels_deferred_isaac_pose_unchanged():
+    published = []
+    republisher = InitialPoseRepublisher(published.append)
+    republisher.schedule("old_pose", after_stamp_s=1.0)
+    bridge = SimpleNamespace(
+        _initial_pose_source="rviz",
+        _deferred_initial_pose_name="mapping_start",
+        _initial_pose_republisher=republisher,
+    )
+
+    ResetServiceBridge._apply_initial_pose_policy(bridge)
+    republisher.observe_scan(1.1, clock_stamp_s=1.1)
+
+    assert published == []
+    assert bridge._deferred_initial_pose_name is None
+    assert not republisher.pending
+
+
 class FakeFuture:
     def __init__(self, result=None):
         self._done = False

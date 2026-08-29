@@ -100,8 +100,8 @@ def _include(package, launch_file, arguments):
 def _launch_setup(context):
     initial_pose_source = LaunchConfiguration(
         'initial_pose_source').perform(context).strip().lower()
-    if initial_pose_source not in {'auto', 'rviz'}:
-        raise RuntimeError('initial_pose_source must be auto or rviz')
+    if initial_pose_source not in {'auto', 'rviz', 'isaac'}:
+        raise RuntimeError('initial_pose_source must be auto, rviz, or isaac')
     project_root_value = LaunchConfiguration(
         'project_root').perform(context).strip()
     spawn_poses_file = LaunchConfiguration(
@@ -433,8 +433,6 @@ def _launch_setup(context):
                         'spawn_poses_file').perform(context),
                     'spawn_pose_name': LaunchConfiguration(
                         'spawn_pose_name').perform(context),
-                    'publish_count': LaunchConfiguration(
-                        'initial_pose_publish_count').perform(context),
                     'wait_for_odom_to_base_tf': 'true',
                 },
             ))
@@ -472,8 +470,6 @@ def _launch_setup(context):
                         'spawn_poses_file').perform(context),
                     'spawn_pose_name': LaunchConfiguration(
                         'spawn_pose_name').perform(context),
-                    'publish_count': LaunchConfiguration(
-                        'initial_pose_publish_count').perform(context),
                     'wait_for_odom_to_base_tf': 'true',
                     'stay_alive_for_reseed': 'true',
                 },
@@ -735,9 +731,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'initial_pose_source',
             default_value='auto',
-            description='auto or rviz (localization/navigation only)'),
-        DeclareLaunchArgument(
-            'initial_pose_publish_count', default_value='5'),
+            description='auto, rviz, or isaac (localization/navigation only)'),
         DeclareLaunchArgument(
             'interactive',
             default_value='true',

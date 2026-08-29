@@ -376,6 +376,30 @@ def test_autonomy_policy_fails_closed_after_startup_timeout():
     assert 'missing=initial pose seed' in fatals[0]
 
 
+def test_isaac_recovery_skips_reseed_and_waits_for_current_readiness():
+    stages = []
+    gate = SimpleNamespace(
+        _state_query_lock=threading.RLock(),
+        _next_attempt_at=0.0,
+        _request_in_flight=False,
+        _state_query_in_flight=False,
+        _snapshot_in_flight=False,
+        _stop_gate_release_in_flight=False,
+        _recovery_service_in_flight=False,
+        _recovery_service_operation=None,
+        _recovery_stage='reseed',
+        _initial_pose_source='isaac',
+        _reseed_client=SimpleNamespace(call_async=lambda _request: (_ for _ in ()).throw(
+            AssertionError('Isaac recovery must not call /initial_pose/reseed'))),
+        _set_recovery_stage=stages.append,
+        get_logger=lambda: _Logger(),
+    )
+
+    Nav2ActivationGate._advance_recovery(gate, 1.0)
+
+    assert stages == ['waiting_readiness']
+
+
 def test_gate_source_keeps_wall_timer_and_explicit_recovery_sequence():
     source = (
         PACKAGE_ROOT / 'robot_bringup' / 'activation_gate.py'

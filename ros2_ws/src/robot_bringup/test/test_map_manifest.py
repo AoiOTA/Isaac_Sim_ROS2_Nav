@@ -132,15 +132,17 @@ def test_repository_warehouse_new_bundle_and_auto_pose_are_exactly_bound():
     assert manifest.map_version == "warehouse_new"
     assert len(manifest.artifacts) == 4
     assert manifest.calibration.calibrated is True
-    validate_initial_pose_contract(
-        manifest,
-        initial_pose_source="auto",
-        spawn_poses_file=(
-            REPOSITORY_ROOT
-            / "isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.spawn.yaml"
-        ),
-        spawn_pose_name="mapping_start",
-    )
+    for source in ("auto", "isaac"):
+        validate_initial_pose_contract(
+            manifest,
+            initial_pose_source=source,
+            spawn_poses_file=(
+                REPOSITORY_ROOT
+                / "isaac_sim/configs/environments/"
+                "kujiale_0026_A_to_B_door_open.spawn.yaml"
+            ),
+            spawn_pose_name="mapping_start",
+        )
 
 
 def test_repository_v6_isaacgen_bundle_and_auto_pose_are_exactly_bound():
@@ -198,18 +200,19 @@ def test_warehouse_v2_uncalibrated_auto_fails_fast_but_rviz_passes(tmp_path):
     )
     assert selection.map_version == "warehouse_v2"
 
-    with pytest.raises(ValueError, match="warehouse_v2.*uncalibrated"):
-        validate_mode(
-            "navigation",
-            "ideal",
-            "isaac",
-            str(prefix),
-            str(occupancy_yaml),
-            map_manifest_file=str(manifest_path),
-            project_root=str(tmp_path),
-            initial_pose_source="auto",
-            spawn_poses_file=str(tmp_path / "does-not-need-to-exist.yaml"),
-        )
+    for source in ("auto", "isaac"):
+        with pytest.raises(ValueError, match="warehouse_v2.*uncalibrated"):
+            validate_mode(
+                "navigation",
+                "ideal",
+                "isaac",
+                str(prefix),
+                str(occupancy_yaml),
+                map_manifest_file=str(manifest_path),
+                project_root=str(tmp_path),
+                initial_pose_source=source,
+                spawn_poses_file=str(tmp_path / "does-not-need-to-exist.yaml"),
+            )
 
 
 def test_calibrated_auto_requires_same_version_bundle_and_profile(tmp_path):

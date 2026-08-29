@@ -782,10 +782,10 @@ class ResetServiceBridge:
 
     def _initial_pose_source_callback(self, message: Any) -> None:
         source = str(message.data).strip().lower()
-        if source not in {"auto", "rviz"}:
+        if source not in {"auto", "rviz", "isaac"}:
             self.node.get_logger().error(
                 "ignoring invalid /simulation/initial_pose_source value "
-                f"{message.data!r}; expected auto or rviz"
+                f"{message.data!r}; expected auto, rviz, or isaac"
             )
             return
         changed = source != self._initial_pose_source
@@ -802,7 +802,7 @@ class ResetServiceBridge:
             self._deferred_initial_pose_name = None
             return
         if (
-            self._initial_pose_source != "auto"
+            self._initial_pose_source not in {"auto", "isaac"}
             or self._deferred_initial_pose_name is None
         ):
             return

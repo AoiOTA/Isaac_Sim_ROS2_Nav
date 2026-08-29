@@ -11,8 +11,8 @@ from std_msgs.msg import String
 
 def normalize_initial_pose_source(value: object) -> str:
     source = str(value).strip().lower()
-    if source not in {"auto", "rviz"}:
-        raise ValueError("initial_pose_source must be auto or rviz")
+    if source not in {"auto", "rviz", "isaac"}:
+        raise ValueError("initial_pose_source must be auto, rviz, or isaac")
     return source
 
 

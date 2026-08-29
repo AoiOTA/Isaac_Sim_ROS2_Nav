@@ -627,16 +627,19 @@ def validate_initial_pose_contract(
     spawn_poses_file: str | Path,
     spawn_pose_name: str,
 ) -> None:
-    """Require auto initial pose to be calibrated for this exact bundle."""
+    """Require automatic initial pose to be calibrated for this exact bundle."""
     source = initial_pose_source.strip().lower()
     if source == "rviz":
         return
-    if source != "auto":
-        raise MapManifestError("initial_pose_source must be auto or rviz")
+    if source not in {"auto", "isaac"}:
+        raise MapManifestError(
+            "initial_pose_source must be auto, rviz, or isaac"
+        )
     if not manifest.calibration.calibrated:
         raise MapManifestError(
             f"map {manifest.map_version!r} is uncalibrated; "
-            "use initial_pose_source=rviz and calibrate before enabling auto"
+            "use initial_pose_source=rviz and calibrate before enabling "
+            "automatic initial pose"
         )
     pose_name = spawn_pose_name.strip()
     is_primary_profile = manifest.calibration.spawn_pose_profile == pose_name

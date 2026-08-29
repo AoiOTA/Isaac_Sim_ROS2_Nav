@@ -328,11 +328,12 @@ def _spin_until(executor, predicate, timeout):
 
 @pytest.mark.ros
 @pytest.mark.parametrize('event_kind', ['clock_rollback', 'reset_event'])
+@pytest.mark.parametrize('initial_pose_source', ['auto', 'isaac'])
 def test_gate_activates_once_then_recovers_in_order_after_epoch_change(
-        tmp_path, event_kind):
+        tmp_path, event_kind, initial_pose_source):
     parameters = tmp_path / 'gate.yaml'
     parameters.write_text(
-        """nav2_activation_gate:
+        f"""nav2_activation_gate:
   ros__parameters:
     use_sim_time: false
     startup_timeout: 5.0
@@ -347,7 +348,7 @@ def test_gate_activates_once_then_recovers_in_order_after_epoch_change(
     max_attempts: 3
     retry_initial_backoff: 0.05
     retry_maximum_backoff: 0.10
-    initial_pose_source: auto
+    initial_pose_source: {initial_pose_source}
 """,
         encoding='utf-8',
     )
@@ -374,16 +375,18 @@ def test_gate_activates_once_then_recovers_in_order_after_epoch_change(
             and 'manager:RESUME' in fixture.events,
             4.0,
         )
-        assert fixture.events == [
+        expected_events = [
             'direct:map_server:activate',
             'manager:STARTUP',
             'cancel',
             'manager:PAUSE',
             'clear_global',
             'clear_local',
-            'reseed',
-            'manager:RESUME',
         ]
+        if initial_pose_source == 'auto':
+            expected_events.append('reseed')
+        expected_events.append('manager:RESUME')
+        assert fixture.events == expected_events
         assert gate._tracker.epoch == 1
     finally:
         fixture._timer.cancel()
