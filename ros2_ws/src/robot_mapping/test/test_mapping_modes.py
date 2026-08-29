@@ -51,7 +51,12 @@ def test_amcl_profiles_are_scene_specific_initial_values_with_tf_ownership():
             'nav2_amcl::DifferentialMotionModel')
     assert kujiale['max_particles'] == 3000
     assert rivermark['max_particles'] == 6000
-    assert rivermark['do_beamskip'] is True
+    assert rivermark['do_beamskip'] is False
+    assert rivermark['alpha1'] == 0.25
+    assert rivermark['alpha2'] == 0.25
+    assert rivermark['alpha3'] == 0.10
+    assert rivermark['alpha4'] == 0.10
+    assert rivermark['alpha5'] == 0.10
     assert rivermark['beam_skip_distance'] == 0.7
     assert rivermark['beam_skip_threshold'] == 0.3
     assert rivermark['beam_skip_error_threshold'] == 0.9
