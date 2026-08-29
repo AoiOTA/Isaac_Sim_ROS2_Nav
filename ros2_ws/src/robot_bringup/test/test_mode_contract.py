@@ -455,20 +455,6 @@ def test_v6_local_arms_do_not_select_the_cognitive_graph_mode():
     assert "'module2_enabled': module2_enabled" in core_source
 
 
-def test_route_tracking_lookahead_is_forwarded_through_bringup_layers():
-    core_source = (
-        PACKAGE_ROOT / 'launch' / 'ros_stack.launch.py').read_text()
-    bringup_source = (
-        PACKAGE_ROOT / 'launch' / 'navigation_bringup.launch.py').read_text()
-
-    for source in (core_source, bringup_source):
-        assert "'route_tracking_lookahead_m', default_value='0.0'" in source
-    assert "'route_tracking_lookahead_m': LaunchConfiguration(" \
-        in bringup_source
-    assert "'route_tracking_lookahead_m': LaunchConfiguration(" in core_source
-    assert "'route_tracking_lookahead_m').perform(context)" in core_source
-
-
 def test_only_navigation_enables_the_parallel_nearfield_safety_scan():
     core_source = (
         PACKAGE_ROOT / 'launch' / 'ros_stack.launch.py').read_text()

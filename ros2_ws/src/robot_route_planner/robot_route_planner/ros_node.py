@@ -524,7 +524,6 @@ class RouteCoordinator:
             ("set_route_graph_service", "/route_server/set_route_graph"),
             ("cognitive_graph_mode", "gvg"),
             ("route_prior_enabled", True),
-            ("route_tracking_lookahead_m", 0.0),
             ("cognitive_graph_topic", "/bio_nav/module2/cognitive_place_graph"),
             ("cognitive_graph_reset_epoch", 0),
             ("cognitive_graph_session_id", ""),
@@ -538,15 +537,6 @@ class RouteCoordinator:
         if not defaults_path.is_file() or not map_path.is_file():
             raise RuntimeError("engineering_defaults_file and map_yaml are required")
         self.defaults = load_engineering_defaults(defaults_path)
-        route_tracking_lookahead_m = float(
-            node.get_parameter("route_tracking_lookahead_m").value
-        )
-        if route_tracking_lookahead_m < 0.0:
-            raise RuntimeError("route_tracking_lookahead_m must be non-negative")
-        if route_tracking_lookahead_m > 0.0:
-            self.defaults["route_tracking"]["lookahead_m"] = (
-                route_tracking_lookahead_m
-            )
         self.module2_response_timeout_s = float(
             node.get_parameter("module2_response_timeout_s").value
         )

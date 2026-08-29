@@ -59,8 +59,6 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'route_prior_enabled', default_value='auto'),
         DeclareLaunchArgument(
-            'route_tracking_lookahead_m', default_value='0.0'),
-        DeclareLaunchArgument(
             'cognitive_constraints_override_file', default_value=''),
         DeclareLaunchArgument(
             'activation_startup_timeout', default_value='120.0'),
@@ -133,8 +131,6 @@ def generate_launch_description():
                     'cognitive_graph_mode'),
                 'route_prior_enabled': LaunchConfiguration(
                     'route_prior_enabled'),
-                'route_tracking_lookahead_m': LaunchConfiguration(
-                    'route_tracking_lookahead_m'),
                 'cognitive_constraints_override_file': LaunchConfiguration(
                     'cognitive_constraints_override_file'),
                 'activation_startup_timeout': LaunchConfiguration(
