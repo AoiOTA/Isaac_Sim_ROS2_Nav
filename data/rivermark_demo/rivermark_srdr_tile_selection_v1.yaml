@@ -1,0 +1,93 @@
+schema: bio_nav.v310.rivermark_srdr_tile_selection.v1
+scene_id: rivermark_a
+scenario_map_revision: rivermark_0_05_v1
+map_bundle_sha256: 01173f02f973f25c94ada35ef4e7b8ba84e74469520d953a8aad967fd0b2e6bb
+expected_map_version: ba4f3fafb54d3b6e886a4dc9f933c94899ce83b176877f3726b73f2aed9ed4dc
+graph_id: rivermark_selected:gvg_v1
+graph_revision: 1
+tile_revision: 1
+model_id: module2_srdr_v310_seed20260822
+grid_width: 16
+grid_height: 16
+resolution_m: 1.0
+unknown_is_occupied: true
+footprint:
+  polygon_m:
+  - [0.255, 0.210]
+  - [0.255, -0.210]
+  - [-0.230, -0.210]
+  - [-0.230, 0.210]
+  padding_m: 0.005
+  padded_inscribed_radius_m: 0.215
+  sweep_sample_spacing_m: 0.025
+references:
+  map_yaml: rivermark_selected.yaml
+  graph_geojson: rivermark_selected.geojson
+  region_config: rivermark_regions.yaml
+  waypoint_config: rivermark_demo_goals.yaml
+  static_obstacles_config: final_rivermark_static_obstacles.yaml
+  dynamic_config: final_rivermark_dynamic.yaml
+route_region_ids:
+- rivermark_a:region_03
+- rivermark_a:region_07
+- rivermark_a:region_08
+- rivermark_a:region_09
+- rivermark_a:region_10
+- rivermark_a:region_14
+- rivermark_a:region_15
+- rivermark_a:region_16
+- rivermark_a:region_22
+- rivermark_a:region_29
+- rivermark_a:region_30
+- rivermark_a:region_34
+- rivermark_a:region_35
+- rivermark_a:region_36
+- rivermark_a:region_42
+- rivermark_a:region_43
+ring_region_ids:
+- rivermark_a:region_02
+- rivermark_a:region_04
+- rivermark_a:region_06
+- rivermark_a:region_11
+- rivermark_a:region_13
+- rivermark_a:region_17
+- rivermark_a:region_21
+- rivermark_a:region_23
+- rivermark_a:region_24
+- rivermark_a:region_27
+- rivermark_a:region_28
+- rivermark_a:region_31
+- rivermark_a:region_37
+- rivermark_a:region_44
+validation:
+  waypoint_region_ids:
+    start: rivermark_a:region_03
+    G1: rivermark_a:region_09
+    G2: rivermark_a:region_14
+    G3: rivermark_a:region_30
+    G4: rivermark_a:region_35
+    G5: rivermark_a:region_43
+  nominal_route_region_sequence:
+  - rivermark_a:region_03
+  - rivermark_a:region_10
+  - rivermark_a:region_09
+  - rivermark_a:region_16
+  - rivermark_a:region_15
+  - rivermark_a:region_08
+  - rivermark_a:region_07
+  - rivermark_a:region_14
+  - rivermark_a:region_22
+  - rivermark_a:region_30
+  - rivermark_a:region_29
+  - rivermark_a:region_36
+  - rivermark_a:region_29
+  - rivermark_a:region_36
+  - rivermark_a:region_35
+  - rivermark_a:region_34
+  - rivermark_a:region_42
+  - rivermark_a:region_43
+  expected_route_outside_catalog_m: 0.0
+  static_obstacle_id: rivermark_static_arc12
+  static_obstacle_region_id: rivermark_a:region_09
+  dynamic_case_id: crossing
+  dynamic_region_id: rivermark_a:region_22
