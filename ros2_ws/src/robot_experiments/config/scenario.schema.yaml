@@ -128,6 +128,7 @@ properties:
           maximum_reverse_distance_fraction: {type: number, minimum: 0, maximum: 1}
           minimum_curved_distance_fraction: {type: number, minimum: 0, maximum: 1}
           maximum_stopped_time_fraction: {type: number, minimum: 0, maximum: 1}
+          static_geometric_overlap_is_diagnostic_only: {type: boolean}
       obstacles:
         type: object
         additionalProperties: false

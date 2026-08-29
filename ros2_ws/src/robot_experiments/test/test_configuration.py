@@ -147,6 +147,11 @@ def test_v6_final_kujiale_scenarios_are_canonical_single_obstacle_routes(filenam
     assert (
         len(scenario.obstacles["static"]) + len(scenario.obstacle_trajectories)
     ) == 1
+    if category == "dynamic":
+        assert scenario.obstacles["static"] == []
+        assert not scenario.success.static_geometric_overlap_is_diagnostic_only
+    else:
+        assert scenario.success.static_geometric_overlap_is_diagnostic_only
     assert scenario.dynamic_config_file is not None
     assert scenario.resolve_path(scenario.dynamic_config_file).is_file()
     for configured in (
@@ -361,6 +366,7 @@ def test_v6_pilot_kujiale_static_hotreset_matches_final_contract():
     assert pilot.resolve_path(pilot.dynamic_config_file).is_file()
     assert pilot.obstacles == final.obstacles
     assert pilot.route == final.route
+    assert final.success.static_geometric_overlap_is_diagnostic_only
     assert pilot.success == final.success
 
 

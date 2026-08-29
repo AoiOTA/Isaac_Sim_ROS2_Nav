@@ -139,6 +139,15 @@ def test_single_run_accepts_values_at_plan_boundaries():
     assert evaluation.failure_reasons == ()
 
 
+def test_contact_sensor_collision_remains_an_authoritative_failure():
+    evaluation = evaluate_single_run(
+        successful_observation(collision_detected=True)
+    )
+
+    assert not evaluation.success
+    assert evaluation.failure_reasons == ("collision_detected",)
+
+
 @pytest.mark.parametrize(
     ("override", "reason"),
     [
