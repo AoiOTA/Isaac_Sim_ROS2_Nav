@@ -552,10 +552,14 @@ require_directory "${integration_root}"
 }
 require_directory "${module2_root}"
 module2_root="$(cd "${module2_root}" && pwd -P)"
+if [[ "${arm}" != "M0" ]]; then
+  require_directory "${module2_asset_root}"
+  module2_asset_root="$(cd "${module2_asset_root}" && pwd -P)"
+fi
 canonical_constraints_file="${module2_root}/configs/kujiale_0026_module1_visual_shadow_v310.yaml"
 if [[ "${scene}" == "rivermark" ]]; then
   require_file "${module2_root}/configs/module2_pdf_v310_module3.yaml"
-  require_file "${module2_root}/weights/module2_srdr_v310_seed20260822.pt"
+  require_file "${module2_asset_root}/weights/module2_srdr_v310_seed20260822.pt"
 elif [[ -n "${candidate_manifest}" ]]; then
   require_file "${candidate_manifest}"
 else

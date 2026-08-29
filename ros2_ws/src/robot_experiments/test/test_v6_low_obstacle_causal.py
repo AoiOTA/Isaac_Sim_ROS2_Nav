@@ -3014,6 +3014,8 @@ def _start_fake_phase_f_stack(
     tmp_path: Path,
     *,
     arm: str = "M3",
+    scene: str = "kujiale",
+    condition: str = "static",
     producer_ignores_term: bool = False,
     localization_supervisor_mode: str | None = None,
     enable_route_prior: bool = False,
@@ -3037,8 +3039,7 @@ validate_v6_dynamic_integration_overlay() { :; }
     )
     heartbeat = tmp_path / "module3.heartbeat"
     module3_argv = tmp_path / "module3.argv"
-    (scripts / "run_v6_kujiale_low_obstacles.sh").write_text(
-        """#!/usr/bin/env bash
+    fake_module3 = """#!/usr/bin/env bash
 printf '%s\n' "$@" >"${FAKE_MODULE3_ARGV}"
 mkdir -p "${ISAAC_NAV_RUNTIME_DIR}"
 exec 9>"${ISAAC_NAV_RUNTIME_DIR}/ros.lock"
@@ -3051,7 +3052,13 @@ while :; do
   printf '%s\n' "$(date +%s%N)" >>"${FAKE_MODULE3_HEARTBEAT}"
   sleep 0.02
 done
-""",
+"""
+    (scripts / "run_v6_kujiale_low_obstacles.sh").write_text(
+        fake_module3,
+        encoding="utf-8",
+    )
+    (scripts / "run_v6_rivermark.sh").write_text(
+        fake_module3,
         encoding="utf-8",
     )
     integration = tmp_path / "integration"
@@ -3136,6 +3143,7 @@ wait "$!"
     for path in (
         scripts / "run_v6_low_obstacle_phase_f_stack.sh",
         scripts / "run_v6_kujiale_low_obstacles.sh",
+        scripts / "run_v6_rivermark.sh",
         fake_bin / "ros2",
         fake_bin / "setsid",
     ):
@@ -3146,6 +3154,17 @@ wait "$!"
     )
     constraints.parent.mkdir(parents=True)
     constraints.touch()
+    (module2 / "configs/module2_pdf_v310_module3.yaml").touch()
+    module2_asset_root = tmp_path / "module2-assets"
+    checkpoint = (
+        module2_asset_root / "weights/module2_srdr_v310_seed20260822.pt"
+    )
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.touch()
+    route_prior_catalog = tmp_path / "route-prior-catalog"
+    route_prior_catalog.mkdir()
+    (route_prior_catalog / "catalog.json").write_text(
+        "{}\n", encoding="utf-8")
     run_dir = tmp_path / "run"
     socket_path = tmp_path / "socket/module2.sock"
     runtime_dir = tmp_path / "runtime"
@@ -3178,8 +3197,14 @@ wait "$!"
         str(scripts / "run_v6_low_obstacle_phase_f_stack.sh"),
         arm, "--domain", "150", "--run-dir", str(run_dir),
         "--socket", str(socket_path),
-        "--module2-asset-root", str(tmp_path / "module2-assets"),
+        "--module2-asset-root", str(module2_asset_root),
     ]
+    if scene == "rivermark":
+        command.extend([
+            "--scene", scene,
+            "--condition", condition,
+            "--route-prior-catalog-root", str(route_prior_catalog),
+        ])
     if localization_supervisor_mode is not None:
         command.extend(
             [
@@ -3229,6 +3254,10 @@ wait "$!"
         module2_argv=module2_argv,
         bridge_argv=bridge_argv,
         candidate_manifest=candidate_manifest,
+        module2_root=module2,
+        module2_asset_root=module2_asset_root,
+        checkpoint=checkpoint,
+        route_prior_catalog=route_prior_catalog,
         route_prior_snapshot=route_prior_snapshot,
         signal_log=signal_log,
         env=env,
@@ -3254,6 +3283,60 @@ def test_phase_f_stack_explicitly_disables_route_prior_for_module2_arms(
         assert bridge.count(asset_arg) == 1
     finally:
         _stop_fake_phase_f_stack(fake)
+
+
+def test_phase_f_rivermark_preflight_uses_separate_checkpoint_asset_root(
+    tmp_path,
+):
+    fake = _start_fake_phase_f_stack(tmp_path, scene="rivermark")
+    try:
+        assert (fake.module2_root / "configs/module2_pdf_v310_module3.yaml").is_file()
+        assert fake.checkpoint.is_file()
+        assert not (fake.module2_root / "weights").exists()
+        module2 = fake.module2_argv.read_text(encoding="utf-8").splitlines()
+        assert module2[module2.index("--module2-root") + 1] == str(
+            fake.module2_root.resolve())
+        assert module2[module2.index("--module2-asset-root") + 1] == str(
+            fake.module2_asset_root.resolve())
+        assert module2[module2.index("--config") + 1] == (
+            "configs/module2_pdf_v310_module3.yaml")
+        assert module2[module2.index("--checkpoint") + 1] == (
+            "weights/module2_srdr_v310_seed20260822.pt")
+        assert fake.module3_argv.read_text(encoding="utf-8").splitlines() == [
+            "ros", "static"]
+    finally:
+        _stop_fake_phase_f_stack(fake)
+
+    fake.checkpoint.unlink()
+    fake.module3_argv.unlink()
+    failed = subprocess.run(
+        [
+            str(fake.script), "M3",
+            "--scene", "rivermark",
+            "--condition", "static",
+            "--domain", "150",
+            "--run-dir", str(tmp_path / "missing-run"),
+            "--socket", str(tmp_path / "missing/module2.sock"),
+            "--module2-asset-root", str(fake.module2_asset_root),
+            "--route-prior-catalog-root", str(fake.route_prior_catalog),
+        ],
+        env=fake.env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=5.0,
+    )
+    assert failed.returncode != 0
+    assert not fake.module3_argv.exists()
+    source = fake.script.read_text(encoding="utf-8")
+    assert (
+        'require_file "${module2_asset_root}/weights/'
+        'module2_srdr_v310_seed20260822.pt"'
+    ) in source
+    assert (
+        'require_file "${module2_root}/weights/'
+        'module2_srdr_v310_seed20260822.pt"'
+    ) not in source
 
 
 def test_final_route_prior_pilot_dry_run_defaults_off(tmp_path):
