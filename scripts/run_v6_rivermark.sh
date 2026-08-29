@@ -128,6 +128,7 @@ for argument in "$@"; do
     module2_enabled:=*|\
     region_config_file:=*|\
     initial_pose_source:=*|\
+    activation_startup_timeout:=*|activation_startup_policy:=*|\
     interactive:=*|use_rviz:=*)
       die "V6 Rivermark fixes the navigation contract; rejected override: ${argument}"
       ;;
@@ -157,6 +158,7 @@ exec "${SCRIPT_DIR}/run_ros.sh" navigation \
   spawn_poses_file:="${spawn_poses_file}" \
   spawn_pose_name:=rivermark_start \
   initial_pose_source:=isaac \
+  activation_startup_timeout:=240.0 \
   interactive:=false \
   use_rviz:=false \
   use_teleop:=false \

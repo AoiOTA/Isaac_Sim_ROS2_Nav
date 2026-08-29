@@ -612,6 +612,9 @@ def test_v6_rivermark_ros_argv_is_full_mixed_m3_gvg_chain(tmp_path):
                and argument.endswith('/rivermark_regions.yaml')
                for argument in arguments)
     assert 'initial_pose_source:=isaac' in arguments
+    assert arguments.count('activation_startup_timeout:=240.0') == 1
+    assert not any(argument.startswith('activation_startup_policy:=')
+                   for argument in arguments)
     assert 'use_rviz:=false' in arguments
     assert not any(argument.startswith('posegraph_file:=')
                    for argument in arguments)
@@ -674,6 +677,8 @@ die() {{ printf '%s\\n' "$*" >&2; return 1; }}
      'module2_enabled:=true',
      'region_config_file:=/tmp/regions.yaml',
      'initial_pose_source:=auto',
+     'activation_startup_timeout:=30.0',
+     'activation_startup_policy:=wait_for_seed',
      'nav2_profile_params_file:=/tmp/caller-nav2.yaml',
      'nav2_params_file:=/tmp/caller-nav2.yaml'),
 )
