@@ -690,3 +690,13 @@ def test_navigation_launch_has_last_precedence_controller_envelope():
     assert 'allow_substs=True' in source
     assert source.index('str(a21_overlay),') < source.index(
         'cognitive_profile_params_file,') < source.index('ParameterFile(')
+
+
+def test_navigation_launch_binds_typed_route_tracking_lookahead():
+    source = (PACKAGE_ROOT / 'launch' / 'navigation.launch.py').read_text(
+        encoding='utf-8')
+
+    assert "'route_tracking_lookahead_m', default_value='0.0'" in source
+    assert "route_tracking_lookahead_m = LaunchConfiguration(" in source
+    assert "'route_tracking_lookahead_m': ParameterValue(" in source
+    assert 'route_tracking_lookahead_m, value_type=float)' in source

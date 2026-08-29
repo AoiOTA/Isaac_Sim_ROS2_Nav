@@ -492,6 +492,8 @@ def _launch_setup(context):
                     'module2_prior_ttl_s').perform(context),
                 'cognitive_graph_mode': cognitive_graph_mode,
                 'route_prior_enabled': route_prior_enabled_value,
+                'route_tracking_lookahead_m': LaunchConfiguration(
+                    'route_tracking_lookahead_m').perform(context),
                 'cognitive_constraints_override_file': LaunchConfiguration(
                     'cognitive_constraints_override_file').perform(context),
                 'voxel_grid_topic': (
@@ -708,6 +710,8 @@ def generate_launch_description():
             description=(
                 'auto preserves legacy module2_enabled coupling; true or '
                 'false independently controls route edge-prior consumption')),
+        DeclareLaunchArgument(
+            'route_tracking_lookahead_m', default_value='0.0'),
         DeclareLaunchArgument(
             'cognitive_constraints_override_file', default_value='',
             description=(

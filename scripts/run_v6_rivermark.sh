@@ -120,6 +120,7 @@ for argument in "$@"; do
     lidar_odometry_validated:=*|nav2_profile:=*|\
     nav2_profile_params_file:=*|nav2_params_file:=*|\
     cognitive_profile:=*|cognitive_graph_mode:=*|route_prior_enabled:=*|\
+    route_tracking_lookahead_m:=*|\
     module2_enabled:=*|\
     interactive:=*|use_rviz:=*)
       die "V6 Rivermark fixes the estimated-navigation contract; rejected override: ${argument}"
@@ -145,6 +146,7 @@ exec "${SCRIPT_DIR}/run_ros.sh" navigation \
   cognitive_profile:=M0 \
   cognitive_graph_mode:=gvg \
   route_prior_enabled:=false \
+  route_tracking_lookahead_m:=0.6 \
   module2_enabled:=false \
   spawn_poses_file:="${spawn_poses_file}" \
   spawn_pose_name:=rivermark_start \
