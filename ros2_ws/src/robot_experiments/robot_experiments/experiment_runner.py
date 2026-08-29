@@ -129,15 +129,37 @@ DYNAMIC_CASE_SET_MOTIONS = {
     ),
 }
 EXPERIMENT_ARMS = frozenset({"off", "sr_medium", "dr_medium", "medium"})
+COMMAND_ZERO_TOLERANCE = 1.0e-3
+TERMINAL_ZERO_CADENCE_TOLERANCE_SEC = 0.10
 
 
 def _strict_success_from_leg_count(
-    result: object, leg_count: int, route_pose_count: int
+    result: object,
+    leg_count: int,
+    route_pose_count: int,
+    *,
+    terminal_zero_confirmed: bool,
 ) -> bool:
     """Bind strict success to the actual dispatch contract."""
 
     expected_leg_count = route_pose_count or 1
-    return result == "success" and leg_count == expected_leg_count
+    return (
+        result == "success"
+        and leg_count == expected_leg_count
+        and terminal_zero_confirmed
+    )
+
+
+def _result_with_terminal_zero(
+    reasons: list[str], terminal_zero_confirmed: bool
+) -> tuple[str, list[str]]:
+    """Make actuator terminal safety part of the manifest result."""
+
+    combined = list(reasons)
+    if not terminal_zero_confirmed:
+        combined.append("terminal_zero_not_confirmed")
+    combined = list(dict.fromkeys(combined))
+    return ("success" if not combined else "failure"), combined
 
 
 def _record_tracked_route_length(
@@ -750,6 +772,11 @@ class ExperimentRunner(Node):
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
         )
+        command_observation_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+        )
         self._clock_ready = False
         self._clock_stamp = None
         self._clock_subscription = self.create_subscription(
@@ -772,6 +799,12 @@ class ExperimentRunner(Node):
             str(self.declare_parameter("command_topic", "/cmd_vel").value),
             self._command_callback,
             reliable,
+        )
+        self._actuator_command_subscription = self.create_subscription(
+            Twist,
+            "/cmd_vel_sim",
+            self._actuator_command_callback,
+            command_observation_qos,
         )
         self._status_subscriptions = [
             self.create_subscription(
@@ -1031,6 +1064,22 @@ class ExperimentRunner(Node):
         self._navigation_active = False
         self._navigation_start_stamp_s: float | None = None
         self._navigation_end_stamp_s: float | None = None
+        self._terminal_zero_observation_started_monotonic: float | None = None
+        self._terminal_zero_barrier_monotonic: float | None = None
+        self._terminal_zero_barrier_source = "not_observed"
+        self._terminal_zero_barrier_leg_id: str | None = None
+        self._terminal_zero_expected_route_completion_epoch: int | None = None
+        self._terminal_zero_expected_route_leg_id: str | None = None
+        self._terminal_zero_expected_route_leg_is_final = False
+        self._terminal_zero_confirmed_monotonic: float | None = None
+        self._terminal_zero_first_zero_monotonic: float | None = None
+        self._terminal_zero_last_zero_monotonic: float | None = None
+        self._terminal_zero_confirming_sample_count = 0
+        self._terminal_zero_confirmed = False
+        self._terminal_zero_reason = "not_checked"
+        self._cmd_vel_sim_last_receive_monotonic: float | None = None
+        self._cmd_vel_sim_last_nonzero_monotonic: float | None = None
+        self._cmd_vel_sim_zero_stamps: list[float] = []
         self._route_feedback_count = 0
         self._minimum_poses_remaining: int | None = None
         self._maximum_route_recoveries = 0
@@ -1195,6 +1244,35 @@ class ExperimentRunner(Node):
                 )
             )
 
+    def _actuator_command_callback(self, message: Twist) -> None:
+        """Observe executor-side commands without publishing or changing control."""
+
+        now = time.monotonic()
+        values = (
+            float(message.linear.x),
+            float(message.linear.y),
+            float(message.angular.z),
+        )
+        self._cmd_vel_sim_last_receive_monotonic = now
+        nonzero = not all(math.isfinite(value) for value in values) or any(
+            abs(value) > COMMAND_ZERO_TOLERANCE for value in values
+        )
+        if nonzero:
+            self._cmd_vel_sim_last_nonzero_monotonic = now
+            self._cmd_vel_sim_zero_stamps.clear()
+            if (
+                self._terminal_zero_barrier_monotonic is not None
+                and now > self._terminal_zero_barrier_monotonic
+            ):
+                self._terminal_zero_confirmed = False
+                self._terminal_zero_reason = "terminal_nonzero_after_barrier"
+                self._terminal_zero_confirmed_monotonic = None
+                self._terminal_zero_first_zero_monotonic = None
+                self._terminal_zero_last_zero_monotonic = None
+                self._terminal_zero_confirming_sample_count = 0
+        else:
+            self._cmd_vel_sim_zero_stamps.append(now)
+
     def _collision_callback(self, message: Bool) -> None:
         self._collision_seen = True
         detected = bool(message.data)
@@ -1343,6 +1421,18 @@ class ExperimentRunner(Node):
     def _route_goal_complete_callback(self, message: Bool) -> None:
         self._route_goal_complete_epoch += 1
         self._latest_route_goal_complete = bool(message.data)
+        expected_epoch = self._terminal_zero_expected_route_completion_epoch
+        if expected_epoch != self._route_goal_complete_epoch:
+            return
+        leg_id = self._terminal_zero_expected_route_leg_id
+        final_leg = self._terminal_zero_expected_route_leg_is_final
+        self._terminal_zero_expected_route_completion_epoch = None
+        self._terminal_zero_expected_route_leg_id = None
+        self._terminal_zero_expected_route_leg_is_final = False
+        if not bool(message.data) or final_leg:
+            self._mark_terminal_zero_barrier(
+                "route_goal_complete", leg_id=leg_id
+            )
 
     def _reset_stop_gate_status_callback(self, message: String) -> None:
         self._reset_stop_gate_status_received = True
@@ -2637,8 +2727,14 @@ class ExperimentRunner(Node):
                     if self._minimum_poses_remaining is None
                     else min(self._minimum_poses_remaining, poses_remaining)
                 )
-                if index == len(specifications) - 1:
+                final_leg = index == len(specifications) - 1
+                if final_leg:
                     self._arm_next_terminal_fence()
+                self._terminal_zero_expected_route_completion_epoch = (
+                    completion_epoch + 1
+                )
+                self._terminal_zero_expected_route_leg_id = identifier
+                self._terminal_zero_expected_route_leg_is_final = final_leg
                 if not self._goal_dispatch_recorded:
                     self._record_trial_dispatched()
                 self._route_goal_publisher.publish(
@@ -3118,10 +3214,163 @@ class ExperimentRunner(Node):
         result["complete"] = bool(result["left_side_bypass_seen"] and result["passed_while_present"])
         return result
 
+    def _start_terminal_zero_observation(self) -> None:
+        """Observe actuator commands continuously before the terminal barrier."""
+
+        self._terminal_zero_observation_started_monotonic = time.monotonic()
+        self._terminal_zero_barrier_monotonic = None
+        self._terminal_zero_barrier_source = "not_observed"
+        self._terminal_zero_barrier_leg_id = None
+        self._terminal_zero_expected_route_completion_epoch = None
+        self._terminal_zero_expected_route_leg_id = None
+        self._terminal_zero_expected_route_leg_is_final = False
+        self._terminal_zero_confirmed_monotonic = None
+        self._terminal_zero_first_zero_monotonic = None
+        self._terminal_zero_last_zero_monotonic = None
+        self._terminal_zero_confirming_sample_count = 0
+        self._terminal_zero_confirmed = False
+        self._terminal_zero_reason = "terminal_barrier_not_observed"
+        self._cmd_vel_sim_last_receive_monotonic = None
+        self._cmd_vel_sim_last_nonzero_monotonic = None
+        self._cmd_vel_sim_zero_stamps.clear()
+
+    def _mark_terminal_zero_barrier(
+        self, source: str, *, leg_id: str | None = None
+    ) -> None:
+        """Record the first observed terminal boundary without dropping samples."""
+
+        if self._terminal_zero_barrier_monotonic is not None:
+            return
+        self._terminal_zero_barrier_monotonic = time.monotonic()
+        self._terminal_zero_barrier_source = source
+        self._terminal_zero_barrier_leg_id = leg_id
+        self._terminal_zero_confirmed_monotonic = None
+        self._terminal_zero_first_zero_monotonic = None
+        self._terminal_zero_last_zero_monotonic = None
+        self._terminal_zero_confirming_sample_count = 0
+        self._terminal_zero_confirmed = False
+        self._terminal_zero_reason = "terminal_zero_not_observed"
+
+    def _invalidate_terminal_zero_confirmation(self, reason: str) -> None:
+        self._terminal_zero_confirmed = False
+        self._terminal_zero_reason = reason
+        self._terminal_zero_confirmed_monotonic = None
+        self._terminal_zero_first_zero_monotonic = None
+        self._terminal_zero_last_zero_monotonic = None
+        self._terminal_zero_confirming_sample_count = 0
+
+    def _terminal_zero_observation_complete(
+        self, now: float, quiet_window_sec: float
+    ) -> bool:
+        barrier = self._terminal_zero_barrier_monotonic
+        if barrier is None:
+            self._invalidate_terminal_zero_confirmation(
+                "terminal_barrier_not_observed"
+            )
+            return False
+        self._cmd_vel_sim_zero_stamps = [
+            stamp for stamp in self._cmd_vel_sim_zero_stamps if stamp > barrier
+        ]
+        if (
+            self._cmd_vel_sim_last_nonzero_monotonic is not None
+            and self._cmd_vel_sim_last_nonzero_monotonic > barrier
+        ):
+            self._invalidate_terminal_zero_confirmation(
+                "terminal_nonzero_after_barrier"
+            )
+            return False
+        if not self._cmd_vel_sim_zero_stamps:
+            self._invalidate_terminal_zero_confirmation(
+                "terminal_zero_not_observed"
+            )
+            return False
+        first_zero = self._cmd_vel_sim_zero_stamps[0]
+        if first_zero - barrier > TERMINAL_ZERO_CADENCE_TOLERANCE_SEC:
+            self._invalidate_terminal_zero_confirmation(
+                "terminal_first_zero_late"
+            )
+            return False
+        if len(self._cmd_vel_sim_zero_stamps) < 2:
+            self._invalidate_terminal_zero_confirmation(
+                "terminal_zero_repetition_pending"
+            )
+            return False
+        last_zero = self._cmd_vel_sim_zero_stamps[-1]
+        if last_zero - first_zero < quiet_window_sec:
+            self._invalidate_terminal_zero_confirmation(
+                "terminal_zero_quiet_window_pending"
+            )
+            return False
+        if now - last_zero > TERMINAL_ZERO_CADENCE_TOLERANCE_SEC:
+            self._invalidate_terminal_zero_confirmation(
+                "terminal_zero_cadence_stale"
+            )
+            return False
+        self._terminal_zero_confirmed = True
+        self._terminal_zero_reason = "terminal_zero_confirmed"
+        self._terminal_zero_confirmed_monotonic = now
+        self._terminal_zero_first_zero_monotonic = first_zero
+        self._terminal_zero_last_zero_monotonic = last_zero
+        self._terminal_zero_confirming_sample_count = len(
+            self._cmd_vel_sim_zero_stamps
+        )
+        return True
+
+    def _terminal_zero_timing(self) -> dict[str, Any]:
+        observation_started = self._terminal_zero_observation_started_monotonic
+        barrier = self._terminal_zero_barrier_monotonic
+        post_terminal_zeros = (
+            [stamp for stamp in self._cmd_vel_sim_zero_stamps if stamp > barrier]
+            if barrier is not None
+            else []
+        )
+
+        def after_terminal(value: float | None) -> float | None:
+            if barrier is None or value is None or value < barrier:
+                return None
+            return value - barrier
+
+        settings = self._scenario.success
+        return {
+            "barrier_source": self._terminal_zero_barrier_source,
+            "barrier_leg_id": self._terminal_zero_barrier_leg_id,
+            "observation_lead_before_terminal_sec": (
+                barrier - observation_started
+                if barrier is not None and observation_started is not None
+                else None
+            ),
+            "quiet_window_sec": settings.final_still_duration_sec,
+            "timeout_sec": settings.final_still_timeout_sec,
+            "first_zero_latency_limit_sec": (
+                TERMINAL_ZERO_CADENCE_TOLERANCE_SEC
+            ),
+            "cadence_tolerance_sec": TERMINAL_ZERO_CADENCE_TOLERANCE_SEC,
+            "first_zero_after_terminal_sec": after_terminal(
+                post_terminal_zeros[0] if post_terminal_zeros else None
+            ),
+            "last_zero_after_terminal_sec": after_terminal(
+                post_terminal_zeros[-1] if post_terminal_zeros else None
+            ),
+            "confirmed_after_terminal_sec": after_terminal(
+                self._terminal_zero_confirmed_monotonic
+            ),
+            "last_receive_after_terminal_sec": after_terminal(
+                self._cmd_vel_sim_last_receive_monotonic
+            ),
+            "last_nonzero_after_terminal_sec": after_terminal(
+                self._cmd_vel_sim_last_nonzero_monotonic
+            ),
+            "confirming_zero_sample_count": (
+                self._terminal_zero_confirming_sample_count
+            ),
+            "observed_zero_sample_count": len(post_terminal_zeros),
+        }
+
     def _wait_for_final_stillness(self) -> bool:
         settings = self._scenario.success
         deadline = time.monotonic() + settings.final_still_timeout_sec
         stationary_since: float | None = None
+        final_still_confirmed = False
         while time.monotonic() < deadline:
             self._raise_if_shutdown()
             self._spin_once(0.05)
@@ -3138,10 +3387,25 @@ class ExperimentRunner(Node):
             if fresh and stationary:
                 stationary_since = stationary_since or now
                 if now - stationary_since >= settings.final_still_duration_sec:
-                    return True
+                    final_still_confirmed = True
             else:
                 stationary_since = None
-        return False
+                final_still_confirmed = False
+            terminal_zero_confirmed = self._terminal_zero_observation_complete(
+                now, settings.final_still_duration_sec
+            )
+            if final_still_confirmed and terminal_zero_confirmed:
+                return True
+        if (
+            not self._terminal_zero_confirmed
+            and self._terminal_zero_reason in {
+                "terminal_zero_repetition_pending",
+                "terminal_zero_quiet_window_pending",
+                "terminal_zero_cadence_stale",
+            }
+        ):
+            self._terminal_zero_reason = "terminal_zero_timeout"
+        return final_still_confirmed
 
     def _build_manifest(
         self,
@@ -3503,9 +3767,10 @@ class ExperimentRunner(Node):
             reasons.append("excessive_stopped_time")
         if runner_error:
             reasons.append(f"runner_error:{runner_error}")
-        reasons = list(dict.fromkeys(reasons))
+        result, reasons = _result_with_terminal_zero(
+            reasons, self._terminal_zero_confirmed
+        )
         warnings = list(dict.fromkeys(warnings))
-        result = "success" if not reasons else "failure"
         footprint_radius_m = max(
             math.hypot(x, y) for x, y in self._robot_footprint
         )
@@ -3642,6 +3907,9 @@ class ExperimentRunner(Node):
             "dynamic_behavior": dynamic_behavior,
             "physics_dt": self._scenario.physics_dt,
             "rtf": self._scenario.rtf,
+            "terminal_zero_confirmed": self._terminal_zero_confirmed,
+            "terminal_zero_reason": self._terminal_zero_reason,
+            "terminal_zero_timing": self._terminal_zero_timing(),
             "result": result,
             "failure_reason": ";".join(reasons),
             "warning_reason": ";".join(warnings),
@@ -3894,13 +4162,16 @@ class ExperimentRunner(Node):
         if ros2 is None:
             return root
         topics = [
-            "/clock", "/ground_truth/odom", "/odom", "/tf", "/tf_static", "/cmd_vel",
+            "/clock", "/ground_truth/odom", "/odom", "/amcl_pose",
+            "/bio_nav/module1/odom", "/tf", "/tf_static", "/cmd_vel",
             "/cmd_vel_nav", "/cmd_vel_smoothed", "/cmd_vel_sim",
             "/navigate_to_pose/_action/status", "/plan", "/transformed_global_plan",
             "/bio_nav/navigation_graph", "/bio_nav/canonical_route",
             "/bio_nav/route_progress", "/bio_nav/route_lookahead_goal",
             "/bio_nav/route_goal", "/bio_nav/route_goal_complete",
             "/bio_nav/module2/edge_priors",
+            "/bio_nav/module2/srdr_edge_diagnostics",
+            "/bio_nav/route_edge_costs",
             "/bio_nav/module2/cognitive_obstacles",
             "/bio_nav/cognitive_obstacle_layer/status",
             "/bio_nav/cognitive_risk_critic/status",
@@ -3909,7 +4180,9 @@ class ExperimentRunner(Node):
             "/lidar/points_raw", "/lidar/points_scan", "/scan", "/scan_safety",
             "/camera/front/image_raw", "/camera/front/camera_info", "/camera/front/depth/image_raw", "/camera/front/depth/points",
             "/experiment/paired_appearance/baseline/image_raw", "/experiment/paired_appearance/variant/image_raw", "/experiment/paired_appearance/state",
-            "/simulation/collision", "/simulation/collision_diagnostics", "/simulation/reset_event", "/initialpose",
+            "/simulation/collision", "/simulation/collision_diagnostics",
+            "/simulation/reset_event", "/simulation/reset_stop_gate/status",
+            "/initialpose",
             "/bio_nav/module2/planning_prior", "/diagnostics",
             "/experiment/obstacles/state", "/experiment/appearance/state", "/collision_monitor_state",
         ]
@@ -4072,7 +4345,12 @@ class ExperimentRunner(Node):
         # scenarios omit ``route`` and dispatch the single ``goal`` instead,
         # so their successful one-leg evidence must not be compared with 0.
         strict_success = _strict_success_from_leg_count(
-            manifest.get("result"), len(legs), len(self._scenario.route)
+            manifest.get("result"),
+            len(legs),
+            len(self._scenario.route),
+            terminal_zero_confirmed=(
+                manifest.get("terminal_zero_confirmed") is True
+            ),
         )
         summary = {
             "campaign": "kujiale_long_range",
@@ -4086,6 +4364,11 @@ class ExperimentRunner(Node):
                 "navigation_execution_backend"
             ),
             "strict_success": strict_success,
+            "terminal_zero_confirmed": manifest.get(
+                "terminal_zero_confirmed"
+            ),
+            "terminal_zero_reason": manifest.get("terminal_zero_reason"),
+            "terminal_zero_timing": manifest.get("terminal_zero_timing", {}),
             "physical_collision_free": not self._collision_detected,
             "isaac_contact_sensor_collision_detected": (
                 self._isaac_contact_sensor_collision_detected
@@ -4262,8 +4545,13 @@ class ExperimentRunner(Node):
         # A pilot is different: it gates the remaining 40 rounds, therefore a
         # fully recorded *failed* pilot must be quarantined and retried on a
         # resume instead of repeatedly failing validation without doing work.
-        if self._require_successful_resume and manifest.get("result") != "success":
-            return None
+        if self._require_successful_resume:
+            if (
+                manifest.get("result") != "success"
+                or manifest.get("terminal_zero_confirmed") is not True
+                or summary.get("strict_success") is not True
+            ):
+                return None
         return manifest
 
     @staticmethod
@@ -4365,7 +4653,13 @@ class ExperimentRunner(Node):
                 if self._record_evidence:
                     root = self._begin_run_evidence(run_index, seed)
                     self._lifecycle_event("evidence_started")
+                self._start_terminal_zero_observation()
                 nav2_succeeded, timed_out, nav2_status = self._navigate()
+                if (
+                    self._navigation_execution_backend == "navigate_to_pose"
+                    and self._terminal_zero_barrier_monotonic is None
+                ):
+                    self._mark_terminal_zero_barrier("navigate_action_return")
                 final_still = self._wait_for_final_stillness()
             except Exception as exc:  # Preserve a manifest for every attempted run.
                 if not rclpy.ok():

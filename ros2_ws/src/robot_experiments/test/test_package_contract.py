@@ -356,11 +356,33 @@ def test_experiment_telemetry_records_cognitive_obstacle_application():
     )
     topics = ast.literal_eval(topic_assignment.value)
     assert {
+        "/amcl_pose",
+        "/bio_nav/module1/odom",
+        "/simulation/reset_stop_gate/status",
+        "/bio_nav/module2/srdr_edge_diagnostics",
+        "/bio_nav/route_edge_costs",
         "/bio_nav/module2/cognitive_obstacles",
         "/bio_nav/cognitive_obstacle_layer/status",
         "/bio_nav/cognitive_risk_critic/status",
     } <= set(topics)
     assert len(topics) == len(set(topics))
+
+
+def test_experiment_summary_requires_observed_executor_terminal_zero():
+    source = (
+        PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py"
+    ).read_text()
+    assert '"terminal_zero_confirmed": self._terminal_zero_confirmed' in source
+    assert '"terminal_zero_reason": self._terminal_zero_reason' in source
+    assert '"terminal_zero_timing": self._terminal_zero_timing()' in source
+    assert "terminal_zero_confirmed=(" in source
+    assert 'manifest.get("terminal_zero_confirmed") is True' in source
+    assert '"first_zero_after_terminal_sec"' in source
+    assert '"first_zero_after_navigation_sec"' not in source
+    assert source.index("self._start_terminal_zero_observation()") < source.index(
+        "nav2_succeeded, timed_out, nav2_status = self._navigate()"
+    )
+    assert 'self._mark_terminal_zero_barrier("navigate_action_return")' in source
 
 
 def test_experiment_telemetry_records_the_complete_nearfield_safety_chain():
@@ -604,7 +626,10 @@ def test_4x20_pilot_resume_requires_a_previous_success_and_preserves_formal_fail
     launch = (PACKAGE_ROOT / "launch" / "experiment.launch.py").read_text()
     assert '"require_successful_resume:=true"' in controller
     assert 'DeclareLaunchArgument("require_successful_resume", default_value="false")' in launch
-    assert 'if self._require_successful_resume and manifest.get("result") != "success":' in runner
+    assert "if self._require_successful_resume:" in runner
+    assert 'manifest.get("result") != "success"' in runner
+    assert 'manifest.get("terminal_zero_confirmed") is not True' in runner
+    assert 'summary.get("strict_success") is not True' in runner
     assert "fully recorded *failed* pilot must be quarantined and retried" in runner
 
 

@@ -4,9 +4,11 @@ from types import SimpleNamespace
 
 import pytest
 
+import robot_experiments.experiment_runner as experiment_runner_module
 from robot_experiments.experiment_runner import (
     _edge_prior_statistics,
     _record_tracked_route_length,
+    _result_with_terminal_zero,
     _strict_success_from_leg_count,
     CommandSample,
     ExperimentRunner,
@@ -46,10 +48,330 @@ def test_edge_prior_statistics_preserve_nonzero_learned_cost_evidence():
 
 
 def test_strict_success_counts_single_goal_when_route_is_omitted():
-    assert _strict_success_from_leg_count("success", 1, 0)
-    assert _strict_success_from_leg_count("success", 5, 5)
-    assert not _strict_success_from_leg_count("success", 0, 0)
-    assert not _strict_success_from_leg_count("failure", 1, 0)
+    assert _strict_success_from_leg_count(
+        "success", 1, 0, terminal_zero_confirmed=True
+    )
+    assert _strict_success_from_leg_count(
+        "success", 5, 5, terminal_zero_confirmed=True
+    )
+    assert not _strict_success_from_leg_count(
+        "success", 0, 0, terminal_zero_confirmed=True
+    )
+    assert not _strict_success_from_leg_count(
+        "failure", 1, 0, terminal_zero_confirmed=True
+    )
+    assert not _strict_success_from_leg_count(
+        "success", 5, 5, terminal_zero_confirmed=False
+    )
+
+
+def _twist(nonzero=False):
+    return SimpleNamespace(
+        linear=SimpleNamespace(x=0.2 if nonzero else 0.0, y=0.0),
+        angular=SimpleNamespace(z=0.1 if nonzero else 0.0),
+    )
+
+
+def _terminal_zero_runner(
+    monkeypatch,
+    events,
+    *,
+    timeout_sec=0.65,
+    odom_speed_at=None,
+    barrier_source="route_goal_complete",
+    barrier_at=0.0,
+):
+    clock = SimpleNamespace(now=10.0)
+    monkeypatch.setattr(
+        experiment_runner_module.time, "monotonic", lambda: clock.now
+    )
+    runner = object.__new__(ExperimentRunner)
+    runner._clear_run_state()
+    runner._scenario = SimpleNamespace(
+        success=SimpleNamespace(
+            final_still_timeout_sec=timeout_sec,
+            final_still_duration_sec=0.15,
+            final_linear_speed_mps=0.02,
+            final_angular_speed_radps=0.05,
+        )
+    )
+    runner._odom_max_age_sec = 0.5
+    runner._raise_if_shutdown = lambda: None
+    pending = list(events)
+
+    def spin_once(timeout_sec):
+        clock.now += timeout_sec
+        if (
+            barrier_source is not None
+            and runner._terminal_zero_barrier_monotonic is None
+            and clock.now >= 10.0 + barrier_at
+        ):
+            runner._mark_terminal_zero_barrier(barrier_source)
+        speed = (
+            odom_speed_at(clock.now - 10.0)
+            if odom_speed_at is not None
+            else 0.0
+        )
+        runner._odom_samples.append(
+            OdometrySample(
+                0.0, 0.0, 0.0, speed, 0.0, clock.now, clock.now
+            )
+        )
+        while pending and clock.now >= 10.0 + pending[0][0]:
+            _offset, nonzero = pending.pop(0)
+            runner._actuator_command_callback(_twist(nonzero))
+
+    runner._spin_once = spin_once
+    runner._test_clock = clock
+    runner._start_terminal_zero_observation()
+    if barrier_source is not None and barrier_at == 0.0:
+        runner._mark_terminal_zero_barrier(barrier_source)
+    return runner
+
+
+def test_terminal_zero_is_part_of_manifest_result_without_erasing_other_failures():
+    assert _result_with_terminal_zero([], True) == ("success", [])
+    assert _result_with_terminal_zero([], False) == (
+        "failure",
+        ["terminal_zero_not_confirmed"],
+    )
+    assert _result_with_terminal_zero(
+        ["collision_detected", "timed_out"], False
+    ) == (
+        "failure",
+        ["collision_detected", "timed_out", "terminal_zero_not_confirmed"],
+    )
+
+
+def test_terminal_zero_immediate_repeated_quiet_window_passes(monkeypatch):
+    runner = _terminal_zero_runner(
+        monkeypatch,
+        ((0.05, False), (0.22, False)),
+    )
+
+    assert runner._wait_for_final_stillness()
+    assert runner._terminal_zero_confirmed
+    assert runner._terminal_zero_reason == "terminal_zero_confirmed"
+    timing = runner._terminal_zero_timing()
+    assert timing["barrier_source"] == "route_goal_complete"
+    assert timing["first_zero_after_terminal_sec"] <= 0.10
+    assert timing["last_zero_after_terminal_sec"] >= 0.20
+    assert timing["confirming_zero_sample_count"] == 2
+
+
+def test_terminal_zero_ignores_zeros_before_terminal_barrier(monkeypatch):
+    runner = _terminal_zero_runner(monkeypatch, (), barrier_source=None)
+    runner._test_clock.now = 10.02
+    runner._actuator_command_callback(_twist())
+    runner._test_clock.now = 10.18
+    runner._actuator_command_callback(_twist())
+    runner._test_clock.now = 10.20
+    runner._mark_terminal_zero_barrier("route_goal_complete")
+
+    assert not runner._terminal_zero_observation_complete(10.20, 0.15)
+    assert runner._terminal_zero_reason == "terminal_zero_not_observed"
+    assert runner._terminal_zero_timing()["observed_zero_sample_count"] == 0
+
+
+def _expect_route_completion(runner, *, next_epoch, leg_id, final_leg):
+    runner._route_goal_complete_epoch = next_epoch - 1
+    runner._terminal_zero_expected_route_completion_epoch = next_epoch
+    runner._terminal_zero_expected_route_leg_id = leg_id
+    runner._terminal_zero_expected_route_leg_is_final = final_leg
+
+
+def test_intermediate_success_clears_epoch_without_terminal_barrier(monkeypatch):
+    runner = _terminal_zero_runner(monkeypatch, (), barrier_source=None)
+    _expect_route_completion(
+        runner, next_epoch=5, leg_id="G3", final_leg=False
+    )
+    runner._test_clock.now = 10.20
+
+    runner._route_goal_complete_callback(SimpleNamespace(data=True))
+
+    assert runner._route_goal_complete_epoch == 5
+    assert runner._latest_route_goal_complete
+    assert runner._terminal_zero_barrier_monotonic is None
+    assert runner._terminal_zero_expected_route_completion_epoch is None
+    assert runner._terminal_zero_expected_route_leg_id is None
+
+
+def test_intermediate_false_records_episode_terminal_barrier(monkeypatch):
+    runner = _terminal_zero_runner(monkeypatch, (), barrier_source=None)
+    _expect_route_completion(
+        runner, next_epoch=5, leg_id="G3", final_leg=False
+    )
+    runner._test_clock.now = 10.20
+
+    runner._route_goal_complete_callback(SimpleNamespace(data=False))
+
+    assert runner._terminal_zero_barrier_monotonic == pytest.approx(10.20)
+    assert runner._terminal_zero_barrier_source == "route_goal_complete"
+    assert runner._terminal_zero_barrier_leg_id == "G3"
+
+
+def test_timeout_cancel_fresh_false_records_matching_leg_barrier(monkeypatch):
+    runner = _terminal_zero_runner(monkeypatch, (), barrier_source=None)
+    _expect_route_completion(
+        runner, next_epoch=8, leg_id="G4", final_leg=False
+    )
+    runner._test_clock.now = 10.40
+
+    runner._route_goal_complete_callback(SimpleNamespace(data=False))
+
+    assert runner._route_goal_complete_epoch == 8
+    assert runner._terminal_zero_barrier_monotonic == pytest.approx(10.40)
+    assert runner._terminal_zero_barrier_leg_id == "G4"
+
+
+def test_stale_duplicate_completion_is_ignored_after_epoch_consumed(monkeypatch):
+    runner = _terminal_zero_runner(monkeypatch, (), barrier_source=None)
+    _expect_route_completion(
+        runner, next_epoch=5, leg_id="G3", final_leg=False
+    )
+    runner._route_goal_complete_callback(SimpleNamespace(data=True))
+    runner._test_clock.now = 10.30
+
+    runner._route_goal_complete_callback(SimpleNamespace(data=False))
+
+    assert runner._route_goal_complete_epoch == 6
+    assert runner._terminal_zero_barrier_monotonic is None
+
+
+def test_fresh_final_success_records_terminal_barrier(monkeypatch):
+    runner = _terminal_zero_runner(monkeypatch, (), barrier_source=None)
+    _expect_route_completion(
+        runner, next_epoch=5, leg_id="G1", final_leg=True
+    )
+    runner._test_clock.now = 10.20
+
+    runner._route_goal_complete_callback(SimpleNamespace(data=True))
+
+    assert runner._terminal_zero_barrier_monotonic == pytest.approx(10.20)
+    assert runner._terminal_zero_barrier_source == "route_goal_complete"
+    assert runner._terminal_zero_barrier_leg_id == "G1"
+
+
+def test_terminal_zero_rejects_first_zero_later_than_100ms(monkeypatch):
+    runner = _terminal_zero_runner(monkeypatch, ())
+    runner._test_clock.now = 10.11
+    runner._actuator_command_callback(_twist())
+    runner._test_clock.now = 10.30
+    runner._actuator_command_callback(_twist())
+
+    assert not runner._terminal_zero_observation_complete(10.30, 0.15)
+    assert runner._terminal_zero_reason == "terminal_first_zero_late"
+
+
+def test_terminal_zero_rejects_any_nonzero_tail_after_barrier(monkeypatch):
+    runner = _terminal_zero_runner(monkeypatch, ())
+    for offset, nonzero in (
+        (0.02, False),
+        (0.08, True),
+        (0.09, False),
+        (0.30, False),
+    ):
+        runner._test_clock.now = 10.0 + offset
+        runner._actuator_command_callback(_twist(nonzero))
+
+    assert not runner._terminal_zero_observation_complete(10.30, 0.15)
+    assert runner._terminal_zero_reason == "terminal_nonzero_after_barrier"
+
+
+def test_terminal_zero_single_zero_then_timeout_does_not_erase_final_stillness(
+    monkeypatch,
+):
+    runner = _terminal_zero_runner(
+        monkeypatch, ((0.05, False),), timeout_sec=0.35
+    )
+
+    assert runner._wait_for_final_stillness()
+    assert not runner._terminal_zero_confirmed
+    assert runner._terminal_zero_reason == "terminal_zero_timeout"
+    assert runner._terminal_zero_timing()["observed_zero_sample_count"] == 1
+
+
+def test_terminal_zero_wait_restarts_full_odom_window_after_late_motion(
+    monkeypatch,
+):
+    runner = _terminal_zero_runner(
+        monkeypatch,
+        ((0.30, False), (0.50, False), (0.60, False), (0.75, False)),
+        timeout_sec=0.90,
+        odom_speed_at=lambda offset: 0.2 if 0.25 <= offset < 0.50 else 0.0,
+        barrier_at=0.25,
+    )
+
+    assert runner._wait_for_final_stillness()
+    assert runner._test_clock.now >= 10.65
+    assert runner._terminal_zero_confirmed
+
+
+def test_direct_backend_action_return_barrier_uses_same_contract(monkeypatch):
+    runner = _terminal_zero_runner(
+        monkeypatch,
+        ((0.05, False), (0.22, False)),
+        barrier_source="navigate_action_return",
+    )
+
+    assert runner._wait_for_final_stillness()
+    assert runner._terminal_zero_timing()["barrier_source"] == (
+        "navigate_action_return"
+    )
+
+
+def test_cross_reset_completion_callback_cannot_mark_terminal_barrier(monkeypatch):
+    runner = _terminal_zero_runner(monkeypatch, (), barrier_source=None)
+    _expect_route_completion(
+        runner, next_epoch=5, leg_id="G3", final_leg=False
+    )
+
+    runner._clear_run_state()
+    runner._route_goal_complete_callback(SimpleNamespace(data=False))
+
+    assert runner._route_goal_complete_epoch == 5
+    assert runner._terminal_zero_barrier_monotonic is None
+    assert runner._terminal_zero_expected_route_completion_epoch is None
+
+
+def test_clear_run_state_resets_terminal_zero_observation_fields():
+    runner = object.__new__(ExperimentRunner)
+    runner._clear_run_state()
+    runner._terminal_zero_observation_started_monotonic = 1.0
+    runner._terminal_zero_barrier_monotonic = 1.05
+    runner._terminal_zero_barrier_source = "route_goal_complete"
+    runner._terminal_zero_barrier_leg_id = "G3"
+    runner._terminal_zero_expected_route_completion_epoch = 9
+    runner._terminal_zero_expected_route_leg_id = "G4"
+    runner._terminal_zero_expected_route_leg_is_final = True
+    runner._terminal_zero_confirmed_monotonic = 2.0
+    runner._terminal_zero_first_zero_monotonic = 1.1
+    runner._terminal_zero_last_zero_monotonic = 1.9
+    runner._terminal_zero_confirming_sample_count = 4
+    runner._terminal_zero_confirmed = True
+    runner._terminal_zero_reason = "terminal_zero_confirmed"
+    runner._cmd_vel_sim_last_receive_monotonic = 2.0
+    runner._cmd_vel_sim_last_nonzero_monotonic = 1.2
+    runner._cmd_vel_sim_zero_stamps = [1.3, 1.9]
+
+    runner._clear_run_state()
+
+    assert runner._terminal_zero_observation_started_monotonic is None
+    assert runner._terminal_zero_barrier_monotonic is None
+    assert runner._terminal_zero_barrier_source == "not_observed"
+    assert runner._terminal_zero_barrier_leg_id is None
+    assert runner._terminal_zero_expected_route_completion_epoch is None
+    assert runner._terminal_zero_expected_route_leg_id is None
+    assert not runner._terminal_zero_expected_route_leg_is_final
+    assert runner._terminal_zero_confirmed_monotonic is None
+    assert runner._terminal_zero_first_zero_monotonic is None
+    assert runner._terminal_zero_last_zero_monotonic is None
+    assert runner._terminal_zero_confirming_sample_count == 0
+    assert not runner._terminal_zero_confirmed
+    assert runner._terminal_zero_reason == "not_checked"
+    assert runner._cmd_vel_sim_last_receive_monotonic is None
+    assert runner._cmd_vel_sim_last_nonzero_monotonic is None
+    assert runner._cmd_vel_sim_zero_stamps == []
 
 
 def test_motion_quality_measures_reverse_curves_and_turn_reversals():
@@ -216,7 +538,7 @@ def test_g2_g3_exit_rejects_a_following_gap_beyond_the_calibrated_window():
     assert not metrics["complete"]
 
 
-def test_failed_pilot_evidence_is_retried_only_when_successful_resume_is_required(tmp_path):
+def test_terminal_zero_failure_is_retried_when_successful_resume_is_required(tmp_path):
     root = tmp_path / "run-0002-seed-7301"
     root.mkdir()
     manifest = {
@@ -225,9 +547,16 @@ def test_failed_pilot_evidence_is_retried_only_when_successful_resume_is_require
         "condition_id": "dynamic_appearance",
         "appearance": {"profile_id": "dim_warm"},
         "dynamic_selection": {"case_id": "full_route_three_stage", "variant_id": "v1"},
-        "result": "failure",
+        "result": "success",
+        "terminal_zero_confirmed": False,
+        "terminal_zero_reason": "terminal_zero_timeout",
     }
-    summary = {"data_complete": True, "checksums_verified": True}
+    summary = {
+        "data_complete": True,
+        "checksums_verified": True,
+        "strict_success": False,
+        "terminal_zero_confirmed": False,
+    }
     (root / "run_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     (root / "run_summary.json").write_text(json.dumps(summary), encoding="utf-8")
     checksums = [
