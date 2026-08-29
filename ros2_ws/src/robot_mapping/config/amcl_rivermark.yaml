@@ -15,10 +15,10 @@ amcl:
     update_min_a: 0.12
     alpha1: 0.25
     alpha2: 0.25
-    alpha3: 0.30
-    alpha4: 0.30
+    alpha3: 0.10
+    alpha4: 0.10
     alpha5: 0.10
-    do_beamskip: true
+    do_beamskip: false
     beam_skip_distance: 0.7
     beam_skip_threshold: 0.3
     beam_skip_error_threshold: 0.9
