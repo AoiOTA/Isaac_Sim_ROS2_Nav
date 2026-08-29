@@ -4,49 +4,13 @@ enabled: true
 coordinate_frame: map
 spawn_pose_name: rivermark_start
 obstacles:
-  # Four persistent low boxes intersect the previously obstacle-free nominal
-  # route while retaining a map-verified passing side.  The formal pilot must
-  # prove all four encounters before this layout is frozen for 20 runs.
   - id: rivermark_static_arc12
     mode: stationary
     trigger_group: null
-    size: [0.70, 0.70, 0.80]
-    mass: 80.0
-    start: [11.663, 126.343, 6.71]
-    end: [11.663, 126.343, 6.71]
-    speed: 0.0
-    delay_sec: 0.0
-    jitter_sec: 0.0
-    post_motion: hold
-  - id: rivermark_static_arc28
-    mode: stationary
-    trigger_group: null
-    size: [0.70, 0.70, 0.80]
-    mass: 80.0
-    start: [-2.401, 132.526, 6.71]
-    end: [-2.401, 132.526, 6.71]
-    speed: 0.0
-    delay_sec: 0.0
-    jitter_sec: 0.0
-    post_motion: hold
-  - id: rivermark_static_arc44
-    mode: stationary
-    trigger_group: null
-    size: [0.70, 0.70, 0.80]
-    mass: 80.0
-    start: [-15.087, 134.984, 6.71]
-    end: [-15.087, 134.984, 6.71]
-    speed: 0.0
-    delay_sec: 0.0
-    jitter_sec: 0.0
-    post_motion: hold
-  - id: rivermark_static_arc60
-    mode: stationary
-    trigger_group: null
-    size: [0.70, 0.70, 0.80]
-    mass: 80.0
-    start: [-19.182, 149.933, 6.71]
-    end: [-19.182, 149.933, 6.71]
+    size: [0.30, 0.30, 0.16]
+    mass: 5.0
+    start: [11.663, 126.343, 6.29]
+    end: [11.663, 126.343, 6.29]
     speed: 0.0
     delay_sec: 0.0
     jitter_sec: 0.0

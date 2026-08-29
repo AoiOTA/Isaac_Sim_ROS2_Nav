@@ -103,7 +103,7 @@ def _passing_actor_metrics(contract):
 def test_dynamic_threat_gate_rejects_a_slow_non_threatening_actor(monkeypatch):
     contract = _threat_contract()
     metrics = _passing_actor_metrics(contract)
-    metrics["rivermark_same_direction_cart"]["peak_speed_mps"] = 0.05
+    metrics["rivermark_crossing_cart"]["peak_speed_mps"] = 0.05
     monkeypatch.setattr(
         "robot_experiments.final_rivermark_qualification._trace_metrics",
         lambda *args, **kwargs: metrics,
@@ -122,7 +122,7 @@ def test_dynamic_threat_gate_rejects_a_slow_non_threatening_actor(monkeypatch):
     assert result["passed_runs"] == 0
     assert result["passed"] is False
     assert result["runs"][0]["actor_gates"][
-        "rivermark_same_direction_cart"
+        "rivermark_crossing_cart"
     ]["peak_speed"] is False
 
 
@@ -168,7 +168,7 @@ def test_dispatch_receipt_is_created_once_before_navigation_write(tmp_path):
     runner._active_selection = SimpleNamespace(
         seed=19403,
         condition_id="final_rivermark_dynamic",
-        case_id="full_route_four_stage",
+        case_id="crossing",
         variant_id="v3",
     )
     runner._scenario = SimpleNamespace(scenario_id="final_rivermark_dynamic")

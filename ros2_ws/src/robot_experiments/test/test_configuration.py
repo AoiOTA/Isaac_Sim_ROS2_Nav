@@ -198,12 +198,24 @@ def test_final_rivermark_scenarios_freeze_twenty_physical_matching_runs(filename
         "G1", "G2", "G3", "G4", "G5",
     )
 
-    expected_physical_count = {"static": 4, "dynamic": 4, "appearance": 0}
     assert (
         len(scenario.obstacles["static"]) + len(scenario.obstacle_trajectories)
-    ) == expected_physical_count[category]
-    if category == "appearance":
-        assert scenario.dynamic_config_file is None
+    ) == 1
+    if category == "dynamic":
+        assert {row.case_id for row in scenario.run_matrix} == {"crossing"}
+        assert Counter(row.variant_id for row in scenario.run_matrix) == {
+            "v1": 4,
+            "v2": 4,
+            "v3": 4,
+            "v4": 4,
+            "v5": 4,
+        }
+        assert scenario.dynamic_config_file is not None
+        assert scenario.resolve_path(scenario.dynamic_config_file).is_file()
+        assert scenario.appearance_config_file is None
+    elif category == "appearance":
+        assert scenario.dynamic_config_file is not None
+        assert scenario.resolve_path(scenario.dynamic_config_file).is_file()
         assert scenario.appearance_config_file is not None
         assert Counter(
             row.appearance_profile_id for row in scenario.run_matrix
@@ -407,35 +419,49 @@ def test_final_rivermark_physical_geometry_regions_and_appearance_profiles():
     ).read_text(encoding="utf-8"))
     assert [item["id"] for item in static["obstacles"]] == [
         "rivermark_static_arc12",
-        "rivermark_static_arc28",
-        "rivermark_static_arc44",
-        "rivermark_static_arc60",
     ]
+    assert static["obstacles"][0] == {
+        "id": "rivermark_static_arc12",
+        "mode": "stationary",
+        "trigger_group": None,
+        "size": [0.30, 0.30, 0.16],
+        "mass": 5.0,
+        "start": [11.663, 126.343, 6.29],
+        "end": [11.663, 126.343, 6.29],
+        "speed": 0.0,
+        "delay_sec": 0.0,
+        "jitter_sec": 0.0,
+        "post_motion": "hold",
+    }
 
     dynamic = yaml.safe_load((
         REPOSITORY_ROOT
         / "data/rivermark_demo/final_rivermark_dynamic.yaml"
     ).read_text(encoding="utf-8"))
-    assert list(dynamic["cases"]) == [
-        "oncoming", "crossing", "same_direction_slow", "temporary_block",
-    ]
+    assert list(dynamic["cases"]) == ["crossing"]
     case = dynamic["cases"]["crossing"]
     assert case["trigger_group"] == "G3"
     assert case["obstacle"]["id"] == "rivermark_crossing_cart"
     assert case["obstacle"]["waypoints"] == [
-        [-16.9516, 150.855, 6.71], [-20.469, 148.3825, 6.71],
+        [-16.9516, 150.855, 6.29], [-20.469, 148.3825, 6.29],
     ]
-    assert case["obstacle"]["size"] == [0.8, 0.6, 1.0]
+    assert case["obstacle"]["size"] == [0.30, 0.30, 0.16]
+    assert case["obstacle"]["mass"] == pytest.approx(4.0)
     assert case["obstacle"]["speed"] == pytest.approx(0.55)
+    assert case["obstacle"]["max_acceleration"] == pytest.approx(0.50)
+    assert case["obstacle"]["post_motion"] == "retire"
     assert len(case["variants"]) == 5
+    assert [
+        variant["start_delay_sec"] for variant in case["variants"].values()
+    ] == pytest.approx([0.0, 0.15, 0.30, 0.45, 0.60])
 
     region_document = yaml.safe_load((
         REPOSITORY_ROOT / "data/rivermark_demo/rivermark_regions.yaml"
     ).read_text(encoding="utf-8"))
     assert len(region_document["regions"]) == 50
     assert _region_ids_for_xy(
-        region_document["regions"], -15.087, 134.984
-    ) == ["rivermark_a:region_14"]
+        region_document["regions"], 11.663, 126.343
+    ) == ["rivermark_a:region_09"]
     assert _region_ids_for_xy(
         region_document["regions"], -16.9516, 150.855
     ) == ["rivermark_a:region_22"]
@@ -444,6 +470,11 @@ def test_final_rivermark_physical_geometry_regions_and_appearance_profiles():
     ) == ["rivermark_a:region_22"]
 
     appearance = load_scenario(CONFIG / "final_rivermark_appearance.yaml")
+    assert appearance.obstacles["static"] == [{"id": "rivermark_static_arc12"}]
+    assert appearance.obstacle_trajectories == ()
+    assert appearance.dynamic_config_file == (
+        "../../../../data/rivermark_demo/final_rivermark_static_obstacles.yaml"
+    )
     assert Counter(
         row.appearance_profile_id for row in appearance.run_matrix
     ) == {

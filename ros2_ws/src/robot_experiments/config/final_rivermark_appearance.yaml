@@ -9,6 +9,7 @@ scenario:
     robot: ../../../../isaac_sim/configs/robots/jackal.yaml
     nav2: ../../robot_navigation/config/nav2_stable.yaml
     appearance: ../../../../data/rivermark_demo/rivermark_appearance_profiles.yaml
+    dynamic_obstacles: ../../../../data/rivermark_demo/final_rivermark_static_obstacles.yaml
   simulation: {physics_dt: 0.016666666666666666, rtf: 1.0}
   runs:
     matrix:
@@ -51,6 +52,7 @@ scenario:
     require_safety_observations: true
     minimum_ground_truth_path_length_m: 100.0
   obstacles:
-    layout_id: final_rivermark_appearance_no_added_obstacles_v1
-    static: []
+    layout_id: final_rivermark_appearance_single_low_box_v1
+    static:
+      - {id: rivermark_static_arc12}
     trajectories: []

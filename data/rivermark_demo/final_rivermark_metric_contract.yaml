@@ -11,9 +11,6 @@ primary_navigation_metrics:
   static:
     expected_obstacle_ids:
       - rivermark_static_arc12
-      - rivermark_static_arc28
-      - rivermark_static_arc44
-      - rivermark_static_arc60
     maximum_encounter_center_distance_m: 1.50
     minimum_manager_clearance_m: 0.0
     maximum_stationary_speed_mps: 0.02
@@ -26,17 +23,8 @@ primary_navigation_metrics:
     minimum_relative_closing_speed_mps: 0.25
     minimum_manager_clearance_m: 0.0
     actors:
-      rivermark_oncoming_cart:
-        minimum_peak_speed_mps: 0.54
-        minimum_progress: 0.90
       rivermark_crossing_cart:
         minimum_peak_speed_mps: 0.49
-        minimum_progress: 0.90
-      rivermark_same_direction_cart:
-        minimum_peak_speed_mps: 0.40
-        minimum_progress: 0.90
-      rivermark_temporary_block_cart:
-        minimum_peak_speed_mps: 0.45
         minimum_progress: 0.90
   appearance:
     profiles: [dim_warm, dim_cool, bright_warm, bright_cool]

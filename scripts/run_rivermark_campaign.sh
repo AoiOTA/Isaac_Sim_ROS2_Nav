@@ -84,13 +84,15 @@ isaac_condition="static"
 [[ "${condition}" == "dynamic" ]] && isaac_condition="dynamic"
 obstacle_config="${module3_root}/data/rivermark_demo/rivermark_dynamic.yaml"
 physical_obstacles="0"
+dynamic_case="full_route_four_stage"
 if [[ "${scenario_revision}" == "final_rivermark" ]]; then
-  if [[ "${condition}" == "static" ]]; then
+  if [[ "${condition}" == "static" || "${condition}" == "appearance" ]]; then
     obstacle_config="${module3_root}/data/rivermark_demo/final_rivermark_static_obstacles.yaml"
     physical_obstacles="1"
   elif [[ "${condition}" == "dynamic" ]]; then
     obstacle_config="${module3_root}/data/rivermark_demo/final_rivermark_dynamic.yaml"
     physical_obstacles="1"
+    dynamic_case="crossing"
   fi
 fi
 
@@ -118,6 +120,7 @@ RIVERMARK_LINEAR_SPEED_STD_MPS="${controller_linear_velocity_std_mps}" \
 RIVERMARK_RENDERING_HZ="${rendering_hz}" \
 RIVERMARK_OBSTACLE_CONFIG="${obstacle_config}" \
 RIVERMARK_PHYSICAL_OBSTACLES="${physical_obstacles}" \
+RIVERMARK_DYNAMIC_CASE="${dynamic_case}" \
 BIO_NAV_INTEGRATION_ROOT="${integration_root}" \
 "${module3_root}/scripts/run_rivermark_demo.sh" "${demo_mode}" "${isaac_condition}" \
   > >(filter_runtime_log >>"${output_directory}/orchestrator/runtime.log") 2>&1 &

@@ -90,9 +90,12 @@ if [[ "${entrypoint}" == "isaac" ]]; then
   elif [[ "${scenario}" == "dynamic" ]]; then
     dynamic_args=(
       --dynamic-obstacles
-      --dynamic-case-id full_route_four_stage
+      --dynamic-case-id crossing
       --dynamic-variant-id v3
     )
+  else
+    obstacle_config="${static_config}"
+    dynamic_args=(--dynamic-obstacles)
   fi
   export ISAAC_NAV__GROUND_TRUTH__ENABLED=true
   exec "${SCRIPT_DIR}/run_isaac.sh" \

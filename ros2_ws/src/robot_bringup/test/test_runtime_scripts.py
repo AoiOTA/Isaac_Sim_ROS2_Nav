@@ -634,9 +634,10 @@ def test_v6_rivermark_isaac_argv_covers_three_pilot_scenes(tmp_path):
     assert 'final_rivermark_static_obstacles.yaml' in ' '.join(static)
     assert '--dynamic-obstacles' in static
     assert 'final_rivermark_dynamic.yaml' in ' '.join(dynamic)
-    assert 'full_route_four_stage' in dynamic
+    assert 'crossing' in dynamic
     assert 'v3' in dynamic
-    assert '--no-dynamic-obstacles' in appearance
+    assert 'final_rivermark_static_obstacles.yaml' in ' '.join(appearance)
+    assert '--dynamic-obstacles' in appearance
     assert 'dim_cool' in appearance
     static_root = tmp_path / 'static'
     call_log = static_root / 'rivermark_calls.log'

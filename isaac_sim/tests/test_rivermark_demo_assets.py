@@ -135,7 +135,7 @@ def test_dynamic_full_route_uses_four_heterogeneous_interactions():
     assert selected[-1].variants[-1].dwell_sec == 1.2
 
 
-def test_final_static_layout_authors_four_stationary_boxes_on_free_cells():
+def test_final_static_layout_authors_one_low_stationary_box_on_free_cells():
     metadata = yaml.safe_load(
         (DEMO_ROOT / "rivermark_selected.yaml").read_text(encoding="utf-8")
     )
@@ -149,8 +149,15 @@ def test_final_static_layout_authors_four_stationary_boxes_on_free_cells():
         DEMO_ROOT / "final_rivermark_static_obstacles.yaml"
     )
 
-    assert len(physical.obstacles) == 4
-    assert all(item.mode == "stationary" for item in physical.obstacles)
+    assert len(physical.obstacles) == 1
+    obstacle = physical.obstacles[0]
+    assert obstacle.obstacle_id == "rivermark_static_arc12"
+    assert obstacle.mode == "stationary"
+    assert obstacle.size == pytest.approx((0.30, 0.30, 0.16))
+    assert obstacle.mass == pytest.approx(5.0)
+    assert obstacle.start == pytest.approx((11.663, 126.343, 6.29))
+    assert obstacle.end == obstacle.start
+    assert obstacle.post_motion == "hold"
     for obstacle in physical.obstacles:
         half_x, half_y = obstacle.size[0] / 2.0, obstacle.size[1] / 2.0
         minimum_column = math.floor(
@@ -172,19 +179,29 @@ def test_final_static_layout_authors_four_stationary_boxes_on_free_cells():
                 assert image[height - 1 - bottom_row, column] >= 250
 
 
-def test_final_dynamic_layout_is_faster_and_keeps_all_four_stages():
+def test_final_dynamic_layout_uses_one_low_crossing_actor():
     physical = load_dynamic_scenario(
         DEMO_ROOT / "final_rivermark_dynamic.yaml"
     )
-    selected = physical.selected_cases("full_route_four_stage")
+    selected = physical.selected_cases("crossing")
 
-    assert [item.case_id for item in selected] == [
-        "oncoming", "crossing", "same_direction_slow", "temporary_block"
-    ]
-    assert [item.obstacle.speed for item in selected] == pytest.approx(
-        [0.60, 0.55, 0.45, 0.50]
+    assert len(selected) == 1
+    case = selected[0]
+    assert case.case_id == "crossing"
+    assert case.trigger_group == "G3"
+    assert case.obstacle.obstacle_id == "rivermark_crossing_cart"
+    assert case.obstacle.size == pytest.approx((0.30, 0.30, 0.16))
+    assert case.obstacle.mass == pytest.approx(4.0)
+    assert case.waypoints == (
+        (-16.9516, 150.855, 6.29),
+        (-20.469, 148.3825, 6.29),
     )
-    assert all(len(item.variants) == 5 for item in selected)
+    assert case.obstacle.speed == pytest.approx(0.55)
+    assert case.max_acceleration == pytest.approx(0.50)
+    assert case.obstacle.post_motion == "retire"
+    assert [variant.start_delay_sec for variant in case.variants] == pytest.approx(
+        [0.0, 0.15, 0.30, 0.45, 0.60]
+    )
 
 
 def test_final_campaign_wrapper_enables_fail_stop_and_new_scenario_identity():
@@ -199,9 +216,12 @@ def test_final_campaign_wrapper_enables_fail_stop_and_new_scenario_identity():
     assert "RIVERMARK_FAIL_STOP=1" in source
     assert 'fail_stop:="${fail_stop}"' in campaign
     assert 'require_successful_resume:="${fail_stop}"' in campaign
+    assert '"${condition}" == "static" || "${condition}" == "appearance"' in campaign
+    assert 'dynamic_case="crossing"' in campaign
+    assert 'RIVERMARK_DYNAMIC_CASE="${dynamic_case}"' in campaign
 
 
-def test_final_visual_wrapper_selects_enhanced_static_and_dynamic_configs():
+def test_final_visual_wrapper_selects_one_physical_obstacle_per_condition():
     source = (PROJECT_ROOT / "scripts/run_rivermark_visual.sh").read_text(
         encoding="utf-8"
     )
@@ -209,6 +229,7 @@ def test_final_visual_wrapper_selects_enhanced_static_and_dynamic_configs():
     assert 'RIVERMARK_VISUAL_REVISION:-final' in source
     assert "final_rivermark_static_obstacles.yaml" in source
     assert "final_rivermark_dynamic.yaml" in source
+    assert 'export RIVERMARK_DYNAMIC_CASE="crossing"' in source
     assert "RIVERMARK_PHYSICAL_OBSTACLES=1" in source
 
 

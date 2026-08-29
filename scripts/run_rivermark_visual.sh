@@ -57,9 +57,10 @@ if [[ "${visual_revision}" == "final" ]]; then
   elif [[ "${scenario}" == "dynamic" ]]; then
     export RIVERMARK_OBSTACLE_CONFIG="${module3_root}/data/rivermark_demo/final_rivermark_dynamic.yaml"
     export RIVERMARK_PHYSICAL_OBSTACLES=1
+    export RIVERMARK_DYNAMIC_CASE="crossing"
   else
-    export RIVERMARK_OBSTACLE_CONFIG="${module3_root}/data/rivermark_demo/final_rivermark_dynamic.yaml"
-    export RIVERMARK_PHYSICAL_OBSTACLES=0
+    export RIVERMARK_OBSTACLE_CONFIG="${module3_root}/data/rivermark_demo/final_rivermark_static_obstacles.yaml"
+    export RIVERMARK_PHYSICAL_OBSTACLES=1
   fi
 elif [[ "${visual_revision}" != "attempt31" ]]; then
   echo "RIVERMARK_VISUAL_REVISION must be final or attempt31" >&2
