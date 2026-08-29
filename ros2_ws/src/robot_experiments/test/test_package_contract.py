@@ -329,6 +329,40 @@ def test_experiment_telemetry_records_contact_identity_diagnostics():
     assert '"/simulation/collision_diagnostics"' in runner
 
 
+def test_experiment_telemetry_records_cognitive_obstacle_application():
+    source = (
+        PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py"
+    ).read_text()
+    tree = ast.parse(source)
+    runner_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "ExperimentRunner"
+    )
+    recorder = next(
+        node
+        for node in runner_class.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_begin_run_evidence"
+    )
+    topic_assignment = next(
+        node
+        for node in ast.walk(recorder)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "topics"
+            for target in node.targets
+        )
+    )
+    topics = ast.literal_eval(topic_assignment.value)
+    assert {
+        "/bio_nav/module2/cognitive_obstacles",
+        "/bio_nav/cognitive_obstacle_layer/status",
+        "/bio_nav/cognitive_risk_critic/status",
+    } <= set(topics)
+    assert len(topics) == len(set(topics))
+
+
 def test_experiment_telemetry_records_the_complete_nearfield_safety_chain():
     runner = (
         PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py"
