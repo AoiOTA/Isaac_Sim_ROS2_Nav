@@ -245,6 +245,11 @@ def test_stage_readiness_cli_uses_typed_config_override(monkeypatch):
 
 def test_simulation_app_enables_supported_multitick_sensor_settings_early():
     launch = _simulation_app_config(_config())
+    dlss_off_args = [
+        "--/rtx/post/aa/op=0",
+        "--/rtx-defaults/post/aa/op=0",
+        "--/rtx-transient/post/aa/limitedOps=false",
+    ]
 
     assert launch["multi_gpu"] is False
     assert "anti_aliasing" not in launch
@@ -256,10 +261,11 @@ def test_simulation_app_enables_supported_multitick_sensor_settings_early():
         "--/rtx/hydra/supportMultiTickRate=true",
         "--/persistent/simulation/minFrameRate=60",
     ]
+    assert all(arg not in launch["extra_args"] for arg in dlss_off_args)
 
     dlss_disabled = _simulation_app_config(_config(), disable_dlss=True)
     assert dlss_disabled["anti_aliasing"] == 0
-    assert dlss_disabled["extra_args"] == launch["extra_args"]
+    assert dlss_disabled["extra_args"] == launch["extra_args"] + dlss_off_args
 
 
 def test_run_passes_single_gpu_launch_contract_to_simulation_app(monkeypatch):

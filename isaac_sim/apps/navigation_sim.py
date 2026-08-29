@@ -703,6 +703,14 @@ def _simulation_app_config(
     }
     if disable_dlss:
         launch["anti_aliasing"] = 0
+        # Kit 110 limitedOps/default render-product startup can restore DLSS.
+        launch["extra_args"].extend(
+            [
+                "--/rtx/post/aa/op=0",
+                "--/rtx-defaults/post/aa/op=0",
+                "--/rtx-transient/post/aa/limitedOps=false",
+            ]
+        )
     return launch
 
 
