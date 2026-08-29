@@ -12,7 +12,7 @@ output_directory="${2:-}"
   || die "usage: $0 SCENARIO_FILE OUTPUT_DIRECTORY [experiment.launch.py arguments...]"
 shift 2
 
-source_ros --require-workspace
+source_ros --require-workspace --require-integration-underlay
 scenario_file="$(realpath -e "${scenario_file}")"
 # Navigation experiments default to the active Kujiale calibration, matching
 # scripts/run_ros.sh.  Warehouse callers can still select their own profile

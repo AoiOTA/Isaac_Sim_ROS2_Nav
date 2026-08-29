@@ -22,6 +22,7 @@ RUN_RVIZ = REPOSITORY_ROOT / 'scripts' / 'run_rviz.sh'
 RUN_ISAAC = REPOSITORY_ROOT / 'scripts' / 'run_isaac.sh'
 RUN_TELEOP = REPOSITORY_ROOT / 'scripts' / 'run_teleop.sh'
 RUN_ROS = REPOSITORY_ROOT / 'scripts' / 'run_ros.sh'
+RUN_EXPERIMENT = REPOSITORY_ROOT / 'scripts' / 'run_experiment.sh'
 RUN_V6_LOW_OBSTACLES = (
     REPOSITORY_ROOT / 'scripts' / 'run_v6_kujiale_low_obstacles.sh')
 RUN_V6_RIVERMARK = REPOSITORY_ROOT / 'scripts' / 'run_v6_rivermark.sh'
@@ -302,6 +303,113 @@ def test_common_requires_v6_integration_underlay_interfaces():
     assert 'bio_nav_interfaces/msg/local_risk_grid.hpp' in source
     assert 'source_ros --require-integration-underlay' in BUILD_ROS2.read_text(
         encoding='utf-8')
+
+
+def test_experiment_runner_pins_integration_then_module3_local_overlay(
+        tmp_path):
+    source = RUN_EXPERIMENT.read_text(encoding='utf-8')
+    source_call = (
+        'source_ros --require-workspace --require-integration-underlay')
+    assert source_call in source
+    assert source.index(source_call) < source.index(
+        'exec ros2 launch robot_experiments experiment.launch.py')
+
+    integration_root, integration_setup, fake_bin, environment = (
+        _fake_v6_integration_underlay(tmp_path))
+    source_log = tmp_path / 'source.log'
+    ros_setup = tmp_path / 'ros_setup.bash'
+    ros_setup.write_text(
+        'export ROS_DISTRO=jazzy\n'
+        'printf "ros\\n" >>"$SOURCE_LOG"\n',
+        encoding='utf-8',
+    )
+    integration_setup.write_text(
+        'printf "integration\\n" >>"$SOURCE_LOG"\n'
+        'export AMENT_PREFIX_PATH="$BIO_NAV_INTEGRATION_ROOT/ros2_ws/install"\n'
+        'export PYTHONPATH="integration-python"\n',
+        encoding='utf-8',
+    )
+    module3_install = tmp_path / 'module3-install'
+    module3_install.mkdir()
+    (module3_install / 'setup.bash').write_text(
+        'printf "stale-setup\\n" >>"$SOURCE_LOG"\n'
+        'export STALE_MODULE3_SETUP=1\n',
+        encoding='utf-8',
+    )
+    (module3_install / 'local_setup.bash').write_text(
+        'printf "module3-local\\n" >>"$SOURCE_LOG"\n'
+        'export AMENT_PREFIX_PATH="module3:$AMENT_PREFIX_PATH"\n'
+        'export PYTHONPATH="module3-python:$PYTHONPATH"\n',
+        encoding='utf-8',
+    )
+    launch_log = tmp_path / 'launch.log'
+    fake_ros2 = fake_bin / 'ros2'
+    fake_ros2.write_text(
+        '''#!/usr/bin/env bash
+if [[ "$1" == pkg && "$2" == prefix ]]; then
+  case "$3" in
+    bio_nav_ros_bridge) printf '%s\n' "$FAKE_BRIDGE_PREFIX" ;;
+    bio_nav_interfaces) printf '%s\n' "$FAKE_INTERFACES_PREFIX" ;;
+    *) exit 1 ;;
+  esac
+  exit 0
+fi
+printf 'AMENT=%s\nPYTHON=%s\nSTALE=%s\n' \
+  "${AMENT_PREFIX_PATH:-}" "${PYTHONPATH:-}" \
+  "${STALE_MODULE3_SETUP:-}" >"$LAUNCH_LOG"
+printf '%s\n' "$@" >>"$LAUNCH_LOG"
+''',
+        encoding='utf-8',
+    )
+    fake_ros2.chmod(0o755)
+    scenario = tmp_path / 'scenario.yaml'
+    scenario.touch()
+    spawn = tmp_path / 'spawn.yaml'
+    spawn.touch()
+    output = tmp_path / 'output'
+    environment.update({
+        'ROS_SETUP': str(ros_setup),
+        'BIO_NAV_INTEGRATION_ROOT': str(integration_root),
+        'BIO_NAV_INTEGRATION_SETUP': str(integration_setup),
+        'BIO_NAV_MODULE3_INSTALL': str(module3_install),
+        'ISAAC_NAV_SPAWN_POSES': str(spawn),
+        'ISAAC_NAV_FASTDDS_PROFILE': str(
+            REPOSITORY_ROOT
+            / 'isaac_sim/configs/ros2_bridge/fastdds_udp_only.xml'),
+        'SOURCE_LOG': str(source_log),
+        'LAUNCH_LOG': str(launch_log),
+        'AMENT_PREFIX_PATH': 'poison-ament',
+        'CMAKE_PREFIX_PATH': 'poison-cmake',
+        'PYTHONPATH': 'poison-python',
+    })
+
+    result = subprocess.run(
+        [str(RUN_EXPERIMENT), str(scenario), str(output)],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert source_log.read_text(encoding='utf-8').splitlines() == [
+        'ros', 'integration', 'module3-local']
+    launch_lines = launch_log.read_text(encoding='utf-8').splitlines()
+    assert launch_lines[:3] == [
+        (f'AMENT=module3:'
+         f'{integration_root}/ros2_ws/install'),
+        'PYTHON=module3-python:integration-python',
+        'STALE=',
+    ]
+    assert launch_lines[3:] == [
+        'launch',
+        'robot_experiments',
+        'experiment.launch.py',
+        f'scenario_file:={scenario}',
+        f'spawn_poses_file:={spawn}',
+        f'output_directory:={output}',
+    ]
 
 
 def test_v6_wrapper_separates_local_c_arms_from_explicit_d_graph_modes():
