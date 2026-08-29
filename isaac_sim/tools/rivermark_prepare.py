@@ -43,11 +43,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--window-m", type=float, default=80.0)
     parser.add_argument("--resolution-m", type=float, default=0.05)
     parser.add_argument("--mapping-height-m", type=float, default=0.35)
-    parser.add_argument("--scan-min-height-m", type=float, default=0.05)
-    parser.add_argument("--scan-max-height-m", type=float, default=0.50)
-    parser.add_argument("--ground-min-z-m", type=float, default=5.734)
-    parser.add_argument("--ground-max-z-m", type=float, default=6.109)
-    parser.add_argument("--ground-slab-spacing-m", type=float, default=0.05)
+    parser.add_argument("--minimum-z-offset-m", type=float, default=-0.25)
+    parser.add_argument("--maximum-z-offset-m", type=float, default=1.65)
     parser.add_argument("--load-timeout-s", type=float, default=300.0)
     parser.add_argument("--render-size", type=int, default=1024)
     parser.add_argument("--max-traversable-step-m", type=float, default=0.03)
@@ -290,126 +287,6 @@ def _dilate(mask: np.ndarray, iterations: int) -> np.ndarray:
     return result
 
 
-def _ground_slab_levels(
-    ground_min_z_m: float,
-    ground_max_z_m: float,
-    spacing_m: float,
-) -> tuple[float, ...]:
-    """Return spacing-aligned ground anchors inside the audited z range."""
-
-    values = (float(ground_min_z_m), float(ground_max_z_m), float(spacing_m))
-    if not all(math.isfinite(value) for value in values):
-        raise ValueError("ground slab bounds and spacing must be finite")
-    if spacing_m <= 0.0 or ground_max_z_m < ground_min_z_m:
-        raise ValueError("ground slab range must be ordered with positive spacing")
-    epsilon = 1.0e-12
-    first = int(math.ceil(ground_min_z_m / spacing_m - epsilon))
-    last = int(math.floor(ground_max_z_m / spacing_m + epsilon))
-    levels = tuple(round(index * spacing_m, 12) for index in range(first, last + 1))
-    if not levels:
-        raise ValueError("ground slab range contains no spacing-aligned anchors")
-    return levels
-
-
-def _select_ground_relative_omap(
-    raw_slabs: np.ndarray,
-    slab_levels_m: tuple[float, ...],
-    ground_height: np.ndarray,
-    *,
-    ground_min_z_m: float,
-    ground_max_z_m: float,
-) -> tuple[np.ndarray, tuple[int, ...]]:
-    """Select one slab per top-down ground cell without merging slab masks."""
-
-    slabs = np.asarray(raw_slabs, dtype=np.float32)
-    height = np.asarray(ground_height, dtype=np.float32)
-    levels = np.asarray(slab_levels_m, dtype=np.float64)
-    if slabs.ndim != 3 or height.ndim != 2 or slabs.shape[1:] != height.shape:
-        raise ValueError("slab stack and ground height shapes are incompatible")
-    if levels.shape != (slabs.shape[0],) or not np.all(np.isfinite(levels)):
-        raise ValueError("one finite ground level is required per slab")
-    if levels.size == 0 or np.any(np.diff(levels) <= 0.0):
-        raise ValueError("ground slab levels must be strictly increasing")
-    if (
-        not math.isfinite(float(ground_min_z_m))
-        or not math.isfinite(float(ground_max_z_m))
-        or ground_max_z_m < ground_min_z_m
-    ):
-        raise ValueError("audited ground range must be finite and ordered")
-
-    # Generator rows advance from minimum y; the top-down depth image stores
-    # maximum y at row zero.  Select in image orientation, then restore the
-    # raw Generator orientation expected by _height_refined_occupancy.
-    slab_images = slabs[:, ::-1, :]
-    selected_image = np.full(height.shape, 0.5, dtype=np.float32)
-    valid = (
-        np.isfinite(height)
-        & (height >= float(ground_min_z_m))
-        & (height <= float(ground_max_z_m))
-    )
-    rows, columns = np.nonzero(valid)
-    histogram = np.zeros(levels.size, dtype=np.int64)
-    if rows.size:
-        values = height[rows, columns].astype(np.float64)
-        upper = np.searchsorted(levels, values, side="left")
-        upper = np.clip(upper, 0, levels.size - 1)
-        lower = np.clip(upper - 1, 0, levels.size - 1)
-        # Strict comparison makes exact midpoints choose the lower slab.
-        choose_upper = np.abs(levels[upper] - values) < (
-            np.abs(values - levels[lower]) - 1.0e-6
-        )
-        selected_indices = np.where(choose_upper, upper, lower)
-        selected_image[rows, columns] = slab_images[
-            selected_indices, rows, columns
-        ]
-        histogram = np.bincount(
-            selected_indices, minlength=levels.size
-        ).astype(np.int64)
-    return selected_image[::-1, :], tuple(int(value) for value in histogram)
-
-
-def _valid_ground_slab_seed(
-    origin_z_m: float,
-    seed_ground_z_m: float,
-    scan_min_height_m: float,
-    scan_max_height_m: float,
-) -> bool:
-    values = (
-        origin_z_m,
-        seed_ground_z_m,
-        scan_min_height_m,
-        scan_max_height_m,
-    )
-    if not all(math.isfinite(float(value)) for value in values):
-        return False
-    delta = float(origin_z_m) - float(seed_ground_z_m)
-    epsilon = 1.0e-9
-    return (
-        float(scan_min_height_m) - epsilon
-        <= delta
-        <= float(scan_max_height_m) + epsilon
-    )
-
-
-def _seed_cell_is_free(
-    raw: np.ndarray,
-    *,
-    seed_xy: tuple[float, float],
-    center_xy: tuple[float, float],
-    window_m: float,
-    resolution_m: float,
-) -> bool:
-    half = 0.5 * float(window_m)
-    column = int((float(seed_xy[0]) - (float(center_xy[0]) - half)) / resolution_m)
-    row = int((float(seed_xy[1]) - (float(center_xy[1]) - half)) / resolution_m)
-    return (
-        raw.ndim == 2
-        and 0 <= row < raw.shape[0]
-        and 0 <= column < raw.shape[1]
-        and bool(np.isclose(raw[row, column], 0.0))
-    )
-
-
 def _height_refined_occupancy(
     raw: np.ndarray,
     depth: np.ndarray,
@@ -431,7 +308,7 @@ def _height_refined_occupancy(
     np.ndarray,
     np.ndarray,
 ]:
-    """Combine local-ground scan-slice OMap with 2.5D reachability."""
+    """Combine fixed-height collision OMap with 2.5D reachability."""
 
     if raw.shape != depth.shape:
         raise ValueError(f"occupancy/depth shape mismatch: {raw.shape} vs {depth.shape}")
@@ -522,22 +399,24 @@ def _height_refined_occupancy(
         steep_boundary[target_rows, target_columns] |= target_higher
 
     height_nontraversable = valid & ~reachable
-    omap_image = raw[::-1, :]
-    selected_occupied = np.isclose(omap_image, 1.0)
-    height_barrier = steep_boundary & selected_occupied
+    height_barrier = steep_boundary.copy()
     if int(barrier_thickness_cells) > 0:
         height_barrier = _dilate(height_barrier, barrier_thickness_cells)
 
-    # Terrain-connected depth wins for traversable ground.  Only geometry in
-    # the slab selected for that cell's local ground can remain occupied.
-    occupied = (selected_occupied & ~reachable) | height_barrier
+    omap_image = raw[::-1, :]
+    omap_occupied = np.isclose(omap_image, 1.0)
+    omap_free = np.isclose(omap_image, 0.0)
+    # A fixed horizontal OMap band falsely marks raised but traversable roads
+    # as occupied. Terrain-connected depth wins for those cells; the OMap
+    # remains authoritative only for geometry not connected to the ground.
+    occupied = (omap_occupied & ~reachable) | height_barrier
     free = reachable & ~height_barrier
     free &= ~occupied
     refined_image = np.full(raw.shape, 0.5, dtype=np.float32)
     refined_image[free] = 0.0
     refined_image[occupied] = 1.0
     diagnostic = {
-        "method": "orthographic_depth_reachability_select_ground_omap_slab",
+        "method": "orthographic_depth_reachability_intersect_physx_omap",
         "seed_requested_xy": list(seed_xy),
         "seed_pixel_rc": [seed_row, seed_column],
         "seed_height_m": float(height[seed_row, seed_column]),
@@ -653,17 +532,6 @@ def run(args: argparse.Namespace) -> int:
         raise FileNotFoundError(asset)
     if args.window_m <= 0.0 or args.resolution_m <= 0.0:
         raise ValueError("window and resolution must be positive")
-    if not 0.0 <= args.scan_min_height_m < args.scan_max_height_m:
-        raise ValueError("scan height range must be non-negative and non-empty")
-    slab_levels = _ground_slab_levels(
-        args.ground_min_z_m,
-        args.ground_max_z_m,
-        args.ground_slab_spacing_m,
-    )
-    grid_size_float = float(args.window_m) / float(args.resolution_m)
-    grid_size = int(round(grid_size_float))
-    if not math.isclose(grid_size_float, grid_size, abs_tol=1.0e-9):
-        raise ValueError("window must contain a whole number of map cells")
 
     from isaacsim import SimulationApp
 
@@ -763,6 +631,52 @@ def run(args: argparse.Namespace) -> int:
         generator.update_settings(float(args.resolution_m), 1.0, 0.0, 0.5)
         half = 0.5 * float(args.window_m)
         for candidate, center in selected.items():
+            seed_trials = []
+            selected_raw = None
+            selected_seed = None
+            for offset_x, offset_y in SEED_OFFSETS_M:
+                seed = (float(center[0] + offset_x), float(center[1] + offset_y))
+                origin_z = float(center[2] + args.mapping_height_m)
+                generator.set_transform(
+                    (seed[0], seed[1], origin_z),
+                    (
+                        float(center[0] - half - seed[0]),
+                        float(center[1] - half - seed[1]),
+                        float(args.minimum_z_offset_m),
+                    ),
+                    (
+                        float(center[0] + half - seed[0]),
+                        float(center[1] + half - seed[1]),
+                        float(args.maximum_z_offset_m),
+                    ),
+                )
+                app.update()
+                generator.generate2d()
+                app.update()
+                dimensions = tuple(int(value) for value in generator.get_dimensions())
+                raw = np.asarray(generator.get_buffer(), dtype=np.float32)
+                if len(dimensions) < 2 or raw.size != dimensions[0] * dimensions[1]:
+                    raise RuntimeError(
+                        f"candidate {candidate} produced invalid dimensions {dimensions}"
+                    )
+                raw = raw.reshape(dimensions[1], dimensions[0])
+                occupied = int(np.count_nonzero(np.isclose(raw, 1.0)))
+                free = int(np.count_nonzero(np.isclose(raw, 0.0)))
+                seed_trials.append(
+                    {
+                        "seed_xy": list(seed),
+                        "occupied_cells": occupied,
+                        "free_cells": free,
+                    }
+                )
+                if selected_raw is None or occupied > int(
+                    np.count_nonzero(np.isclose(selected_raw, 1.0))
+                ):
+                    selected_raw = raw.copy()
+                    selected_seed = seed
+            raw = selected_raw
+            if raw is None or selected_seed is None:
+                raise RuntimeError(f"candidate {candidate} produced no seed trials")
             rgb_path = output_dir / f"candidate_{candidate}_topdown_rgb.png"
             depth_path = output_dir / f"candidate_{candidate}_topdown_depth.npy"
             # Match the occupancy grid exactly so every RGB/depth pixel maps to
@@ -771,162 +685,12 @@ def run(args: argparse.Namespace) -> int:
                 stage,
                 center,
                 float(args.window_m),
-                grid_size,
+                int(raw.shape[0]),
                 rgb_path,
                 depth_path,
             )
             depth = np.load(depth_path)
-            ground_height = float(center[2]) + 150.0 - depth
-            slab_raws = []
-            slab_seed_trials = []
-            slab_selected_seeds = []
-            minimum_z_offset_m = float(
-                args.scan_min_height_m - args.mapping_height_m
-            )
-            maximum_z_offset_m = float(
-                args.scan_max_height_m - args.mapping_height_m
-            )
-            for slab_level_m in slab_levels:
-                origin_z = float(slab_level_m + args.mapping_height_m)
-                trials = []
-                selected_raw = None
-                selected_seed = None
-                selected_occupied = -1
-                for offset_x, offset_y in SEED_OFFSETS_M:
-                    seed = (
-                        float(center[0] + offset_x),
-                        float(center[1] + offset_y),
-                    )
-                    seed_column = int(
-                        (seed[0] - (float(center[0]) - half))
-                        / float(args.resolution_m)
-                    )
-                    seed_image_row = int(
-                        ((float(center[1]) + half) - seed[1])
-                        / float(args.resolution_m)
-                    )
-                    seed_ground_z_m = math.nan
-                    if (
-                        0 <= seed_image_row < ground_height.shape[0]
-                        and 0 <= seed_column < ground_height.shape[1]
-                    ):
-                        seed_ground_z_m = float(
-                            ground_height[seed_image_row, seed_column]
-                        )
-                    trial = {
-                        "seed_xy": list(seed),
-                        "seed_ground_z_m": (
-                            seed_ground_z_m
-                            if math.isfinite(seed_ground_z_m)
-                            else None
-                        ),
-                        "origin_minus_ground_m": (
-                            float(origin_z - seed_ground_z_m)
-                            if math.isfinite(seed_ground_z_m)
-                            else None
-                        ),
-                    }
-                    if not _valid_ground_slab_seed(
-                        origin_z,
-                        seed_ground_z_m,
-                        args.scan_min_height_m,
-                        args.scan_max_height_m,
-                    ):
-                        trial["accepted"] = False
-                        trial["rejection"] = "seed_outside_scan_height_band"
-                        trials.append(trial)
-                        continue
-                    generator.set_transform(
-                        (seed[0], seed[1], origin_z),
-                        (
-                            float(center[0] - half - seed[0]),
-                            float(center[1] - half - seed[1]),
-                            minimum_z_offset_m,
-                        ),
-                        (
-                            float(center[0] + half - seed[0]),
-                            float(center[1] + half - seed[1]),
-                            maximum_z_offset_m,
-                        ),
-                    )
-                    app.update()
-                    generator.generate2d()
-                    app.update()
-                    dimensions = tuple(
-                        int(value) for value in generator.get_dimensions()
-                    )
-                    trial_raw = np.asarray(
-                        generator.get_buffer(), dtype=np.float32
-                    )
-                    if (
-                        len(dimensions) < 2
-                        or trial_raw.size != dimensions[0] * dimensions[1]
-                    ):
-                        raise RuntimeError(
-                            f"candidate {candidate} slab {slab_level_m:.2f} "
-                            f"produced invalid dimensions {dimensions}"
-                        )
-                    trial_raw = trial_raw.reshape(dimensions[1], dimensions[0])
-                    occupied = int(
-                        np.count_nonzero(np.isclose(trial_raw, 1.0))
-                    )
-                    free = int(np.count_nonzero(np.isclose(trial_raw, 0.0)))
-                    trial.update(
-                        {
-                            "occupied_cells": occupied,
-                            "free_cells": free,
-                        }
-                    )
-                    if not _seed_cell_is_free(
-                        trial_raw,
-                        seed_xy=seed,
-                        center_xy=(float(center[0]), float(center[1])),
-                        window_m=float(args.window_m),
-                        resolution_m=float(args.resolution_m),
-                    ):
-                        trial["accepted"] = False
-                        trial["rejection"] = "seed_cell_not_free"
-                        trials.append(trial)
-                        continue
-                    trial["accepted"] = True
-                    trials.append(trial)
-                    # Strict comparison preserves the first seed on a tie.
-                    if occupied > selected_occupied:
-                        selected_raw = trial_raw.copy()
-                        selected_seed = seed
-                        selected_occupied = occupied
-                if selected_raw is None or selected_seed is None:
-                    raise RuntimeError(
-                        f"candidate {candidate} slab {slab_level_m:.2f} "
-                        "has no valid free seed"
-                    )
-                slab_raws.append(selected_raw)
-                slab_selected_seeds.append(selected_seed)
-                slab_seed_trials.append(
-                    {
-                        "ground_z_m": float(slab_level_m),
-                        "omap_origin_z_m": origin_z,
-                        "selected_seed_xy": list(selected_seed),
-                        "trials": trials,
-                    }
-                )
-
-            original_omap, slab_histogram = _select_ground_relative_omap(
-                np.stack(slab_raws, axis=0),
-                slab_levels,
-                ground_height,
-                ground_min_z_m=float(args.ground_min_z_m),
-                ground_max_z_m=float(args.ground_max_z_m),
-            )
-            reachability_slab_index = min(
-                range(len(slab_levels)),
-                key=lambda index: (
-                    abs(float(slab_levels[index]) - float(center[2])),
-                    float(slab_levels[index]),
-                ),
-            )
-            selected_seed = slab_selected_seeds[reachability_slab_index]
-            raw = original_omap.copy()
+            original_omap = raw.copy()
             (
                 raw,
                 height_diagnostic,
@@ -946,19 +710,6 @@ def run(args: argparse.Namespace) -> int:
                 terrain_connect_step_m=float(args.terrain_connect_step_m),
                 terrain_connect_slope=float(args.terrain_connect_slope),
                 barrier_thickness_cells=int(args.height_barrier_thickness_cells),
-            )
-            height_diagnostic["ground_slab_levels_m"] = [
-                float(value) for value in slab_levels
-            ]
-            height_diagnostic["ground_slab_selection_histogram"] = [
-                {
-                    "ground_z_m": float(level),
-                    "selected_cells": int(count),
-                }
-                for level, count in zip(slab_levels, slab_histogram)
-            ]
-            height_diagnostic["ground_slab_out_of_range_cells"] = int(
-                ground_height.size - sum(slab_histogram)
             )
             from PIL import Image
 
@@ -1001,20 +752,14 @@ def run(args: argparse.Namespace) -> int:
             )
             result["candidate_center_xy"] = list(center[:2])
             result["ground_z_m"] = float(center[2])
+            result["omap_origin_z_m"] = float(center[2] + args.mapping_height_m)
             result["selected_free_seed_xy"] = list(selected_seed)
-            result["reachability_seed_slab_z_m"] = float(
-                slab_levels[reachability_slab_index]
-            )
-            result["ground_slab_levels_m"] = [
-                float(value) for value in slab_levels
-            ]
-            result["ground_slab_seed_trials"] = slab_seed_trials
+            result["seed_trials"] = seed_trials
             result["topdown_rgb"] = str(rgb_path)
             result["topdown_depth"] = str(depth_path)
             result["height_preview"] = str(height_path)
             result["reachable_mask"] = str(reachable_path)
             result["physx_omap_preview"] = str(original_omap_path)
-            result["selected_omap_preview"] = str(original_omap_path)
             result["height_classes"] = str(height_classes_path)
             result["height_refinement"] = height_diagnostic
             results[candidate] = result
@@ -1026,14 +771,8 @@ def run(args: argparse.Namespace) -> int:
                     "asset": str(asset),
                     "window_m": float(args.window_m),
                     "mapping_height_m": float(args.mapping_height_m),
-                    "scan_min_height_m": float(args.scan_min_height_m),
-                    "scan_max_height_m": float(args.scan_max_height_m),
-                    "ground_min_z_m": float(args.ground_min_z_m),
-                    "ground_max_z_m": float(args.ground_max_z_m),
-                    "ground_slab_spacing_m": float(args.ground_slab_spacing_m),
-                    "ground_slab_levels_m": [
-                        float(value) for value in slab_levels
-                    ],
+                    "minimum_z_offset_m": float(args.minimum_z_offset_m),
+                    "maximum_z_offset_m": float(args.maximum_z_offset_m),
                     "max_traversable_step_m": float(args.max_traversable_step_m),
                     "max_traversable_slope": float(args.max_traversable_slope),
                     "terrain_connect_step_m": float(args.terrain_connect_step_m),
