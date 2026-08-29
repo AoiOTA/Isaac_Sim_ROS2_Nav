@@ -4308,6 +4308,9 @@ def test_v6_isaac_condition_wires_physical_and_appearance_argv(
     )
     argv = result.stdout.splitlines()
 
+    assert "--disable-dlss" not in argv
+    assert "--no-disable-dlss" not in argv
+
     assert argv[:4] == [
         "isaac",
         "--dynamic-obstacle-config",

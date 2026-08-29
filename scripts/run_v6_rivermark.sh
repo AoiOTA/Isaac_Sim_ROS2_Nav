@@ -75,6 +75,8 @@ if [[ "${entrypoint}" == "isaac" ]]; then
       --spawn-pose|--spawn-pose=*|--mode|--mode=*|\
       --structure-tf-source|--structure-tf-source=*|\
       --camera-profile|--camera-profile=*|\
+      --disable-dlss|--disable-dlss=*|\
+      --no-disable-dlss|--no-disable-dlss=*|\
       --dynamic-obstacle-config|--dynamic-obstacle-config=*|\
       --appearance-config|--appearance-config=*|\
       --appearance-profile|--appearance-profile=*)
@@ -108,6 +110,7 @@ if [[ "${entrypoint}" == "isaac" ]]; then
     --mode mixed \
     --structure-tf-source isaac \
     --camera-profile rgbd_navigation \
+    --disable-dlss \
     --dynamic-obstacle-config "${obstacle_config}" \
     "${dynamic_args[@]}" \
     --appearance-config "${appearance_config}" \

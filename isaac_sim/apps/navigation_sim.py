@@ -391,6 +391,12 @@ def _parser() -> argparse.ArgumentParser:
         help="front Camera publication profile selected before Isaac starts",
     )
     parser.add_argument(
+        "--disable-dlss",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="disable DLSS anti-aliasing before Kit starts",
+    )
+    parser.add_argument(
         "--environment-usd",
         type=str,
         help=(
@@ -675,8 +681,11 @@ def _enable_extensions(app: object, extension_ids: Sequence[str]) -> None:
     app.update()
 
 
-def _simulation_app_config(config: ProjectConfig) -> dict[str, object]:
-    return {
+def _simulation_app_config(
+    config: ProjectConfig,
+    disable_dlss: bool = False,
+) -> dict[str, object]:
+    launch = {
         "headless": config.simulation.headless,
         "renderer": config.simulation.renderer,
         "multi_gpu": False,
@@ -692,6 +701,9 @@ def _simulation_app_config(config: ProjectConfig) -> dict[str, object]:
             ),
         ],
     }
+    if disable_dlss:
+        launch["anti_aliasing"] = 0
+    return launch
 
 
 def run(
@@ -715,6 +727,7 @@ def run(
     r2d2_collision_bounds_config_path: Path | None = None,
     imu_regime_phase_trace_path: Path | None = None,
     imu_regime_diagnostic_config_path: Path = V6_IMU_REGIME_DIAGNOSTIC_CONFIG,
+    disable_dlss: bool = False,
 ) -> None:
     configure_process_environment(config)
 
@@ -725,7 +738,7 @@ def run(
         # SimulationApp otherwise forwards this application's argparse flags
         # to Kit as if they were native settings.
         sys.argv = [sys.argv[0]]
-        app = SimulationApp(_simulation_app_config(config))
+        app = SimulationApp(_simulation_app_config(config, disable_dlss))
     finally:
         sys.argv = original_argv
     runtime = None
@@ -2979,6 +2992,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             else args.imu_regime_phase_trace.expanduser().resolve()
         ),
         args.imu_regime_diagnostic_config.expanduser().resolve(),
+        disable_dlss=args.disable_dlss,
     )
     return 0
 

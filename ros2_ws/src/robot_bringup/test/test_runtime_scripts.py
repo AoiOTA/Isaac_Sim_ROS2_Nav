@@ -738,6 +738,8 @@ def test_v6_rivermark_isaac_argv_covers_three_pilot_scenes(tmp_path):
         assert 'isaac' in arguments
         assert '--camera-profile' in arguments
         assert 'rgbd_navigation' in arguments
+        assert arguments.count('--disable-dlss') == 1
+        assert '--no-disable-dlss' not in arguments
         assert metadata['GROUND_TRUTH'] == 'true'
 
     for run_root in (
@@ -782,6 +784,23 @@ def test_v6_rivermark_isaac_argv_covers_three_pilot_scenes(tmp_path):
     assert call_log.read_text(encoding='utf-8').splitlines() == [
         f'import_assets::asset_root={static_root / "explicit assets"}',
     ]
+
+    for override in ('--disable-dlss', '--no-disable-dlss'):
+        rejected = subprocess.run(
+            [str(static_root / 'scripts' / RUN_V6_RIVERMARK.name),
+             'isaac', 'static', override],
+            cwd=static_root,
+            env=_environment(
+                RIVERMARK_USD=str(static_root / 'rivermark.usd'),
+                RIVERMARK_CALL_LOG=str(call_log),
+                ISAAC_ASSET_ROOT=str(static_root / 'explicit assets'),
+            ),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert rejected.returncode != 0
+        assert f'rejected override: {override}' in rejected.stderr
 
 
 @pytest.mark.parametrize(

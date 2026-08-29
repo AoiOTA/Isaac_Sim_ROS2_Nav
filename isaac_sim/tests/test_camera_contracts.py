@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+from isaac_sim.apps import navigation_sim
 from isaac_sim.apps.navigation_sim import (
     _apply_cli_overrides,
     _parser,
@@ -216,6 +217,9 @@ def test_camera_cli_accepts_only_named_profiles():
     parser = _parser()
 
     assert parser.parse_args([]).camera_profile is None
+    assert parser.parse_args([]).disable_dlss is False
+    assert parser.parse_args(["--disable-dlss"]).disable_dlss is True
+    assert parser.parse_args(["--no-disable-dlss"]).disable_dlss is False
     assert parser.parse_args(
         ["--headless", "--camera-profile", "standard"]
     ).camera_profile == "standard"
@@ -243,6 +247,7 @@ def test_simulation_app_enables_supported_multitick_sensor_settings_early():
     launch = _simulation_app_config(_config())
 
     assert launch["multi_gpu"] is False
+    assert "anti_aliasing" not in launch
     assert launch["extra_args"] == [
         "--/renderer/raytracingMotion/enabled=true",
         "--/renderer/raytracingMotion/enableHydraEngineMasking=true",
@@ -251,6 +256,10 @@ def test_simulation_app_enables_supported_multitick_sensor_settings_early():
         "--/rtx/hydra/supportMultiTickRate=true",
         "--/persistent/simulation/minFrameRate=60",
     ]
+
+    dlss_disabled = _simulation_app_config(_config(), disable_dlss=True)
+    assert dlss_disabled["anti_aliasing"] == 0
+    assert dlss_disabled["extra_args"] == launch["extra_args"]
 
 
 def test_run_passes_single_gpu_launch_contract_to_simulation_app(monkeypatch):
@@ -270,7 +279,37 @@ def test_run_passes_single_gpu_launch_contract_to_simulation_app(monkeypatch):
         SimpleNamespace(SimulationApp=FakeSimulationApp),
     )
     with pytest.raises(StopAfterConstruction):
-        run(_config(), None, None, None, None, "baseline")
+        run(
+            _config(),
+            None,
+            None,
+            None,
+            None,
+            "baseline",
+            disable_dlss=True,
+        )
 
     assert captured["multi_gpu"] is False
-    assert captured == _simulation_app_config(_config())
+    assert captured["anti_aliasing"] == 0
+    assert captured == _simulation_app_config(_config(), disable_dlss=True)
+
+
+def test_main_passes_disable_dlss_directly_to_run(monkeypatch):
+    selected_pose = SimpleNamespace(map=SimpleNamespace(calibrated=True))
+    captured = {}
+
+    monkeypatch.setattr(
+        navigation_sim, "load_project_config", lambda _path: _config())
+    monkeypatch.setattr(
+        navigation_sim,
+        "validate_configuration",
+        lambda _config, _profile: (selected_pose, object(), object()),
+    )
+
+    def fake_run(*_args, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(navigation_sim, "run", fake_run)
+
+    assert navigation_sim.main(["--disable-dlss"]) == 0
+    assert captured == {"disable_dlss": True}
