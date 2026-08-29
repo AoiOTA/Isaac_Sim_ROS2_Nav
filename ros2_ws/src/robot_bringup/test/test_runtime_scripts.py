@@ -499,6 +499,7 @@ def test_v6_rivermark_ros_argv_is_estimated_occupancy_only_m0_gvg(tmp_path):
     assert 'cognitive_graph_mode:=gvg' in arguments
     assert 'route_prior_enabled:=false' in arguments
     assert 'module2_enabled:=false' in arguments
+    assert 'initial_pose_publish_count:=1' in arguments
     assert 'use_rviz:=false' in arguments
     assert not any(argument.startswith('posegraph_file:=')
                    for argument in arguments)
@@ -557,6 +558,7 @@ die() {{ printf '%s\\n' "$*" >&2; return 1; }}
     ('cognitive_profile:=M3', 'cognitive_graph_mode:=primary',
      'route_prior_enabled:=true',
      'module2_enabled:=true',
+     'initial_pose_publish_count:=5',
      'nav2_profile_params_file:=/tmp/caller-nav2.yaml',
      'nav2_params_file:=/tmp/caller-nav2.yaml'),
 )

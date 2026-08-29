@@ -433,6 +433,8 @@ def _launch_setup(context):
                         'spawn_poses_file').perform(context),
                     'spawn_pose_name': LaunchConfiguration(
                         'spawn_pose_name').perform(context),
+                    'publish_count': LaunchConfiguration(
+                        'initial_pose_publish_count').perform(context),
                     'wait_for_odom_to_base_tf': 'true',
                 },
             ))
@@ -470,6 +472,8 @@ def _launch_setup(context):
                         'spawn_poses_file').perform(context),
                     'spawn_pose_name': LaunchConfiguration(
                         'spawn_pose_name').perform(context),
+                    'publish_count': LaunchConfiguration(
+                        'initial_pose_publish_count').perform(context),
                     'wait_for_odom_to_base_tf': 'true',
                     'stay_alive_for_reseed': 'true',
                 },
@@ -732,6 +736,8 @@ def generate_launch_description():
             'initial_pose_source',
             default_value='auto',
             description='auto or rviz (localization/navigation only)'),
+        DeclareLaunchArgument(
+            'initial_pose_publish_count', default_value='5'),
         DeclareLaunchArgument(
             'interactive',
             default_value='true',
