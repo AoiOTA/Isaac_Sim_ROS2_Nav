@@ -695,6 +695,9 @@ class RouteCoordinator:
         self.pending_prior_graph_revision: int | None = None
         self.pending_prior_started_ns: int | None = None
         self.pending_prior_model_id: str | None = None
+        self.pending_prior_cognitive_identity: (
+            CognitiveConstraintsIdentity | None
+        ) = None
         self.pending_prior_geometry_prepared = False
         self.pending_prior_observed_generation: EdgePriorGeneration | None = None
         self.pending_prior_observed_stamp_ns: int | None = None
@@ -3308,7 +3311,6 @@ class RouteCoordinator:
             return
         now_s = self._now().nanoseconds / 1.0e9
         changed = False
-        refresh_prior = False
         selected = None
         with self._route_output_lock():
             with self._route_state_lock():
@@ -3322,21 +3324,41 @@ class RouteCoordinator:
                 changed = selected != previous
                 if changed:
                     self.cognitive_constraints_identity = None
+                    self._clear_pending_prior_request()
                     self._clear_latest_priors()
+            if changed:
+                self.node.get_logger().info(
+                    f"active cognitive region: {selected.region_id}"
+                )
+        if changed:
+            if not self._publish_cognitive_constraints_if_input_current(
+                input_generation
+            ):
+                return
+            with self._route_output_lock():
+                with self._route_state_lock():
+                    identity = getattr(
+                        self, "cognitive_constraints_identity", None
+                    )
+                    if (
+                        not self._route_input_is_current_locked(input_generation)
+                        or self.region_selector is not selector
+                        or selector.current != selected
+                        or identity is None
+                        or identity.region_id != selected.region_id
+                    ):
+                        return
+                    self._clear_prior_generation_ledger()
                     refresh_prior = bool(
                         self.pending_goal is not None
                         and self._route_prior_is_enabled()
                     )
                     if refresh_prior:
                         self._arm_prior_request(int(self._now().nanoseconds))
-            if changed:
-                self.node.get_logger().info(
-                    f"active cognitive region: {selected.region_id}"
-                )
-        if changed:
-            self._publish_cognitive_constraints_if_input_current(input_generation)
-            if refresh_prior:
-                self._publish_route_context_if_input_current(input_generation)
+                if refresh_prior:
+                    self._publish_route_context(
+                        expected_input=input_generation
+                    )
 
     def _on_global_costmap(self, message) -> None:
         with self._route_state_lock():
@@ -3710,6 +3732,9 @@ class RouteCoordinator:
         self.pending_prior_graph_revision = self.graph.revision
         self.pending_prior_started_ns = now_ns
         self.pending_prior_model_id = self.latest_prior_model_id
+        self.pending_prior_cognitive_identity = getattr(
+            self, "cognitive_constraints_identity", None
+        )
         self.pending_prior_geometry_prepared = False
 
     def _clear_pending_prior_request(self) -> None:
@@ -3719,6 +3744,7 @@ class RouteCoordinator:
         self.pending_prior_graph_revision = None
         self.pending_prior_started_ns = None
         self.pending_prior_model_id = None
+        self.pending_prior_cognitive_identity = None
         self.pending_prior_geometry_prepared = False
 
     def _clear_prior_generation_ledger(self) -> None:
@@ -3826,10 +3852,25 @@ class RouteCoordinator:
             self, "latest_priors_cognitive_identity", None
         )
         current_identity = getattr(self, "cognitive_graph_identity", None)
+        accepted_generation = getattr(
+            self, "latest_priors_generation", None
+        )
+        current_constraints_identity = getattr(
+            self, "cognitive_constraints_identity", None
+        )
         local_cognitive_identity_is_current = bool(
             getattr(self, "cognitive_graph_mode", "gvg") == "gvg"
             or accepted_identity is None
             or accepted_identity == current_identity
+        )
+        region_identity_is_current = bool(
+            current_constraints_identity is None
+            or (
+                accepted_generation is not None
+                and self._prior_matches_constraints_identity(
+                    accepted_generation, current_constraints_identity
+                )
+            )
         )
         return bool(
             getattr(self, "latest_priors_request_id", self.request_id)
@@ -3841,6 +3882,19 @@ class RouteCoordinator:
                 self, "latest_priors_graph_revision", self.graph.revision
             ) == self.graph.revision
             and local_cognitive_identity_is_current
+            and region_identity_is_current
+        )
+
+    @staticmethod
+    def _prior_matches_constraints_identity(
+        generation: EdgePriorGeneration,
+        identity: CognitiveConstraintsIdentity,
+    ) -> bool:
+        return bool(
+            generation.map_version == identity.map_version
+            and generation.cognitive_tile_id == identity.cognitive_tile_id
+            and generation.tile_revision == identity.tile_revision
+            and generation.cognitive_graph_revision == identity.graph_revision
         )
 
     def _priors_for_consumption(
@@ -3927,7 +3981,19 @@ class RouteCoordinator:
                 self.pending_prior_graph_revision,
                 self.pending_prior_started_ns,
                 self.pending_prior_model_id,
+                getattr(self, "pending_prior_cognitive_identity", None),
+                getattr(self, "cognitive_constraints_identity", None),
                 id(self.pending_goal),
+            )
+            pending_cognitive_identity = getattr(
+                self, "pending_prior_cognitive_identity", None
+            )
+            current_cognitive_identity = getattr(
+                self, "cognitive_constraints_identity", None
+            )
+            requires_cognitive_identity = bool(
+                pending_cognitive_identity is not None
+                or getattr(self, "region_selector", None) is not None
             )
             model_rollover = bool(
                 self.pending_prior_model_id is not None
@@ -3955,6 +4021,18 @@ class RouteCoordinator:
                 != self.graph.graph_id
                 or incoming_generation.source_physical_graph_revision
                 != self.graph.revision
+                or (
+                    requires_cognitive_identity
+                    and (
+                        pending_cognitive_identity is None
+                        or current_cognitive_identity
+                        != pending_cognitive_identity
+                        or not self._prior_matches_constraints_identity(
+                            incoming_generation,
+                            pending_cognitive_identity,
+                        )
+                    )
+                )
             ):
                 return
             if not self._observe_pending_prior_generation_locked(
@@ -4013,6 +4091,8 @@ class RouteCoordinator:
                 self.pending_prior_graph_revision,
                 self.pending_prior_started_ns,
                 self.pending_prior_model_id,
+                getattr(self, "pending_prior_cognitive_identity", None),
+                getattr(self, "cognitive_constraints_identity", None),
                 id(self.pending_goal),
                 getattr(self, "pending_prior_observed_generation", None),
                 getattr(self, "pending_prior_observed_stamp_ns", None),

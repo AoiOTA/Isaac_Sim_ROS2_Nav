@@ -14,8 +14,10 @@ from robot_route_planner.cognitive_graph_adapter import CognitiveGraphIdentity
 from robot_route_planner.models import Edge, Graph, Node, NodeType, Traversability
 from robot_route_planner.map_io import OccupancyMap, load_occupancy_map
 from robot_route_planner.ros_node import (
+    CognitiveConstraintsIdentity,
     CostmapSnapshot,
     DEFAULT_ROUTE_ODOMETRY_TOPIC,
+    EdgePriorGeneration,
     RouteCoordinator,
     TerminalFenceToken,
     edge_prior_is_usable,
@@ -3278,6 +3280,7 @@ def test_prior_validation_crossing_hold_cannot_commit_latest_or_feedback(
     monkeypatch,
 ) -> None:
     coordinator = _reset_route_coordinator(active=True)
+    coordinator.region_selector = None
     graph = SimpleNamespace(
         graph_id='test:gvg_v1', revision=3,
         edges=[SimpleNamespace(id=7)],
@@ -3423,7 +3426,7 @@ def test_region_tick_crossing_hold_cannot_select_or_publish() -> None:
     assert constraint_calls == []
 
 
-def test_region_switch_retires_prior_rearms_context_without_nav_reset() -> None:
+def _region_prior_switch_fixture():
     handle = _AcceptedHandle()
     coordinator = _reset_route_coordinator(active=True, handle=handle)
     goal = coordinator.pending_goal
@@ -3433,44 +3436,158 @@ def test_region_switch_retires_prior_rearms_context_without_nav_reset() -> None:
 
     class Selector:
         current = old_region
+        target = new_region
 
         def select(self, _xy, _now_s):
-            self.current = new_region
+            self.current = self.target
             return self.current
 
     coordinator.region_selector = Selector()
+    coordinator.graph = SimpleNamespace(
+        graph_id='test:gvg_v1', revision=3,
+        edges=[SimpleNamespace(id=7)],
+    )
     coordinator.module2_enabled = True
     coordinator.route_prior_enabled = True
     coordinator.module2_response_timeout_s = 0.0
+    coordinator.module2_prior_ttl_s = 2.0
     coordinator.defaults = {
         'module2_edge_prior': {'response_timeout_s': 0.5},
     }
     coordinator._current_xy = lambda: (1.0, 2.0)
-    coordinator._now = lambda: SimpleNamespace(nanoseconds=9_000_000_000)
+    coordinator._now_ns = 9_000_000_000
+    coordinator._now = lambda: SimpleNamespace(
+        nanoseconds=coordinator._now_ns)
+    identities = {
+        'old': CognitiveConstraintsIdentity(
+            0, 'map-v1', 'tile-a', 2, 'cognitive', 4, 'old'),
+        'new': CognitiveConstraintsIdentity(
+            0, 'map-v1', 'tile-b', 2, 'cognitive', 4, 'new'),
+    }
+    coordinator.cognitive_constraints_identity = identities['old']
+    old_generation = EdgePriorGeneration(
+        3, 'session-a', 'map-v1', 'tile-a', 2, 4, 'srdr-v310',
+        'test:gvg_v1', 3,
+    )
+    coordinator.latest_priors = {7: (1.0, 0.8)}
+    coordinator.latest_prior_model_id = 'srdr-v310'
+    coordinator.latest_priors_request_id = request_id
+    coordinator.latest_priors_graph_id = 'test:gvg_v1'
+    coordinator.latest_priors_graph_revision = 3
+    coordinator.latest_priors_generation = old_generation
+    coordinator.pending_prior_observed_generation = old_generation
+    coordinator.pending_prior_observed_stamp_ns = 8_000_000_000
+    coordinator.pending_prior_retired_generations = [EdgePriorGeneration(
+        3, 'session-b', 'map-v1', 'tile-b', 2, 4, 'srdr-v310',
+        'test:gvg_v1', 3,
+    )]
     constraints = []
     contexts = []
+
+    def publish_constraints(generation):
+        constraints.append(generation)
+        coordinator.cognitive_constraints_identity = identities[
+            coordinator.region_selector.current.region_id]
+        return True
+
+    def publish_context(*, expected_input=None):
+        contexts.append(expected_input)
+
     coordinator._publish_cognitive_constraints_if_input_current = (
-        lambda generation: constraints.append(generation)
+        publish_constraints)
+    coordinator._publish_route_context = publish_context
+    coordinator.prepared = []
+    coordinator._prepare_route = lambda priors: coordinator.prepared.append(
+        priors)
+    return SimpleNamespace(
+        coordinator=coordinator,
+        handle=handle,
+        goal=goal,
+        request_id=request_id,
+        old_region=old_region,
+        new_region=new_region,
+        identities=identities,
+        constraints=constraints,
+        contexts=contexts,
     )
-    coordinator._publish_route_context_if_input_current = (
-        lambda generation: contexts.append(generation)
-    )
+
+
+def test_region_switch_rejects_late_old_tile_prior_without_nav_reset() -> None:
+    fixture = _region_prior_switch_fixture()
+    coordinator = fixture.coordinator
 
     coordinator._region_tick()
 
-    assert coordinator.region_selector.current is new_region
+    assert coordinator.region_selector.current is fixture.new_region
     assert coordinator.latest_priors == {}
     assert coordinator.latest_prior_model_id is None
-    assert coordinator.pending_prior_request_id == request_id
+    assert coordinator.pending_prior_request_id == fixture.request_id
     assert coordinator.pending_prior_started_ns == 9_000_000_000
     assert coordinator.pending_deadline_ns == 9_500_000_000
-    assert len(constraints) == len(contexts) == 1
-    assert contexts == constraints
-    assert coordinator.request_id == request_id
-    assert coordinator.pending_goal is goal
-    assert coordinator.navigation_goal_handle is handle
+    assert coordinator.pending_prior_cognitive_identity == \
+        fixture.identities['new']
+    assert coordinator.pending_prior_observed_generation is None
+    assert coordinator.pending_prior_retired_generations == []
+    assert len(fixture.constraints) == len(fixture.contexts) == 1
+    assert fixture.contexts == fixture.constraints
+
+    coordinator._now_ns = 9_200_000_000
+    coordinator._on_priors(_edge_prior_message(
+        request_id=fixture.request_id,
+        stamp_ns=9_100_000_000,
+        cognitive_tile_id='tile-a',
+        recurrent_session_id='late-a',
+    ))
+
+    assert coordinator.latest_priors == {}
+    assert coordinator.pending_prior_observed_generation is None
+    assert coordinator.prepared == []
+    assert coordinator.request_id == fixture.request_id
+    assert coordinator.pending_goal is fixture.goal
+    assert coordinator.navigation_goal_handle is fixture.handle
     assert coordinator.route_active is True
-    assert handle.cancel_calls == 0
+    assert fixture.handle.cancel_calls == 0
+
+
+def test_region_a_b_a_revisit_accepts_fresh_current_tile_prior() -> None:
+    fixture = _region_prior_switch_fixture()
+    coordinator = fixture.coordinator
+    coordinator._region_tick()
+
+    coordinator._now_ns = 9_200_000_000
+    coordinator._on_priors(_edge_prior_message(
+        request_id=fixture.request_id,
+        stamp_ns=9_100_000_000,
+        cognitive_tile_id='tile-b',
+        recurrent_session_id='session-b',
+    ))
+    assert coordinator.latest_priors == {7: (1.0, 0.8)}
+
+    coordinator.region_selector.target = fixture.old_region
+    coordinator._now_ns = 10_000_000_000
+    coordinator._region_tick()
+    assert coordinator.pending_prior_cognitive_identity == \
+        fixture.identities['old']
+    assert coordinator.pending_prior_observed_generation is None
+    assert coordinator.pending_prior_retired_generations == []
+
+    coordinator._now_ns = 10_200_000_000
+    coordinator._on_priors(_edge_prior_message(
+        request_id=fixture.request_id,
+        stamp_ns=10_100_000_000,
+        cognitive_tile_id='tile-a',
+        recurrent_session_id='session-a',
+    ))
+
+    assert coordinator.latest_priors == {7: (1.0, 0.8)}
+    assert coordinator.latest_priors_generation.cognitive_tile_id == 'tile-a'
+    assert coordinator.prepared == [
+        {7: (1.0, 0.8)}, {7: (1.0, 0.8)}]
+    assert coordinator.request_id == fixture.request_id
+    assert coordinator.pending_goal is fixture.goal
+    assert coordinator.navigation_goal_handle is fixture.handle
+    assert coordinator.route_active is True
+    assert fixture.handle.cancel_calls == 0
 
 
 def test_navigation_action_status_is_authoritative_over_error_detail() -> None:
