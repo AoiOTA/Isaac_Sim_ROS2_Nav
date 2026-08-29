@@ -228,19 +228,21 @@ def test_localization_requires_existing_occupancy_map(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ('odometry_mode', 'localization_owner', 'expected_owner'),
+    ('odometry_mode', 'localization_owner', 'initial_pose_source',
+     'expected_owner'),
     (
-        ('mixed', 'auto', 'amcl'),
-        ('mixed', 'amcl', 'amcl'),
-        ('mixed', 'ideal', 'ideal'),
-        ('ideal', 'auto', 'ideal'),
-        ('ideal', 'ideal', 'ideal'),
-        ('estimated', 'auto', 'amcl'),
-        ('realistic', 'amcl', 'amcl'),
+        ('mixed', 'auto', 'auto', 'amcl'),
+        ('mixed', 'amcl', 'rviz', 'amcl'),
+        ('mixed', 'ideal', 'isaac', 'ideal'),
+        ('ideal', 'auto', 'auto', 'ideal'),
+        ('ideal', 'ideal', 'rviz', 'ideal'),
+        ('estimated', 'auto', 'auto', 'amcl'),
+        ('realistic', 'amcl', 'isaac', 'amcl'),
     ),
 )
 def test_occupancy_only_accepts_supported_localization_owner_matrix(
-        tmp_path, odometry_mode, localization_owner, expected_owner):
+        tmp_path, odometry_mode, localization_owner, initial_pose_source,
+        expected_owner):
     occupancy_map = tmp_path / 'rivermark_selected.yaml'
     occupancy_map.write_text('image: rivermark_selected.pgm\n')
     route_graph = tmp_path / 'rivermark_selected.geojson'
@@ -254,6 +256,7 @@ def test_occupancy_only_accepts_supported_localization_owner_matrix(
         map_file=str(occupancy_map),
         localization_map_contract='occupancy_only',
         localization_owner=localization_owner,
+        initial_pose_source=initial_pose_source,
         route_graph_file=str(route_graph),
     )
 
@@ -263,6 +266,44 @@ def test_occupancy_only_accepts_supported_localization_owner_matrix(
     assert selection.localization_map_contract == 'occupancy_only'
     assert selection.localization_owner == expected_owner
     assert selection.map_manifest_file == ''
+
+
+@pytest.mark.parametrize('initial_pose_source', ('auto', 'rviz'))
+def test_mixed_ideal_requires_isaac_reset_source(
+        tmp_path, initial_pose_source):
+    occupancy_map = tmp_path / 'rivermark_selected.yaml'
+    occupancy_map.write_text('image: rivermark_selected.pgm\n')
+    route_graph = tmp_path / 'rivermark_selected.geojson'
+    route_graph.write_text('{"type": "FeatureCollection", "features": []}\n')
+
+    with pytest.raises(ValueError, match='initial_pose_source=isaac'):
+        validate_mode(
+            'navigation',
+            'mixed',
+            'isaac',
+            map_file=str(occupancy_map),
+            localization_map_contract='occupancy_only',
+            localization_owner='ideal',
+            initial_pose_source=initial_pose_source,
+            route_graph_file=str(route_graph),
+        )
+
+
+def test_mixed_ideal_rejects_posegraph_bundle_even_with_isaac_reset():
+    with pytest.raises(
+            ValueError,
+            match='localization_map_contract=occupancy_only'):
+        validate_mode(
+            'navigation',
+            'mixed',
+            'isaac',
+            posegraph_file='/tmp/kujiale',
+            map_file='/tmp/kujiale.yaml',
+            check_posegraph_files=False,
+            localization_map_contract='posegraph_bundle',
+            localization_owner='ideal',
+            initial_pose_source='isaac',
+        )
 
 
 def test_occupancy_only_rejects_missing_assets_and_wrong_owner(tmp_path):
@@ -347,6 +388,7 @@ def test_documented_mode_matrix_has_no_duplicate_tf_owners():
         'posegraph_required'] is True
     assert document['localization_map_contracts']['occupancy_only'] == {
         'localization_owners': ['amcl', 'ideal'],
+        'mixed_ideal_initial_pose_source': 'isaac',
         'posegraph_required': False,
         'occupancy_map_required': True,
         'route_graph_required': True,

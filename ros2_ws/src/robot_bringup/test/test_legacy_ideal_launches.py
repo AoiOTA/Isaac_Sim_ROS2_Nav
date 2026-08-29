@@ -142,6 +142,7 @@ def test_outdoor_mixed_ideal_uses_calibrated_spawn_and_indoor_amcl_is_unchanged(
         map_file=str(map_file),
         localization_map_contract='occupancy_only',
         localization_owner='ideal',
+        initial_pose_source='isaac',
         route_graph_file=str(route_graph),
     )
     selected_spawn = stack._load_localization_spawn(

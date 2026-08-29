@@ -375,6 +375,7 @@ def validate_mode(
     manifest_path = map_manifest_file.strip()
     map_contract = localization_map_contract.strip().lower()
     requested_localization_owner = localization_owner.strip().lower()
+    requested_initial_pose_source = initial_pose_source.strip().lower()
     route_graph = route_graph_file.strip()
 
     _require_choice('operation', operation, OPERATIONS)
@@ -413,6 +414,16 @@ def validate_mode(
             raise ValueError(
                 f'localization_owner={resolved_localization_owner} conflicts '
                 f'with odometry_mode={odometry_mode}; expected amcl')
+        if odometry_mode == 'mixed' \
+                and resolved_localization_owner == 'ideal':
+            if map_contract != 'occupancy_only':
+                raise ValueError(
+                    'odometry_mode=mixed with localization_owner=ideal '
+                    'requires localization_map_contract=occupancy_only')
+            if requested_initial_pose_source != 'isaac':
+                raise ValueError(
+                    'odometry_mode=mixed with localization_owner=ideal '
+                    'requires initial_pose_source=isaac')
     else:
         if requested_localization_owner != 'auto':
             raise ValueError(
@@ -501,7 +512,7 @@ def validate_mode(
         try:
             validate_initial_pose_contract(
                 manifest,
-                initial_pose_source=initial_pose_source,
+                initial_pose_source=requested_initial_pose_source,
                 spawn_poses_file=spawn_poses_file,
                 spawn_pose_name=spawn_pose_name,
             )
