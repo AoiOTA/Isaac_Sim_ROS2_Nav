@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Explicit entrypoints for the frozen V6 low-obstacle profile. Existing
-# static/dynamic campaigns remain untouched and keep their original layouts.
+# Explicit V6 Kujiale condition entrypoints. Static and appearance retain the
+# frozen low obstacle; dynamic uses the LiDAR-visible G2 crossing obstacle.
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -203,7 +203,7 @@ case "${profile}" in
     dynamic_obstacle_config="${PROJECT_ROOT}/isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen.yaml"
     condition_args=(--appearance-profile baseline)
     if [[ "${condition}" == "dynamic" ]]; then
-      dynamic_obstacle_config="${PROJECT_ROOT}/isaac_sim/configs/experiments/v6_single_dynamic_low_obstacle.yaml"
+      dynamic_obstacle_config="${PROJECT_ROOT}/isaac_sim/configs/experiments/v6_kujiale_dynamic_g2_crossing.yaml"
       condition_args=()
     elif [[ "${condition}" == "appearance" ]]; then
       condition_args=(

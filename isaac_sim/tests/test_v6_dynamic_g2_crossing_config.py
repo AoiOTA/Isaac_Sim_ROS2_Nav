@@ -4,24 +4,27 @@ import pytest
 
 from isaac_sim.src.experiment.dynamic_obstacles import DynamicObstacleManager
 from isaac_sim.src.experiment.scenario import load_dynamic_scenario
+from isaac_sim.src.yaml_utils import load_mapping
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CONFIG = ROOT / "isaac_sim/configs/experiments/v6_single_dynamic_low_obstacle.yaml"
+CONFIG = ROOT / "isaac_sim/configs/experiments/v6_kujiale_dynamic_g2_crossing.yaml"
+ROBOT_CONFIG = ROOT / "isaac_sim/configs/robots/jackal.yaml"
 
 
-def test_single_dynamic_low_box_geometry_motion_and_visibility_contract():
+def test_dynamic_g2_crossing_geometry_motion_and_lidar_visibility_contract():
     scenario = load_dynamic_scenario(CONFIG)
-    case = scenario.cases["single_dynamic_low_box"]
+    case = scenario.cases["single_dynamic_g2_crossing"]
     actor = case.obstacle
 
     assert scenario.enabled is False
     assert scenario.coordinate_frame == "map"
     assert scenario.seed == 8601
-    assert actor.obstacle_id == "v6_dynamic_low_box_solo"
-    assert actor.size == pytest.approx((0.30, 0.30, 0.16))
-    assert case.waypoints[0] == pytest.approx((-1.25, -0.35, 0.08))
-    assert case.waypoints[1] == pytest.approx((-0.45, -0.35, 0.08))
+    assert actor.obstacle_id == "v6_dynamic_g2_crossing_box"
+    assert actor.size == pytest.approx((0.30, 0.30, 0.40))
+    assert actor.mass == pytest.approx(4.0)
+    assert case.waypoints[0] == pytest.approx((-1.25, -0.35, 0.20))
+    assert case.waypoints[1] == pytest.approx((-0.45, -0.35, 0.20))
     assert actor.speed == pytest.approx(0.25)
     assert case.max_acceleration == pytest.approx(0.50)
     assert actor.post_motion == "park"
@@ -35,13 +38,22 @@ def test_single_dynamic_low_box_geometry_motion_and_visibility_contract():
     )
     lower = actor.start[2] - actor.size[2] / 2.0
     upper = actor.start[2] + actor.size[2] / 2.0
+    robot = load_mapping(ROBOT_CONFIG)
+    lidar_frame = robot["frames"]["lidar"]
+    lidar_transforms = [
+        transform
+        for transform in robot["static_transforms"]
+        if transform["child"] == lidar_frame
+    ]
+    assert len(lidar_transforms) == 1
+    lidar_z = float(lidar_transforms[0]["translation"][2])
     assert lower == pytest.approx(0.0)
-    assert upper == pytest.approx(0.16)
-    assert upper < 0.333
+    assert upper == pytest.approx(0.40)
+    assert lower <= lidar_z < upper
 
 
-def test_single_dynamic_low_box_gate_requires_the_frozen_g2_approach():
-    case = load_dynamic_scenario(CONFIG).cases["single_dynamic_low_box"]
+def test_dynamic_g2_crossing_gate_requires_the_frozen_g2_approach():
+    case = load_dynamic_scenario(CONFIG).cases["single_dynamic_g2_crossing"]
     manager = object.__new__(DynamicObstacleManager)
 
     assert manager._gate_passed(
@@ -61,8 +73,8 @@ def test_single_dynamic_low_box_gate_requires_the_frozen_g2_approach():
     )
 
 
-def test_single_dynamic_low_box_profile_reaches_park_point_with_limits():
-    case = load_dynamic_scenario(CONFIG).cases["single_dynamic_low_box"]
+def test_dynamic_g2_crossing_profile_reaches_park_point_with_limits():
+    case = load_dynamic_scenario(CONFIG).cases["single_dynamic_g2_crossing"]
     manager = object.__new__(DynamicObstacleManager)
     start = manager._trajectory(case, case.variant("v1"), 0.0)
     _, _, duration = manager._profile(
@@ -70,9 +82,9 @@ def test_single_dynamic_low_box_profile_reaches_park_point_with_limits():
     )
     finish = manager._trajectory(case, case.variant("v1"), duration + 0.01)
 
-    assert start[0] == pytest.approx((-1.25, -0.35, 0.08))
+    assert start[0] == pytest.approx((-1.25, -0.35, 0.20))
     assert start[1] == pytest.approx(0.0)
-    assert finish[0] == pytest.approx((-0.45, -0.35, 0.08))
+    assert finish[0] == pytest.approx((-0.45, -0.35, 0.20))
     assert finish[1] == pytest.approx(0.0)
     assert finish[2] == pytest.approx(1.0)
     assert finish[3] == "clearing"

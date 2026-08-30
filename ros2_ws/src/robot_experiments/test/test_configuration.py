@@ -301,8 +301,8 @@ def test_v6_pilot_kujiale_dynamic_hotreset_v1_matches_final_contract():
         (row.seed, row.case_id, row.variant_id, row.condition_id)
         for row in pilot.run_matrix
     ] == [
-        (8601, "single_dynamic_low_box", "v1", "dynamic_hotreset_cold"),
-        (8601, "single_dynamic_low_box", "v1", "dynamic_hotreset_hot"),
+        (8601, "single_dynamic_g2_crossing", "v1", "dynamic_hotreset_cold"),
+        (8601, "single_dynamic_g2_crossing", "v1", "dynamic_hotreset_hot"),
     ]
     assert [
         (row.seed, row.variant_id) for row in final.run_matrix
@@ -395,19 +395,37 @@ def test_v6_final_kujiale_physical_geometry_variants_and_appearance_profiles():
     assert static["obstacles"][0]["start"] == [-0.75, -0.35, 0.08]
     assert static["obstacles"][0]["size"] == [0.30, 0.30, 0.16]
 
-    dynamic = yaml.safe_load((
-        REPOSITORY_ROOT
-        / "isaac_sim/configs/experiments/v6_single_dynamic_low_obstacle.yaml"
+    dynamic_scenario = load_scenario(CONFIG / "v6_final_kujiale_dynamic.yaml")
+    dynamic = yaml.safe_load(dynamic_scenario.resolve_path(
+        dynamic_scenario.dynamic_config_file
     ).read_text(encoding="utf-8"))
-    assert list(dynamic["cases"]) == ["single_dynamic_low_box"]
-    case = dynamic["cases"]["single_dynamic_low_box"]
+    assert list(dynamic["cases"]) == ["single_dynamic_g2_crossing"]
+    case = dynamic["cases"]["single_dynamic_g2_crossing"]
     assert case["trigger_group"] == "G2"
-    assert case["obstacle"]["id"] == "v6_dynamic_low_box_solo"
-    assert case["obstacle"]["size"] == [0.30, 0.30, 0.16]
+    assert case["obstacle"]["id"] == "v6_dynamic_g2_crossing_box"
+    assert case["obstacle"]["size"] == [0.30, 0.30, 0.40]
+    assert case["obstacle"]["mass"] == pytest.approx(4.0)
     assert case["obstacle"]["waypoints"] == [
-        [-1.25, -0.35, 0.08], [-0.45, -0.35, 0.08],
+        [-1.25, -0.35, 0.20], [-0.45, -0.35, 0.20],
     ]
+    lower = case["obstacle"]["waypoints"][0][2] - case["obstacle"]["size"][2] / 2.0
+    upper = case["obstacle"]["waypoints"][0][2] + case["obstacle"]["size"][2] / 2.0
+    robot = yaml.safe_load(dynamic_scenario.resolve_path(
+        dynamic_scenario.robot_config_file
+    ).read_text(encoding="utf-8"))
+    lidar_frame = robot["frames"]["lidar"]
+    lidar_transforms = [
+        transform
+        for transform in robot["static_transforms"]
+        if transform["child"] == lidar_frame
+    ]
+    assert len(lidar_transforms) == 1
+    lidar_z = float(lidar_transforms[0]["translation"][2])
+    assert lower == pytest.approx(0.0)
+    assert upper == pytest.approx(0.40)
+    assert lower <= lidar_z < upper
     assert case["obstacle"]["speed"] == pytest.approx(0.25)
+    assert case["obstacle"]["max_acceleration"] == pytest.approx(0.50)
     assert [row["start_delay_sec"] for row in case["variants"].values()] == [
         0.0, 0.15, 0.30, 0.45, 0.60,
     ]

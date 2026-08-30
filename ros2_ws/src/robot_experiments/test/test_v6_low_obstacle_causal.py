@@ -4287,7 +4287,7 @@ def test_v6_runner_rejects_condition_identity_overrides(
     ("condition", "config_name", "appearance_arguments"),
     [
         ("static", "v6_kujiale_low_obstacles_frozen.yaml", ["--appearance-profile", "baseline"]),
-        ("dynamic", "v6_single_dynamic_low_obstacle.yaml", []),
+        ("dynamic", "v6_kujiale_dynamic_g2_crossing.yaml", []),
         (
             "appearance",
             "v6_kujiale_low_obstacles_frozen.yaml",
@@ -4373,7 +4373,7 @@ def test_v6_physical_configs_stay_default_off_and_wrapper_activates_them():
     root = PACKAGE.parents[2]
     for name in (
         "v6_kujiale_low_obstacles_frozen.yaml",
-        "v6_single_dynamic_low_obstacle.yaml",
+        "v6_kujiale_dynamic_g2_crossing.yaml",
     ):
         document = yaml.safe_load(
             (root / "isaac_sim/configs/experiments" / name).read_text(

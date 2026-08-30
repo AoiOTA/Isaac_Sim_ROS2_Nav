@@ -122,7 +122,7 @@ APPEARANCE_NAV2_PROFILES = frozenset({
 # IDs and geometry.  These named Isaac schema-v4 case sets select the subset
 # that is actually armed during one full-route run.
 DYNAMIC_CASE_SET_MOTIONS = {
-    "single_dynamic_low_box": frozenset({"crossing"}),
+    "single_dynamic_g2_crossing": frozenset({"crossing"}),
     "full_route_three_stage": frozenset(
         {"local_bypass", "g2_g3_exit", "g5_g1_crossing"}
     ),
@@ -2665,7 +2665,7 @@ class ExperimentRunner(Node):
         return bool(
             self._nav2_profile == "v6_low_obstacle_isolation"
             and self._scenario.map_version == "v6_kujiale_isaacgen_v1"
-            and retired_ids == {"v6_dynamic_low_box_solo"}
+            and retired_ids == {"v6_dynamic_g2_crossing_box"}
         )
 
     def _complete_obstacle_group(self, goal_id: str | None) -> tuple[str, ...]:

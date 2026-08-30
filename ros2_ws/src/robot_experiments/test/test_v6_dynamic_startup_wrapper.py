@@ -6,16 +6,15 @@ import subprocess
 
 
 REPO = Path(__file__).resolve().parents[4]
-WRAPPER = REPO / "scripts/run_v6_single_dynamic_low_obstacle.sh"
 STACK = REPO / "scripts/run_v6_low_obstacle_phase_f_stack.sh"
 STARTUP = REPO / "scripts/lib/v6_dynamic_startup.sh"
 
 
 def _fake_startup(tmp_path: Path, *, has_candidate=True, asset_available=True):
     project = tmp_path / "bio_nav_module3"
+    (tmp_path / "module2-assets").mkdir(parents=True)
     scripts = project / "scripts"
     (scripts / "lib").mkdir(parents=True)
-    shutil.copy2(WRAPPER, scripts / WRAPPER.name)
     shutil.copy2(STACK, scripts / STACK.name)
     shutil.copy2(STARTUP, scripts / "lib" / STARTUP.name)
     (project / "isaac_sim/tools").mkdir(parents=True)
@@ -112,89 +111,6 @@ fi
     })
     env.pop("BIO_NAV_INTEGRATION_SETUP", None)
     return scripts, integration, env
-
-
-def _run_wrapper(scripts: Path, env: dict[str, str], command: str):
-    return subprocess.run(
-        ["bash", str(scripts / WRAPPER.name), command, "M3", "--output-root", "/tmp/fake"],
-        capture_output=True, text=True, env=env,
-    )
-
-
-def test_plan_does_not_import_assets(tmp_path):
-    scripts, _, env = _fake_startup(tmp_path)
-    result = _run_wrapper(scripts, env, "plan")
-
-    assert result.returncode == 0
-    assert not Path(env["FAKE_ASSET_LOG"]).exists()
-
-
-def test_run_imports_then_checks_assets_after_current_overlay(tmp_path):
-    scripts, integration, env = _fake_startup(tmp_path)
-    result = _run_wrapper(scripts, env, "run")
-
-    assert result.returncode == 0, result.stderr
-    calls = Path(env["FAKE_ASSET_LOG"]).read_text(encoding="utf-8").splitlines()
-    assert len(calls) == 2
-    assert all(row.startswith("jazzy,integration,module3|") for row in calls)
-    assert "--check" not in calls[0]
-    assert "--check" in calls[1]
-    assert os.environ.get("BIO_NAV_INTEGRATION_SETUP") is None
-    assert (integration / "ros2_ws/install/local_setup.bash").is_file()
-    dispatch = Path(env["FAKE_DISPATCH_LOG"]).read_text(encoding="utf-8")
-    assert "jazzy,integration,module3|run robot_experiments" in dispatch
-
-
-def test_checkout_portable_default_uses_sibling_integration_with_spaces(tmp_path):
-    scripts, integration, env = _fake_startup(tmp_path / "checkout with spaces")
-    env.pop("BIO_NAV_INTEGRATION_ROOT")
-
-    result = _run_wrapper(scripts, env, "run")
-
-    assert result.returncode == 0, result.stderr
-    assert (integration / "ros2_ws/install/local_setup.bash").is_file()
-    dispatch = Path(env["FAKE_DISPATCH_LOG"]).read_text(encoding="utf-8")
-    assert "jazzy,integration,module3|run robot_experiments" in dispatch
-
-
-def test_missing_asset_fails_before_ros2_dispatch(tmp_path):
-    scripts, _, env = _fake_startup(tmp_path, asset_available=False)
-    result = _run_wrapper(scripts, env, "run")
-
-    assert result.returncode == 2
-    assert not Path(env["FAKE_DISPATCH_LOG"]).exists()
-
-
-def test_stale_overlay_fails_before_asset_or_dispatch(tmp_path):
-    scripts, _, env = _fake_startup(tmp_path, has_candidate=False)
-    result = _run_wrapper(scripts, env, "run")
-
-    assert result.returncode == 2
-    assert "does not provide CognitivePoseModeCandidate" in result.stderr
-    assert not Path(env["FAKE_ASSET_LOG"]).exists()
-    assert not Path(env["FAKE_DISPATCH_LOG"]).exists()
-
-
-def test_explicit_integration_setup_override_is_preserved_with_spaces(tmp_path):
-    scripts, integration, env = _fake_startup(tmp_path)
-    explicit_setup = integration / "explicit overlay/setup with spaces.bash"
-    explicit_setup.parent.mkdir(parents=True)
-    explicit_prefix = integration / "explicit prefix"
-    explicit_setup.write_text(
-        f"export FAKE_INTEGRATION_PREFIX={shlex.quote(str(explicit_prefix))}\n"
-        "export FAKE_HAS_CANDIDATE=1\n"
-        'export OVERLAY_ORDER="${OVERLAY_ORDER},integration-explicit"\n',
-        encoding="utf-8",
-    )
-    explicit_prefix.mkdir()
-    env["BIO_NAV_INTEGRATION_ROOT"] = str(integration / ".." / integration.name)
-    env["BIO_NAV_INTEGRATION_SETUP"] = str(explicit_setup)
-
-    result = _run_wrapper(scripts, env, "run")
-
-    assert result.returncode == 0, result.stderr
-    dispatch = Path(env["FAKE_DISPATCH_LOG"]).read_text(encoding="utf-8")
-    assert "jazzy,integration-explicit,module3|run robot_experiments" in dispatch
 
 
 def test_phase_f_default_uses_sibling_integration_with_spaces(tmp_path):

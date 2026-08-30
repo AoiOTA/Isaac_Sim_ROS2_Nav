@@ -8,30 +8,30 @@ scenario:
   configs:
     robot: ../../../../isaac_sim/configs/robots/jackal.yaml
     nav2: ../../robot_navigation/config/nav2_dynamic_avoidance.yaml
-    dynamic_obstacles: ../../../../isaac_sim/configs/experiments/v6_single_dynamic_low_obstacle.yaml
+    dynamic_obstacles: ../../../../isaac_sim/configs/experiments/v6_kujiale_dynamic_g2_crossing.yaml
   simulation: {physics_dt: 0.016666666666666666, rtf: 1.0}
   runs:
     matrix:
-      - {seed: 8601, case_id: single_dynamic_low_box, variant_id: v1, condition_id: v6_final_kujiale_dynamic}
-      - {seed: 8601, case_id: single_dynamic_low_box, variant_id: v2, condition_id: v6_final_kujiale_dynamic}
-      - {seed: 8601, case_id: single_dynamic_low_box, variant_id: v3, condition_id: v6_final_kujiale_dynamic}
-      - {seed: 8601, case_id: single_dynamic_low_box, variant_id: v4, condition_id: v6_final_kujiale_dynamic}
-      - {seed: 8601, case_id: single_dynamic_low_box, variant_id: v5, condition_id: v6_final_kujiale_dynamic}
-      - {seed: 8602, case_id: single_dynamic_low_box, variant_id: v1, condition_id: v6_final_kujiale_dynamic}
-      - {seed: 8602, case_id: single_dynamic_low_box, variant_id: v2, condition_id: v6_final_kujiale_dynamic}
-      - {seed: 8602, case_id: single_dynamic_low_box, variant_id: v3, condition_id: v6_final_kujiale_dynamic}
-      - {seed: 8602, case_id: single_dynamic_low_box, variant_id: v4, condition_id: v6_final_kujiale_dynamic}
-      - {seed: 8602, case_id: single_dynamic_low_box, variant_id: v5, condition_id: v6_final_kujiale_dynamic}
-      - {seed: 8603, case_id: single_dynamic_low_box, variant_id: v1, condition_id: v6_final_kujiale_dynamic}
-      - {seed: 8603, case_id: single_dynamic_low_box, variant_id: v2, condition_id: v6_final_kujiale_dynamic}
-      - {seed: 8603, case_id: single_dynamic_low_box, variant_id: v3, condition_id: v6_final_kujiale_dynamic}
-      - {seed: 8603, case_id: single_dynamic_low_box, variant_id: v4, condition_id: v6_final_kujiale_dynamic}
-      - {seed: 8603, case_id: single_dynamic_low_box, variant_id: v5, condition_id: v6_final_kujiale_dynamic}
-      - {seed: 8604, case_id: single_dynamic_low_box, variant_id: v1, condition_id: v6_final_kujiale_dynamic}
-      - {seed: 8604, case_id: single_dynamic_low_box, variant_id: v2, condition_id: v6_final_kujiale_dynamic}
-      - {seed: 8604, case_id: single_dynamic_low_box, variant_id: v3, condition_id: v6_final_kujiale_dynamic}
-      - {seed: 8604, case_id: single_dynamic_low_box, variant_id: v4, condition_id: v6_final_kujiale_dynamic}
-      - {seed: 8604, case_id: single_dynamic_low_box, variant_id: v5, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8601, case_id: single_dynamic_g2_crossing, variant_id: v1, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8601, case_id: single_dynamic_g2_crossing, variant_id: v2, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8601, case_id: single_dynamic_g2_crossing, variant_id: v3, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8601, case_id: single_dynamic_g2_crossing, variant_id: v4, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8601, case_id: single_dynamic_g2_crossing, variant_id: v5, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8602, case_id: single_dynamic_g2_crossing, variant_id: v1, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8602, case_id: single_dynamic_g2_crossing, variant_id: v2, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8602, case_id: single_dynamic_g2_crossing, variant_id: v3, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8602, case_id: single_dynamic_g2_crossing, variant_id: v4, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8602, case_id: single_dynamic_g2_crossing, variant_id: v5, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8603, case_id: single_dynamic_g2_crossing, variant_id: v1, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8603, case_id: single_dynamic_g2_crossing, variant_id: v2, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8603, case_id: single_dynamic_g2_crossing, variant_id: v3, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8603, case_id: single_dynamic_g2_crossing, variant_id: v4, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8603, case_id: single_dynamic_g2_crossing, variant_id: v5, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8604, case_id: single_dynamic_g2_crossing, variant_id: v1, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8604, case_id: single_dynamic_g2_crossing, variant_id: v2, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8604, case_id: single_dynamic_g2_crossing, variant_id: v3, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8604, case_id: single_dynamic_g2_crossing, variant_id: v4, condition_id: v6_final_kujiale_dynamic}
+      - {seed: 8604, case_id: single_dynamic_g2_crossing, variant_id: v5, condition_id: v6_final_kujiale_dynamic}
     timeout_sec: 600.0
     leg_timeout_sec: 180.0
   goal: {id: G1, frame_id: map, position: [0.45, -5.35], yaw_deg: 90.0, require_orientation: false}
@@ -43,10 +43,10 @@ scenario:
     - {id: G1, frame_id: map, position: [0.45, -5.35], yaw_deg: 90.0, require_orientation: false}
   success: {position_tolerance_m: 0.25, orientation_tolerance_deg: 10.0, final_linear_speed_mps: 0.02, final_angular_speed_radps: 0.05, final_still_duration_sec: 1.0, final_still_timeout_sec: 20.0, require_safety_observations: true, minimum_ground_truth_path_length_m: 20.0}
   obstacles:
-    layout_id: kujiale_v6_single_dynamic_low_box_v1
+    layout_id: kujiale_v6_dynamic_g2_crossing
     static: []
     trajectories:
-      - id: v6_dynamic_low_box_solo
+      - id: v6_dynamic_g2_crossing_box
         trigger_group: G2
         motion: crossing
         shape: box

@@ -51,7 +51,6 @@ PACKAGED_CONFIGS = (
     "v6_r3_phase2_kujiale_baseline.yaml",
     "v6_r5_phase_b_kujiale_exact_baseline.yaml",
     "v6_run4_shadow_probe.yaml",
-    "v6_single_dynamic_low_obstacle.yaml",
 )
 
 
@@ -117,7 +116,7 @@ setup(
             )
             + external_paths(
                 package_root.parents[2] / "isaac_sim/configs/experiments",
-                "v6_single_dynamic_low_obstacle.yaml",
+                "v6_kujiale_dynamic_g2_crossing.yaml",
             ),
         ),
         (
@@ -166,7 +165,6 @@ setup(
             "v6_formal_episode = robot_experiments.v6_formal:main",
             "module1_targeted_teaching = robot_experiments.module1_targeted_teaching:main",
             "v6_low_obstacle_causal = robot_experiments.v6_low_obstacle_causal:main",
-            "v6_single_dynamic_low_obstacle = robot_experiments.v6_single_dynamic_low_obstacle:main",
             "v6_phase_f_active_ttl_probe = robot_experiments.v6_phase_f_active_ttl_probe:main",
             "v6_localization_causal = robot_experiments.v6_localization_causal:main",
             "v6_localization_causal_evaluator = robot_experiments.v6_localization_causal_evaluator:main",

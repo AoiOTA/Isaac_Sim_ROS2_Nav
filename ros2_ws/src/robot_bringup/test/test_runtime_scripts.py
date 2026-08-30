@@ -1121,15 +1121,13 @@ def test_runtime_scripts_use_strict_shell_and_diagnose_is_read_only():
             # option state instead of globally enabling strict mode.
             assert 'intentionally has no `set -euo pipefail`' in source
         elif script == V6_DYNAMIC_STARTUP:
-            # This sourced function library inherits strict mode from each
-            # standalone caller instead of changing the caller's options.
-            for caller_name in (
-                    'run_v6_low_obstacle_phase_f_stack.sh',
-                    'run_v6_single_dynamic_low_obstacle.sh'):
-                caller = (REPOSITORY_ROOT / 'scripts' / caller_name).read_text(
-                    encoding='utf-8')
-                assert 'set -Eeuo pipefail' in caller
-                assert 'source "${script_dir}/lib/v6_dynamic_startup.sh"' in caller
+            # This sourced function library inherits strict mode from its
+            # Phase-F caller instead of changing the caller's options.
+            caller = (
+                REPOSITORY_ROOT / 'scripts' / 'run_v6_low_obstacle_phase_f_stack.sh'
+            ).read_text(encoding='utf-8')
+            assert 'set -Eeuo pipefail' in caller
+            assert 'source "${script_dir}/lib/v6_dynamic_startup.sh"' in caller
         else:
             assert 'set -Eeuo pipefail' in source, script
         result = subprocess.run(

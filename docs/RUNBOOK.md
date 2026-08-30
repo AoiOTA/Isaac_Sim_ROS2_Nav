@@ -178,7 +178,9 @@ episode.
 - Module2 socket/READY/current 0.10 m depth config;
 - current RoutePrior snapshot or Rivermark tile catalog;
 - cognitive obstacle layer and critic active; raw depth voxel plugin absent;
-- exactly the selected one-low-obstacle scene contract.
+- exactly the selected condition contract: low obstacle for static/appearance,
+  or the LiDAR-visible G2 crossing obstacle for dynamic. Dynamic results do not
+  validate sub-LiDAR obstacle perception.
 
 Topic names alone are insufficient; inspect fresh messages, QoS, timestamps,
 TF values, and actual process/package provenance.

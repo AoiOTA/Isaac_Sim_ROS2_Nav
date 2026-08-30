@@ -33,7 +33,7 @@ The current environment entry is
 | `ros2_ws/src/robot_navigation/config/nav2_stable.yaml` | Stable Phase B Nav2 overlay. |
 | `ros2_ws/src/robot_navigation/config/nav2_v6_low_obstacle_isolation.yaml` | Phase F low-obstacle isolation overlay. |
 | `isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen.yaml` | Frozen static low-obstacle condition. |
-| `isaac_sim/configs/experiments/v6_single_dynamic_low_obstacle.yaml` | Single dynamic low-obstacle condition. |
+| `isaac_sim/configs/experiments/v6_kujiale_dynamic_g2_crossing.yaml` | LiDAR-visible dynamic G2 crossing condition. |
 | `isaac_sim/configs/experiments/kujiale_appearance_profiles.yaml` | Appearance profiles only; the runner selects and records a profile without changing the selected one-low-obstacle physical layout. |
 | `data/rivermark_demo/rivermark_selected.yaml` | Original retained Rivermark occupancy map. |
 | `data/rivermark_demo/rivermark.spawn.yaml` | Calibrated outdoor fixed `map -> odom` source. |

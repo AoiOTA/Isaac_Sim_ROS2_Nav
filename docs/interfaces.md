@@ -52,9 +52,10 @@ priors and cognitive-obstacle observations. Missing, stale, invalid, or
 unhealthy Module2 input must not grant traversability, publish TF, or command
 the robot.
 
-Appearance selection does not move collision geometry: the runner selects and
-records a profile while each scene keeps its selected one-low-obstacle physical
-layout.
+Appearance selection does not move collision geometry: static and appearance
+retain the selected low-obstacle physical layout. The dynamic condition instead
+uses the LiDAR-visible G2 crossing obstacle and does not validate sub-LiDAR
+dynamic-obstacle perception.
 
 ## Current data-plane topics
 

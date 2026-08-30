@@ -195,7 +195,7 @@ def test_completion_clears_both_costmaps_before_returning():
                 message=json.dumps(
                     {
                         "group": "G2",
-                        "retired": ["v6_dynamic_low_box_solo"],
+                        "retired": ["v6_dynamic_g2_crossing_box"],
                     }
                 ),
             )
@@ -216,7 +216,7 @@ def test_completion_clears_both_costmaps_before_returning():
     )
     runner._nav2_profile = "v6_low_obstacle_isolation"
     runner._selected_dynamic_trajectories = lambda: (
-        {"id": "v6_dynamic_low_box_solo", "trigger_group": "G2"},
+        {"id": "v6_dynamic_g2_crossing_box", "trigger_group": "G2"},
     )
     runner._selected_dynamic_groups_for_goal = lambda _goal_id: ["G2"]
     runner._obstacle_complete_clients = {"G2": Client()}
@@ -229,13 +229,13 @@ def test_completion_clears_both_costmaps_before_returning():
     runner._clear_navigation_costmaps = lambda: cleared.append(True)
     runner._dynamic_retirement_clearance_observed = (
         lambda retired, _barrier, source_cursor, _status_cursors: (
-            retired == {"v6_dynamic_low_box_solo"} and source_cursor == 8
+            retired == {"v6_dynamic_g2_crossing_box"} and source_cursor == 8
         )
     )
     runner._wait_until = lambda predicate, _timeout: predicate()
 
     assert runner._complete_obstacle_group("G2") == (
-        "v6_dynamic_low_box_solo",
+        "v6_dynamic_g2_crossing_box",
     )
     assert cleared == [True]
 
@@ -1193,7 +1193,7 @@ def test_focused_dynamic_case_skips_unselected_intermediate_goal_groups():
     assert runner._selected_dynamic_groups_for_goal("G5") == ["G5"]
 
 
-def test_single_dynamic_low_box_maps_crossing_to_its_g2_trigger_group():
+def test_single_dynamic_g2_crossing_maps_crossing_to_its_trigger_group():
     runner = object.__new__(ExperimentRunner)
     runner._scenario = SimpleNamespace(
         scenario_type="dynamic",
@@ -1201,7 +1201,7 @@ def test_single_dynamic_low_box_maps_crossing_to_its_g2_trigger_group():
             {"id": "low_box", "motion": "crossing", "trigger_group": "G2"},
         ),
     )
-    runner._active_selection = SimpleNamespace(case_id="single_dynamic_low_box")
+    runner._active_selection = SimpleNamespace(case_id="single_dynamic_g2_crossing")
 
     assert runner._selected_dynamic_groups_for_goal("G2") == ["G2"]
 
@@ -1229,7 +1229,7 @@ def test_seeds_only_dynamic_scenario_selects_all_trajectories_and_passes_guard()
             "unknown_dynamic_case",
             ({"id": "low_box", "motion": "crossing", "trigger_group": "G2"},),
         ),
-        ("single_dynamic_low_box", ()),
+        ("single_dynamic_g2_crossing", ()),
     ],
 )
 def test_dynamic_episode_rejects_empty_selection_before_reset(case_id, trajectories):

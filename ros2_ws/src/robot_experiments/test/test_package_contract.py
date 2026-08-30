@@ -55,7 +55,6 @@ EXPECTED_PACKAGED_CONFIGS = (
     "v6_r3_phase2_kujiale_baseline.yaml",
     "v6_r5_phase_b_kujiale_exact_baseline.yaml",
     "v6_run4_shadow_probe.yaml",
-    "v6_single_dynamic_low_obstacle.yaml",
 )
 EXPECTED_SOURCE_ONLY_CONFIGS = (
     "dynamic.yaml",
@@ -165,7 +164,7 @@ def test_setup_packages_only_the_current_config_allowlist():
 
     assert isinstance(packaged_configs, tuple)
     assert packaged_configs == EXPECTED_PACKAGED_CONFIGS
-    assert len(packaged_configs) == 46
+    assert len(packaged_configs) == 45
     assert len(packaged_configs) == len(set(packaged_configs))
     assert packaged_configs == tuple(sorted(packaged_configs))
     assert all((PACKAGE_ROOT / "config" / name).is_file() for name in packaged_configs)
@@ -190,7 +189,7 @@ def test_setup_packages_only_the_current_config_allowlist():
             if path.is_file() and path.suffix in {".yaml", ".json"}
         )
     )
-    assert len(source_configs) == 134
+    assert len(source_configs) == 133
     source_only_configs = tuple(
         name for name in source_configs if name not in set(packaged_configs)
     )
