@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import hashlib
 import json
 import math
@@ -33,6 +33,9 @@ from robot_experiments.scenario import load_scenario
 
 SCHEMA_VERSION = "bio_nav_v6_r3_phase2_pilot_manifest_v1"
 FORMAL_CAMPAIGN_SCHEMA_VERSION = "bio_nav_v6_formal_campaign_v1"
+SUFFICIENT_PILOT_MANIFEST_SCHEMA = "bio_nav_v6_sufficient_pilot_manifest_v1"
+SUFFICIENT_PILOT_AGGREGATE_SCHEMA = "bio_nav_v6_sufficient_pilot_aggregate_v1"
+FORMAL_NAS_ROOT = Path("/mnt/nas_home")
 FORMAL_CONDITION_IDS = (
     "indoor_static",
     "outdoor_static",
@@ -641,6 +644,223 @@ def load_formal_campaign_manifest(path: str | Path) -> FormalCampaignManifest:
         freeze_digest=freeze_digest,
         conditions=condition_tuple,
     )
+
+
+def _pilot_selection_identity(condition: FormalCondition, rep: int) -> Mapping[str, Any]:
+    return condition.episode_identities[rep - 1]
+
+
+def _validate_sufficient_pilot_episode(
+    *,
+    condition: FormalCondition,
+    rep: int,
+    summary_path: Path,
+    manifest_path: Path,
+    freeze: Mapping[str, Any],
+    freeze_digest: str,
+) -> tuple[str, int]:
+    if summary_path.name != "run_summary.json" or manifest_path.name != "run_manifest.json":
+        raise V6ContractError("Pilot episode must reference canonical summary/manifest names")
+    if summary_path.parent != manifest_path.parent:
+        raise V6ContractError("Pilot episode summary/manifest roots differ")
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        episode = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise V6ContractError(f"Pilot episode evidence is unreadable: {exc}") from exc
+    if (
+        summary.get("episode_validity", {}).get("valid") is not True
+        or summary.get("strict_success") is not True
+        or summary.get("final_trial_metric_gate", {}).get("passed") is not True
+        or summary.get("checksums_verified") is not True
+        or not _checksums_verified(summary_path.parent)
+    ):
+        raise V6ContractError("Pilot episode is not valid strict success")
+    identity = _pilot_selection_identity(condition, rep)
+    if not (
+        episode.get("scenario_id") == condition.scenario_id
+        and episode.get("run_index") == rep
+        and episode.get("random_seed") == identity["seed"]
+        and episode.get("condition_id") == identity.get("condition_id")
+        and episode.get("dynamic_selection", {}).get("case_id")
+        == identity.get("dynamic_case_id")
+        and episode.get("dynamic_selection", {}).get("variant_id")
+        == identity.get("dynamic_variant_id")
+        and episode.get("appearance", {}).get("profile_id")
+        == identity.get("appearance_profile_id")
+    ):
+        raise V6ContractError("Pilot episode run identity mismatch")
+    if not (
+        episode.get("condition_stack_id") == condition.condition_id
+        and summary.get("condition_stack_id") == condition.condition_id
+        and isinstance(episode.get("stack_session_id"), str)
+        and episode.get("stack_session_id")
+        and summary.get("stack_session_id") == episode.get("stack_session_id")
+        and episode.get("formal_freeze_digest") == freeze_digest
+        and summary.get("formal_freeze_digest") == freeze_digest
+    ):
+        raise V6ContractError("Pilot episode frozen tuple/session mismatch")
+    reset_receipt = episode.get("reset_receipt", {})
+    generation = reset_receipt.get("generation") if isinstance(reset_receipt, Mapping) else None
+    if isinstance(generation, bool) or not isinstance(generation, int) or generation <= 0:
+        raise V6ContractError("Pilot episode reset generation is invalid")
+    scenario = load_scenario(condition.scenario_file)
+    expected_robot_hash = _file_sha256(scenario.resolve_path(scenario.robot_config_file))
+    expected_nav2_hash = _file_sha256(scenario.resolve_path(scenario.nav2_config_file))
+    provenance = episode.get("provenance", {})
+    if not (
+        episode.get("robot_config_hash") == expected_robot_hash
+        and episode.get("nav2_config_hash") == expected_nav2_hash
+        and isinstance(provenance, Mapping)
+        and provenance.get("git_head") == freeze["repositories"]["module3"]["head"]
+    ):
+        raise V6ContractError("Pilot episode source/config provenance mismatch")
+    map_hashes = provenance.get("map_and_posegraph_hashes", {})
+    map_keys = (
+        ("outdoor_map_yaml", "outdoor_map_pgm")
+        if condition.scene == "outdoor"
+        else ("indoor_map_yaml", "indoor_map_pgm")
+    )
+    if not isinstance(map_hashes, Mapping) or not {
+        freeze["frozen_assets"][name]["sha256"] for name in map_keys
+    } <= set(map_hashes.values()):
+        raise V6ContractError("Pilot episode map provenance mismatch")
+    return str(episode["stack_session_id"]), generation
+
+
+def freeze_formal_manifest_from_pilot(
+    *,
+    pilot_manifest_path: str | Path,
+    pilot_aggregate_path: str | Path,
+    output_manifest_path: str | Path,
+    formal_output_root: str | Path,
+) -> FormalCampaignManifest:
+    pilot_input = Path(pilot_manifest_path).expanduser()
+    aggregate_input = Path(pilot_aggregate_path).expanduser()
+    output_input = Path(output_manifest_path).expanduser()
+    if not pilot_input.is_absolute() or not aggregate_input.is_absolute() or not output_input.is_absolute():
+        raise V6ContractError("Pilot freezer paths must be absolute")
+    pilot_path = pilot_input.resolve()
+    aggregate_path = aggregate_input.resolve()
+    output_path = output_input.resolve()
+    output_root = Path(formal_output_root).expanduser()
+    if not output_root.is_absolute():
+        raise V6ContractError("formal output root must be absolute")
+    output_root = output_root.resolve()
+    try:
+        output_root.relative_to(FORMAL_NAS_ROOT.resolve())
+    except ValueError as exc:
+        raise V6ContractError("formal output root must be under the NAS root") from exc
+    if output_root.exists():
+        raise V6ContractError("formal output root must be new")
+    if output_path.exists() or not output_path.parent.is_dir():
+        raise V6ContractError("output manifest must be a new file in an existing directory")
+    try:
+        pilot = yaml.safe_load(pilot_path.read_text(encoding="utf-8"))
+        aggregate = json.loads(aggregate_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, yaml.YAMLError) as exc:
+        raise V6ContractError(f"Pilot freezer input is unreadable: {exc}") from exc
+    pilot = _mapping(pilot, "pilot_manifest")
+    _require_exact_keys(
+        pilot,
+        {"schema_version", "intended_use", "runner_entrypoint", "freeze", "conditions"},
+        "pilot_manifest",
+    )
+    if (
+        pilot.get("schema_version") != SUFFICIENT_PILOT_MANIFEST_SCHEMA
+        or pilot.get("intended_use") != "sufficient_pilot"
+    ):
+        raise V6ContractError("unsupported sufficient Pilot manifest")
+    condition_rows = pilot.get("conditions")
+    if not isinstance(condition_rows, list) or len(condition_rows) != 6:
+        raise V6ContractError("Pilot manifest must contain six conditions")
+    formal_conditions = []
+    for row in condition_rows:
+        row = dict(_mapping(row, "pilot_manifest.conditions[]"))
+        _require_exact_keys(
+            row,
+            {"id", "scene", "category", "scenario_file", "runner_arguments"},
+            "pilot_manifest.conditions[]",
+        )
+        if not Path(str(row.get("scenario_file", ""))).expanduser().is_absolute():
+            raise V6ContractError("Pilot scenario paths must be absolute")
+        formal_conditions.append(
+            {**row, "output_directory": str(output_root / str(row["id"]))}
+        )
+    candidate = {
+        "schema_version": FORMAL_CAMPAIGN_SCHEMA_VERSION,
+        "intended_use": "formal_qualification",
+        "execution_authorization": FORMAL_EXECUTION_NOT_AUTHORIZED,
+        "runs_per_condition": FORMAL_RUNS_PER_CONDITION,
+        "runner_entrypoint": pilot["runner_entrypoint"],
+        "freeze": pilot["freeze"],
+        "conditions": formal_conditions,
+    }
+    temporary = output_path.parent / f".{output_path.name}.{os.getpid()}.tmp"
+    try:
+        temporary.write_text(json.dumps(candidate, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        frozen = load_formal_campaign_manifest(temporary)
+        aggregate = _mapping(aggregate, "pilot_aggregate")
+        _require_exact_keys(
+            aggregate,
+            {"schema_version", "pilot_manifest", "conditions"},
+            "pilot_aggregate",
+        )
+        if aggregate.get("schema_version") != SUFFICIENT_PILOT_AGGREGATE_SCHEMA:
+            raise V6ContractError("unsupported sufficient Pilot aggregate")
+        aggregate_manifest = Path(str(aggregate.get("pilot_manifest", ""))).expanduser()
+        if not aggregate_manifest.is_absolute() or aggregate_manifest.resolve() != pilot_path:
+            raise V6ContractError("Pilot aggregate manifest binding mismatch")
+        rows = aggregate.get("conditions")
+        if not isinstance(rows, list) or len(rows) != 6:
+            raise V6ContractError("Pilot aggregate must contain six conditions")
+        sessions: dict[str, str] = {}
+        for expected_condition, row_value in zip(frozen.conditions, rows):
+            row = _mapping(row_value, "pilot_aggregate.conditions[]")
+            _require_exact_keys(row, {"id", "scene", "category", "episodes"}, "pilot_aggregate.conditions[]")
+            if (row.get("id"), row.get("scene"), row.get("category")) != (
+                expected_condition.condition_id,
+                expected_condition.scene,
+                expected_condition.category,
+            ):
+                raise V6ContractError("Pilot aggregate condition order/identity mismatch")
+            episodes = row.get("episodes")
+            if not isinstance(episodes, list) or len(episodes) != 3:
+                raise V6ContractError("Pilot condition must contain exactly three episodes")
+            generations = []
+            for rep, episode_row_value in enumerate(episodes, start=1):
+                episode_row = _mapping(episode_row_value, "pilot_aggregate.episodes[]")
+                _require_exact_keys(
+                    episode_row,
+                    {"rep", "boundary", "summary_path", "manifest_path"},
+                    "pilot_aggregate.episodes[]",
+                )
+                expected_boundary = "cold" if rep == 1 else "hot_reset"
+                if episode_row.get("rep") != rep or episode_row.get("boundary") != expected_boundary:
+                    raise V6ContractError("Pilot cold/hot episode order mismatch")
+                summary_input = Path(str(episode_row["summary_path"])).expanduser()
+                manifest_input = Path(str(episode_row["manifest_path"])).expanduser()
+                if not summary_input.is_absolute() or not manifest_input.is_absolute():
+                    raise V6ContractError("Pilot episode evidence paths must be absolute")
+                session, generation = _validate_sufficient_pilot_episode(
+                    condition=expected_condition,
+                    rep=rep,
+                    summary_path=summary_input.resolve(),
+                    manifest_path=manifest_input.resolve(),
+                    freeze=frozen.freeze,
+                    freeze_digest=frozen.freeze_digest,
+                )
+                sessions.setdefault(expected_condition.condition_id, session)
+                if sessions[expected_condition.condition_id] != session:
+                    raise V6ContractError("Pilot condition stack session changed")
+                generations.append(generation)
+            if generations != list(range(generations[0], generations[0] + 3)):
+                raise V6ContractError("Pilot reset generations are not contiguous")
+        os.replace(temporary, output_path)
+        return replace(frozen, path=output_path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def _checksums_verified(run_root: Path) -> bool:
@@ -2458,6 +2678,10 @@ def build_parser() -> argparse.ArgumentParser:
     manifest_group = parser.add_mutually_exclusive_group(required=True)
     manifest_group.add_argument("--manifest")
     manifest_group.add_argument("--formal-manifest")
+    manifest_group.add_argument("--pilot-manifest")
+    parser.add_argument("--pilot-aggregate")
+    parser.add_argument("--output-manifest")
+    parser.add_argument("--formal-output-root")
     parser.add_argument("--episode-index", type=int, default=0)
     parser.add_argument("--pilot", action="store_true")
     parser.add_argument("--dispatch-pilot", action="store_true")
@@ -2474,6 +2698,32 @@ def build_parser() -> argparse.ArgumentParser:
 def cli(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.pilot_manifest:
+            if (
+                not args.pilot_aggregate
+                or not args.output_manifest
+                or not args.formal_output_root
+            ):
+                raise V6ContractError(
+                    "Pilot freezer requires aggregate, output manifest, and formal output root"
+                )
+            if args.pilot or args.dispatch_pilot or args.execute_formal:
+                raise V6ContractError("Pilot freezer cannot dispatch episodes")
+            frozen = freeze_formal_manifest_from_pilot(
+                pilot_manifest_path=args.pilot_manifest,
+                pilot_aggregate_path=args.pilot_aggregate,
+                output_manifest_path=args.output_manifest,
+                formal_output_root=args.formal_output_root,
+            )
+            print(json.dumps({
+                "qualification": "FORMAL_READY_MANIFEST",
+                "execution_authorization": frozen.authorization,
+                "formal_progress": "0/120",
+                "dispatch": False,
+                "manifest": str(frozen.path),
+                "freeze_digest": frozen.freeze_digest,
+            }, sort_keys=True))
+            return 0
         if args.formal_manifest:
             if args.pilot or args.dispatch_pilot or args.output_jsonl:
                 raise V6ContractError(
@@ -2521,6 +2771,8 @@ def cli(argv: list[str] | None = None) -> int:
                 )
             )
             return 0
+        if args.pilot_aggregate or args.output_manifest or args.formal_output_root:
+            raise V6ContractError("Pilot freezer options require --pilot-manifest")
         if (
             args.execute_formal
             or args.condition_stack_id

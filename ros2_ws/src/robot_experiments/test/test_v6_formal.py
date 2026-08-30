@@ -28,6 +28,7 @@ from robot_experiments.v6_formal import (
     evaluate_formal_campaign,
     execute_formal_campaign,
     formal_dispatch_plan,
+    freeze_formal_manifest_from_pilot,
     load_formal_campaign_manifest,
     load_manifest,
     validate_condition_stack_contract,
@@ -307,6 +308,83 @@ def _live_stack_contract(
     return path
 
 
+def _write_sufficient_pilot_inputs(tmp_path: Path):
+    raw = _formal_raw(tmp_path)
+    reference_path = tmp_path / "reference-formal.json"
+    reference_path.write_text(json.dumps(raw), encoding="utf-8")
+    reference = load_formal_campaign_manifest(reference_path)
+    pilot_manifest = {
+        "schema_version": "bio_nav_v6_sufficient_pilot_manifest_v1",
+        "intended_use": "sufficient_pilot",
+        "runner_entrypoint": raw["runner_entrypoint"],
+        "freeze": raw["freeze"],
+        "conditions": [
+            {
+                key: row[key]
+                for key in (
+                    "id", "scene", "category", "scenario_file", "runner_arguments"
+                )
+            }
+            for row in raw["conditions"]
+        ],
+    }
+    pilot_manifest_path = tmp_path / "pilot-manifest.json"
+    pilot_manifest_path.write_text(json.dumps(pilot_manifest), encoding="utf-8")
+    aggregate_rows = []
+    for condition in reference.conditions:
+        episode_rows = []
+        for rep in range(1, 4):
+            root = _write_formal_run(
+                condition,
+                rep,
+                strict_success=True,
+                formal_freeze_digest=reference.freeze_digest,
+            )
+            manifest_path = root / "run_manifest.json"
+            episode = json.loads(manifest_path.read_text())
+            scenario = load_scenario(condition.scenario_file)
+            episode["robot_config_hash"] = hashlib.sha256(
+                scenario.resolve_path(scenario.robot_config_file).read_bytes()
+            ).hexdigest()
+            episode["nav2_config_hash"] = hashlib.sha256(
+                scenario.resolve_path(scenario.nav2_config_file).read_bytes()
+            ).hexdigest()
+            map_keys = (
+                ("outdoor_map_yaml", "outdoor_map_pgm")
+                if condition.scene == "outdoor"
+                else ("indoor_map_yaml", "indoor_map_pgm")
+            )
+            episode["provenance"] = {
+                "git_head": reference.freeze["repositories"]["module3"]["head"],
+                "git_dirty": False,
+                "map_and_posegraph_hashes": {
+                    name: reference.freeze["frozen_assets"][name]["sha256"]
+                    for name in map_keys
+                },
+            }
+            manifest_path.write_text(json.dumps(episode), encoding="utf-8")
+            _refresh_checksums(root)
+            episode_rows.append({
+                "rep": rep,
+                "boundary": "cold" if rep == 1 else "hot_reset",
+                "summary_path": str(root / "run_summary.json"),
+                "manifest_path": str(manifest_path),
+            })
+        aggregate_rows.append({
+            "id": condition.condition_id,
+            "scene": condition.scene,
+            "category": condition.category,
+            "episodes": episode_rows,
+        })
+    aggregate_path = tmp_path / "pilot-aggregate.json"
+    aggregate_path.write_text(json.dumps({
+        "schema_version": "bio_nav_v6_sufficient_pilot_aggregate_v1",
+        "pilot_manifest": str(pilot_manifest_path),
+        "conditions": aggregate_rows,
+    }), encoding="utf-8")
+    return pilot_manifest_path, aggregate_path, reference
+
+
 def ready_facts() -> ReadinessFacts:
     return ReadinessFacts(
         **{name: True for name in ReadinessFacts.__dataclass_fields__}
@@ -467,6 +545,124 @@ def test_formal_manifest_dry_run_freezes_six_conditions_and_120_runs(
         )
         for row in dynamic.episode_identities
     }) == 20
+
+
+def test_sufficient_pilot_freezer_writes_not_authorized_formal_manifest(
+    tmp_path, monkeypatch
+):
+    pilot_manifest, aggregate, reference = _write_sufficient_pilot_inputs(tmp_path)
+    output = tmp_path / "frozen-formal.json"
+    formal_root = tmp_path / "nas" / "formal-campaign"
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+
+    frozen = freeze_formal_manifest_from_pilot(
+        pilot_manifest_path=pilot_manifest,
+        pilot_aggregate_path=aggregate,
+        output_manifest_path=output,
+        formal_output_root=formal_root,
+    )
+
+    assert output.is_file()
+    assert frozen.authorization == "NOT_AUTHORIZED"
+    assert frozen.freeze_digest == reference.freeze_digest
+    assert [condition.condition_id for condition in frozen.conditions] == list(
+        v6_formal_module.FORMAL_CONDITION_IDS
+    )
+    assert all(
+        condition.output_directory == formal_root / condition.condition_id
+        for condition in frozen.conditions
+    )
+    dry_run = json.loads(output.read_text())
+    assert dry_run["runs_per_condition"] == 20
+    assert dry_run["execution_authorization"] == "NOT_AUTHORIZED"
+    assert load_formal_campaign_manifest(output).freeze_digest == frozen.freeze_digest
+    assert not formal_root.exists()
+
+
+@pytest.mark.parametrize(
+    ("fault", "message"),
+    [
+        ("strict", "not valid strict success"),
+        ("config", "source/config provenance mismatch"),
+        ("boundary", "cold/hot episode order mismatch"),
+        ("order", "condition order/identity mismatch"),
+    ],
+)
+def test_sufficient_pilot_freezer_fails_closed_and_writes_nothing(
+    tmp_path, monkeypatch, fault, message
+):
+    pilot_manifest, aggregate_path, _reference = _write_sufficient_pilot_inputs(
+        tmp_path
+    )
+    aggregate = json.loads(aggregate_path.read_text())
+    first_episode = aggregate["conditions"][0]["episodes"][0]
+    if fault == "strict":
+        summary_path = Path(first_episode["summary_path"])
+        summary = json.loads(summary_path.read_text())
+        summary["strict_success"] = False
+        summary_path.write_text(json.dumps(summary), encoding="utf-8")
+        _refresh_checksums(summary_path.parent)
+    elif fault == "config":
+        manifest_path = Path(first_episode["manifest_path"])
+        episode = json.loads(manifest_path.read_text())
+        episode["nav2_config_hash"] = "0" * 64
+        manifest_path.write_text(json.dumps(episode), encoding="utf-8")
+        _refresh_checksums(manifest_path.parent)
+    elif fault == "boundary":
+        first_episode["boundary"] = "hot_reset"
+        aggregate_path.write_text(json.dumps(aggregate), encoding="utf-8")
+    else:
+        aggregate["conditions"][0], aggregate["conditions"][1] = (
+            aggregate["conditions"][1], aggregate["conditions"][0]
+        )
+        aggregate_path.write_text(json.dumps(aggregate), encoding="utf-8")
+    output = tmp_path / "must-not-exist.json"
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+
+    with pytest.raises(V6ContractError, match=message):
+        freeze_formal_manifest_from_pilot(
+            pilot_manifest_path=pilot_manifest,
+            pilot_aggregate_path=aggregate_path,
+            output_manifest_path=output,
+            formal_output_root=tmp_path / "nas" / "formal",
+        )
+
+    assert not output.exists()
+
+
+def test_sufficient_pilot_freezer_rejects_existing_formal_root(tmp_path, monkeypatch):
+    pilot_manifest, aggregate, _reference = _write_sufficient_pilot_inputs(tmp_path)
+    formal_root = tmp_path / "nas" / "formal"
+    formal_root.mkdir(parents=True)
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+
+    with pytest.raises(V6ContractError, match="must be new"):
+        freeze_formal_manifest_from_pilot(
+            pilot_manifest_path=pilot_manifest,
+            pilot_aggregate_path=aggregate,
+            output_manifest_path=tmp_path / "output.json",
+            formal_output_root=formal_root,
+        )
+
+
+def test_sufficient_pilot_freezer_cli_never_dispatches(tmp_path, monkeypatch, capsys):
+    pilot_manifest, aggregate, _reference = _write_sufficient_pilot_inputs(tmp_path)
+    output = tmp_path / "formal.json"
+    formal_root = tmp_path / "nas" / "formal"
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+
+    assert cli([
+        "--pilot-manifest", str(pilot_manifest),
+        "--pilot-aggregate", str(aggregate),
+        "--output-manifest", str(output),
+        "--formal-output-root", str(formal_root),
+    ]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["qualification"] == "FORMAL_READY_MANIFEST"
+    assert payload["execution_authorization"] == "NOT_AUTHORIZED"
+    assert payload["formal_progress"] == "0/120"
+    assert payload["dispatch"] is False
 
 
 def test_formal_manifest_requires_source_runner_and_route_prior_contract(tmp_path):
@@ -762,6 +958,9 @@ def test_formal_execution_requires_exactly_one_new_strict_target(
 
 def test_formal_shell_requires_and_forwards_condition_stack_id():
     source = (REPO / "scripts" / "run_v6_formal_episode.sh").read_text()
+    assert "--freeze-pilot PILOT_MANIFEST PILOT_AGGREGATE" in source
+    assert '--pilot-aggregate "$2"' in source
+    assert '--output-manifest "$3"' in source
     assert "formal execution requires stack ID and contract path" in source
     assert '--condition-stack-contract "$5"' in source
 
