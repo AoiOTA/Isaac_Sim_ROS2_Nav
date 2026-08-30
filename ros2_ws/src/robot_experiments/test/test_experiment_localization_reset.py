@@ -325,6 +325,9 @@ def test_route_goal_complete_bool_does_not_arm_terminal_fence():
         _route_goal_complete_epoch=0,
         _latest_route_goal_complete=False,
         _terminal_fence_arm_client=client,
+        _terminal_zero_expected_route_completion_epoch=None,
+        _terminal_zero_expected_route_leg_id=None,
+        _terminal_zero_expected_route_leg_is_final=False,
     )
 
     ExperimentRunner._route_goal_complete_callback(
