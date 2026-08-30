@@ -266,7 +266,11 @@ def _live_stack_contract(
         "condition": condition,
         "arm": "M3",
         "domain": 150,
-        "startup_profile": "module2_causal_obstacle_active",
+        "startup_profile": (
+            "module2_causal_obstacle_outdoor"
+            if scene == "outdoor"
+            else "module2_causal_obstacle_active"
+        ),
         "pid": pid,
         "pgid": int(stat[2]),
         "start_ticks": int(stat[19]),
@@ -309,6 +313,7 @@ def _live_stack_contract(
 
 
 def _write_sufficient_pilot_inputs(tmp_path: Path):
+    (tmp_path / "nas").mkdir(exist_ok=True)
     raw = _formal_raw(tmp_path)
     reference_path = tmp_path / "reference-formal.json"
     reference_path.write_text(json.dumps(raw), encoding="utf-8")
@@ -332,6 +337,13 @@ def _write_sufficient_pilot_inputs(tmp_path: Path):
     pilot_manifest_path.write_text(json.dumps(pilot_manifest), encoding="utf-8")
     aggregate_rows = []
     for condition in reference.conditions:
+        contract_root = tmp_path / "pilot-stack-contracts" / condition.condition_id
+        contract_root.mkdir(parents=True)
+        contract_path = _live_stack_contract(
+            contract_root, condition_id=condition.condition_id
+        )
+        contract = json.loads(contract_path.read_text())
+        stack_tuple_digest = v6_formal_module._stack_tuple_digest(contract)
         episode_rows = []
         for rep in range(1, 4):
             root = _write_formal_run(
@@ -339,6 +351,7 @@ def _write_sufficient_pilot_inputs(tmp_path: Path):
                 rep,
                 strict_success=True,
                 formal_freeze_digest=reference.freeze_digest,
+                stack_session_id=contract["stack_session_id"],
             )
             manifest_path = root / "run_manifest.json"
             episode = json.loads(manifest_path.read_text())
@@ -349,6 +362,17 @@ def _write_sufficient_pilot_inputs(tmp_path: Path):
             episode["nav2_config_hash"] = hashlib.sha256(
                 scenario.resolve_path(scenario.nav2_config_file).read_bytes()
             ).hexdigest()
+            episode["scenario_runtime_hashes"] = {
+                name: hashlib.sha256(scenario.resolve_path(path).read_bytes()).hexdigest()
+                for name, path in (
+                    ("robot_config", scenario.robot_config_file),
+                    ("nav2_config", scenario.nav2_config_file),
+                    ("dynamic_config", scenario.dynamic_config_file),
+                    ("appearance_config", scenario.appearance_config_file),
+                    ("optimal_reference", scenario.optimal_reference_file),
+                )
+                if path is not None
+            }
             map_keys = (
                 ("outdoor_map_yaml", "outdoor_map_pgm")
                 if condition.scene == "outdoor"
@@ -369,6 +393,8 @@ def _write_sufficient_pilot_inputs(tmp_path: Path):
                 "boundary": "cold" if rep == 1 else "hot_reset",
                 "summary_path": str(root / "run_summary.json"),
                 "manifest_path": str(manifest_path),
+                "stack_contract_path": str(contract_path),
+                "stack_tuple_digest": stack_tuple_digest,
             })
         aggregate_rows.append({
             "id": condition.condition_id,
@@ -576,7 +602,12 @@ def test_sufficient_pilot_freezer_writes_not_authorized_formal_manifest(
     assert dry_run["runs_per_condition"] == 20
     assert dry_run["execution_authorization"] == "NOT_AUTHORIZED"
     assert load_formal_campaign_manifest(output).freeze_digest == frozen.freeze_digest
-    assert not formal_root.exists()
+    assert formal_root.is_dir()
+    assert frozen.pilot_freeze_provenance is not None
+    assert len(frozen.pilot_freeze_provenance["episodes"]) == 18
+    assert frozen.pilot_freeze_provenance["pilot_manifest"]["path"] == str(
+        pilot_manifest
+    )
 
 
 @pytest.mark.parametrize(
@@ -584,6 +615,8 @@ def test_sufficient_pilot_freezer_writes_not_authorized_formal_manifest(
     [
         ("strict", "not valid strict success"),
         ("config", "source/config provenance mismatch"),
+        ("runtime_hashes", "source/config provenance mismatch"),
+        ("session", "frozen tuple/session mismatch"),
         ("boundary", "cold/hot episode order mismatch"),
         ("order", "condition order/identity mismatch"),
     ],
@@ -608,6 +641,19 @@ def test_sufficient_pilot_freezer_fails_closed_and_writes_nothing(
         episode["nav2_config_hash"] = "0" * 64
         manifest_path.write_text(json.dumps(episode), encoding="utf-8")
         _refresh_checksums(manifest_path.parent)
+    elif fault in {"runtime_hashes", "session"}:
+        manifest_path = Path(first_episode["manifest_path"])
+        summary_path = Path(first_episode["summary_path"])
+        episode = json.loads(manifest_path.read_text())
+        summary = json.loads(summary_path.read_text())
+        if fault == "runtime_hashes":
+            episode["scenario_runtime_hashes"]["nav2_config"] = "0" * 64
+        else:
+            episode["stack_session_id"] = "b" * 64
+            summary["stack_session_id"] = "b" * 64
+        manifest_path.write_text(json.dumps(episode), encoding="utf-8")
+        summary_path.write_text(json.dumps(summary), encoding="utf-8")
+        _refresh_checksums(manifest_path.parent)
     elif fault == "boundary":
         first_episode["boundary"] = "hot_reset"
         aggregate_path.write_text(json.dumps(aggregate), encoding="utf-8")
@@ -617,6 +663,7 @@ def test_sufficient_pilot_freezer_fails_closed_and_writes_nothing(
         )
         aggregate_path.write_text(json.dumps(aggregate), encoding="utf-8")
     output = tmp_path / "must-not-exist.json"
+    formal_root = tmp_path / "nas" / "formal"
     monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
 
     with pytest.raises(V6ContractError, match=message):
@@ -624,10 +671,11 @@ def test_sufficient_pilot_freezer_fails_closed_and_writes_nothing(
             pilot_manifest_path=pilot_manifest,
             pilot_aggregate_path=aggregate_path,
             output_manifest_path=output,
-            formal_output_root=tmp_path / "nas" / "formal",
+            formal_output_root=formal_root,
         )
 
     assert not output.exists()
+    assert not formal_root.exists()
 
 
 def test_sufficient_pilot_freezer_rejects_existing_formal_root(tmp_path, monkeypatch):
@@ -643,6 +691,46 @@ def test_sufficient_pilot_freezer_rejects_existing_formal_root(tmp_path, monkeyp
             output_manifest_path=tmp_path / "output.json",
             formal_output_root=formal_root,
         )
+
+
+def test_sufficient_pilot_freezer_rejects_normalized_stack_tuple_drift(
+    tmp_path, monkeypatch
+):
+    pilot_manifest, aggregate_path, _reference = _write_sufficient_pilot_inputs(
+        tmp_path
+    )
+    aggregate = json.loads(aggregate_path.read_text())
+    episodes = aggregate["conditions"][0]["episodes"]
+    contract_path = Path(episodes[0]["stack_contract_path"])
+    contract = json.loads(contract_path.read_text())
+    contract["driver_version"] = "stale-driver"
+    contract["stack_session_id"] = v6_formal_module._stack_session_id(contract)
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+    tuple_digest = v6_formal_module._stack_tuple_digest(contract)
+    for row in episodes:
+        row["stack_tuple_digest"] = tuple_digest
+        manifest_path = Path(row["manifest_path"])
+        summary_path = Path(row["summary_path"])
+        episode = json.loads(manifest_path.read_text())
+        summary = json.loads(summary_path.read_text())
+        episode["stack_session_id"] = contract["stack_session_id"]
+        summary["stack_session_id"] = contract["stack_session_id"]
+        manifest_path.write_text(json.dumps(episode), encoding="utf-8")
+        summary_path.write_text(json.dumps(summary), encoding="utf-8")
+        _refresh_checksums(manifest_path.parent)
+    aggregate_path.write_text(json.dumps(aggregate), encoding="utf-8")
+    formal_root = tmp_path / "nas" / "formal"
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+
+    with pytest.raises(V6ContractError, match="stack contract frozen tuple mismatch"):
+        freeze_formal_manifest_from_pilot(
+            pilot_manifest_path=pilot_manifest,
+            pilot_aggregate_path=aggregate_path,
+            output_manifest_path=tmp_path / "output.json",
+            formal_output_root=formal_root,
+        )
+
+    assert not formal_root.exists()
 
 
 def test_sufficient_pilot_freezer_cli_never_dispatches(tmp_path, monkeypatch, capsys):
@@ -663,6 +751,32 @@ def test_sufficient_pilot_freezer_cli_never_dispatches(tmp_path, monkeypatch, ca
     assert payload["execution_authorization"] == "NOT_AUTHORIZED"
     assert payload["formal_progress"] == "0/120"
     assert payload["dispatch"] is False
+
+
+def test_sufficient_pilot_freezer_atomic_publish_never_clobbers(
+    tmp_path, monkeypatch
+):
+    pilot_manifest, aggregate, _reference = _write_sufficient_pilot_inputs(tmp_path)
+    output = tmp_path / "formal.json"
+    formal_root = tmp_path / "nas" / "formal"
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+
+    def raced_link(_source, target):
+        Path(target).write_text("racer\n", encoding="utf-8")
+        raise FileExistsError
+
+    monkeypatch.setattr(v6_formal_module.os, "link", raced_link)
+
+    with pytest.raises(V6ContractError, match="already exists"):
+        freeze_formal_manifest_from_pilot(
+            pilot_manifest_path=pilot_manifest,
+            pilot_aggregate_path=aggregate,
+            output_manifest_path=output,
+            formal_output_root=formal_root,
+        )
+
+    assert output.read_text() == "racer\n"
+    assert not formal_root.exists()
 
 
 def test_formal_manifest_requires_source_runner_and_route_prior_contract(tmp_path):

@@ -872,6 +872,17 @@ class ExperimentRunner(Node):
                 raise ConfigurationError("optimal reference is incomplete or unconverged")
             self._optimal_reference = reference
             self._optimal_reference_hash = configuration_sha256(reference_path)
+        self._scenario_runtime_hashes = {
+            name: digest
+            for name, digest in (
+                ("robot_config", self._robot_config_hash),
+                ("nav2_config", self._nav2_config_hash),
+                ("dynamic_config", self._dynamic_config_hash),
+                ("appearance_config", self._appearance_config_hash),
+                ("optimal_reference", self._optimal_reference_hash),
+            )
+            if digest is not None
+        }
 
         self._output_directory = Path(
             str(self.declare_parameter("output_directory", "data/experiment_runs").value)
@@ -4287,6 +4298,9 @@ class ExperimentRunner(Node):
             "provenance": dict(self._provenance),
             "robot_config_hash": self._robot_config_hash,
             "nav2_config_hash": self._nav2_config_hash,
+            "scenario_runtime_hashes": dict(
+                getattr(self, "_scenario_runtime_hashes", {})
+            ),
             "nav2_profile": self._nav2_profile,
             "clear_slam_localization_buffer": (
                 self._clear_slam_localization_buffer

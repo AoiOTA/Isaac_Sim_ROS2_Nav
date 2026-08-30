@@ -18,6 +18,7 @@ from pathlib import Path
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Any, Mapping
 
@@ -236,6 +237,7 @@ class FormalCampaignManifest:
     runner_entrypoint: Path
     freeze: Mapping[str, Any]
     freeze_digest: str
+    pilot_freeze_provenance: Mapping[str, Any] | None
     conditions: tuple[FormalCondition, ...]
 
 
@@ -422,19 +424,20 @@ def load_formal_campaign_manifest(path: str | Path) -> FormalCampaignManifest:
     manifest_path = Path(path).expanduser().resolve()
     raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     raw = _mapping(raw, "formal_manifest")
-    _require_exact_keys(
-        raw,
-        {
-            "schema_version",
-            "intended_use",
-            "execution_authorization",
-            "runs_per_condition",
-            "runner_entrypoint",
-            "freeze",
-            "conditions",
-        },
-        "formal_manifest",
-    )
+    required_manifest_keys = {
+        "schema_version",
+        "intended_use",
+        "execution_authorization",
+        "runs_per_condition",
+        "runner_entrypoint",
+        "freeze",
+        "conditions",
+    }
+    if frozenset(raw) not in {
+        frozenset(required_manifest_keys),
+        frozenset(required_manifest_keys | {"pilot_freeze_provenance"}),
+    }:
+        raise V6ContractError("formal_manifest keys are invalid")
     if raw.get("schema_version") != FORMAL_CAMPAIGN_SCHEMA_VERSION:
         raise V6ContractError(
             f"formal schema_version must be {FORMAL_CAMPAIGN_SCHEMA_VERSION}"
@@ -636,12 +639,28 @@ def load_formal_campaign_manifest(path: str | Path) -> FormalCampaignManifest:
         scenario_configs=scenario_configs,
         runner_entrypoint=runner_entrypoint,
     )
+    pilot_freeze_provenance = raw.get("pilot_freeze_provenance")
+    if pilot_freeze_provenance is not None:
+        pilot_freeze_provenance = _mapping(
+            pilot_freeze_provenance, "pilot_freeze_provenance"
+        )
+        _require_exact_keys(
+            pilot_freeze_provenance,
+            {"schema", "pilot_manifest", "pilot_aggregate", "episodes"},
+            "pilot_freeze_provenance",
+        )
+        if pilot_freeze_provenance.get("schema") != "bio_nav.v6_pilot_freeze_provenance.v1":
+            raise V6ContractError("pilot freeze provenance schema mismatch")
+        episodes = pilot_freeze_provenance.get("episodes")
+        if not isinstance(episodes, list) or len(episodes) != 18:
+            raise V6ContractError("pilot freeze provenance must index 18 episodes")
     return FormalCampaignManifest(
         path=manifest_path,
         authorization=authorization,
         runner_entrypoint=runner_entrypoint,
         freeze=freeze,
         freeze_digest=freeze_digest,
+        pilot_freeze_provenance=pilot_freeze_provenance,
         conditions=condition_tuple,
     )
 
@@ -656,13 +675,22 @@ def _validate_sufficient_pilot_episode(
     rep: int,
     summary_path: Path,
     manifest_path: Path,
+    stack_contract_path: Path,
+    expected_stack_tuple_digest: str,
     freeze: Mapping[str, Any],
     freeze_digest: str,
-) -> tuple[str, int]:
+) -> tuple[str, int, dict[str, Any]]:
     if summary_path.name != "run_summary.json" or manifest_path.name != "run_manifest.json":
         raise V6ContractError("Pilot episode must reference canonical summary/manifest names")
     if summary_path.parent != manifest_path.parent:
         raise V6ContractError("Pilot episode summary/manifest roots differ")
+    stack_contract, stack_tuple_digest = _load_stack_contract_snapshot(
+        stack_contract_path,
+        expected_condition_id=condition.condition_id,
+        freeze=freeze,
+    )
+    if stack_tuple_digest != expected_stack_tuple_digest:
+        raise V6ContractError("Pilot stack normalized tuple digest mismatch")
     try:
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
         episode = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -696,6 +724,7 @@ def _validate_sufficient_pilot_episode(
         and isinstance(episode.get("stack_session_id"), str)
         and episode.get("stack_session_id")
         and summary.get("stack_session_id") == episode.get("stack_session_id")
+        and stack_contract["stack_session_id"] == episode.get("stack_session_id")
         and episode.get("formal_freeze_digest") == freeze_digest
         and summary.get("formal_freeze_digest") == freeze_digest
     ):
@@ -707,12 +736,25 @@ def _validate_sufficient_pilot_episode(
     scenario = load_scenario(condition.scenario_file)
     expected_robot_hash = _file_sha256(scenario.resolve_path(scenario.robot_config_file))
     expected_nav2_hash = _file_sha256(scenario.resolve_path(scenario.nav2_config_file))
+    expected_runtime_hashes = {
+        name: _file_sha256(scenario.resolve_path(path))
+        for name, path in (
+            ("robot_config", scenario.robot_config_file),
+            ("nav2_config", scenario.nav2_config_file),
+            ("dynamic_config", scenario.dynamic_config_file),
+            ("appearance_config", scenario.appearance_config_file),
+            ("optimal_reference", scenario.optimal_reference_file),
+        )
+        if path is not None
+    }
     provenance = episode.get("provenance", {})
     if not (
         episode.get("robot_config_hash") == expected_robot_hash
         and episode.get("nav2_config_hash") == expected_nav2_hash
+        and episode.get("scenario_runtime_hashes") == expected_runtime_hashes
         and isinstance(provenance, Mapping)
         and provenance.get("git_head") == freeze["repositories"]["module3"]["head"]
+        and provenance.get("git_dirty") is False
     ):
         raise V6ContractError("Pilot episode source/config provenance mismatch")
     map_hashes = provenance.get("map_and_posegraph_hashes", {})
@@ -725,7 +767,20 @@ def _validate_sufficient_pilot_episode(
         freeze["frozen_assets"][name]["sha256"] for name in map_keys
     } <= set(map_hashes.values()):
         raise V6ContractError("Pilot episode map provenance mismatch")
-    return str(episode["stack_session_id"]), generation
+    checksum_path = summary_path.parent / "checksums.sha256"
+    evidence_index = {
+        "condition_id": condition.condition_id,
+        "rep": rep,
+        "summary": {"path": str(summary_path), "sha256": _file_sha256(summary_path)},
+        "manifest": {"path": str(manifest_path), "sha256": _file_sha256(manifest_path)},
+        "checksums": {"path": str(checksum_path), "sha256": _file_sha256(checksum_path)},
+        "stack_contract": {
+            "path": str(stack_contract_path),
+            "sha256": _file_sha256(stack_contract_path),
+        },
+        "stack_tuple_digest": stack_tuple_digest,
+    }
+    return str(episode["stack_session_id"]), generation, evidence_index
 
 
 def freeze_formal_manifest_from_pilot(
@@ -796,7 +851,22 @@ def freeze_formal_manifest_from_pilot(
         "freeze": pilot["freeze"],
         "conditions": formal_conditions,
     }
-    temporary = output_path.parent / f".{output_path.name}.{os.getpid()}.tmp"
+    if not output_root.parent.is_dir():
+        raise V6ContractError("formal output root parent must exist")
+    try:
+        output_root.mkdir(exist_ok=False)
+    except FileExistsError as exc:
+        raise V6ContractError("formal output root must be new") from exc
+    try:
+        temporary_fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{output_path.name}.", suffix=".tmp", dir=output_path.parent
+        )
+    except OSError:
+        output_root.rmdir()
+        raise
+    os.close(temporary_fd)
+    temporary = Path(temporary_name)
+    published = False
     try:
         temporary.write_text(json.dumps(candidate, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         frozen = load_formal_campaign_manifest(temporary)
@@ -815,6 +885,7 @@ def freeze_formal_manifest_from_pilot(
         if not isinstance(rows, list) or len(rows) != 6:
             raise V6ContractError("Pilot aggregate must contain six conditions")
         sessions: dict[str, str] = {}
+        evidence_index: list[dict[str, Any]] = []
         for expected_condition, row_value in zip(frozen.conditions, rows):
             row = _mapping(row_value, "pilot_aggregate.conditions[]")
             _require_exact_keys(row, {"id", "scene", "category", "episodes"}, "pilot_aggregate.conditions[]")
@@ -832,7 +903,14 @@ def freeze_formal_manifest_from_pilot(
                 episode_row = _mapping(episode_row_value, "pilot_aggregate.episodes[]")
                 _require_exact_keys(
                     episode_row,
-                    {"rep", "boundary", "summary_path", "manifest_path"},
+                    {
+                        "rep",
+                        "boundary",
+                        "summary_path",
+                        "manifest_path",
+                        "stack_contract_path",
+                        "stack_tuple_digest",
+                    },
                     "pilot_aggregate.episodes[]",
                 )
                 expected_boundary = "cold" if rep == 1 else "hot_reset"
@@ -840,13 +918,24 @@ def freeze_formal_manifest_from_pilot(
                     raise V6ContractError("Pilot cold/hot episode order mismatch")
                 summary_input = Path(str(episode_row["summary_path"])).expanduser()
                 manifest_input = Path(str(episode_row["manifest_path"])).expanduser()
-                if not summary_input.is_absolute() or not manifest_input.is_absolute():
+                stack_contract_input = Path(
+                    str(episode_row["stack_contract_path"])
+                ).expanduser()
+                if (
+                    not summary_input.is_absolute()
+                    or not manifest_input.is_absolute()
+                    or not stack_contract_input.is_absolute()
+                ):
                     raise V6ContractError("Pilot episode evidence paths must be absolute")
-                session, generation = _validate_sufficient_pilot_episode(
+                session, generation, indexed = _validate_sufficient_pilot_episode(
                     condition=expected_condition,
                     rep=rep,
                     summary_path=summary_input.resolve(),
                     manifest_path=manifest_input.resolve(),
+                    stack_contract_path=stack_contract_input.resolve(),
+                    expected_stack_tuple_digest=str(
+                        episode_row["stack_tuple_digest"]
+                    ),
                     freeze=frozen.freeze,
                     freeze_digest=frozen.freeze_digest,
                 )
@@ -854,13 +943,40 @@ def freeze_formal_manifest_from_pilot(
                 if sessions[expected_condition.condition_id] != session:
                     raise V6ContractError("Pilot condition stack session changed")
                 generations.append(generation)
+                evidence_index.append(indexed)
             if generations != list(range(generations[0], generations[0] + 3)):
                 raise V6ContractError("Pilot reset generations are not contiguous")
-        os.replace(temporary, output_path)
+        candidate["pilot_freeze_provenance"] = {
+            "schema": "bio_nav.v6_pilot_freeze_provenance.v1",
+            "pilot_manifest": {
+                "path": str(pilot_path),
+                "sha256": _file_sha256(pilot_path),
+            },
+            "pilot_aggregate": {
+                "path": str(aggregate_path),
+                "sha256": _file_sha256(aggregate_path),
+            },
+            "episodes": evidence_index,
+        }
+        temporary.write_text(
+            json.dumps(candidate, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        frozen = load_formal_campaign_manifest(temporary)
+        try:
+            os.link(temporary, output_path)
+        except FileExistsError as exc:
+            raise V6ContractError("output manifest already exists") from exc
+        published = True
         return replace(frozen, path=output_path)
     finally:
         if temporary.exists():
             temporary.unlink()
+        if not published:
+            try:
+                output_root.rmdir()
+            except OSError:
+                pass
 
 
 def _checksums_verified(run_root: Path) -> bool:
@@ -937,6 +1053,79 @@ def _stack_session_id(payload: Mapping[str, Any]) -> str:
     basis = {key: payload[key] for key in STACK_CONTRACT_KEYS - {"stack_session_id"}}
     canonical = json.dumps(basis, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+STACK_TUPLE_KEYS = (
+    "condition_id",
+    "scene",
+    "condition",
+    "arm",
+    "domain",
+    "startup_profile",
+    "integration_head",
+    "module2_head",
+    "module3_head",
+    "driver_version",
+    "kernel_release",
+)
+
+
+def _stack_tuple_digest(payload: Mapping[str, Any]) -> str:
+    normalized = {key: payload[key] for key in STACK_TUPLE_KEYS}
+    canonical = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _load_stack_contract_snapshot(
+    path: Path,
+    *,
+    expected_condition_id: str,
+    freeze: Mapping[str, Any],
+) -> tuple[dict[str, Any], str]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise V6ContractError(f"Pilot stack contract is unreadable: {exc}") from exc
+    payload = dict(_mapping(payload, "pilot_stack_contract"))
+    _require_exact_keys(payload, STACK_CONTRACT_KEYS, "pilot_stack_contract")
+    if (
+        payload.get("schema") != STACK_CONTRACT_SCHEMA
+        or payload.get("condition_id") != expected_condition_id
+        or payload.get("condition_id") != f"{payload.get('scene')}_{payload.get('condition')}"
+        or payload.get("stack_session_id") != _stack_session_id(payload)
+    ):
+        raise V6ContractError("Pilot stack contract identity/digest mismatch")
+    expected_profile = (
+        "module2_causal_obstacle_outdoor"
+        if expected_condition_id.startswith("outdoor_")
+        else "module2_causal_obstacle_active"
+    )
+    if (
+        payload.get("arm") != "M3"
+        or payload.get("startup_profile") != expected_profile
+        or isinstance(payload.get("domain"), bool)
+        or not isinstance(payload.get("domain"), int)
+        or not 0 <= payload["domain"] <= 232
+        or not all(
+            isinstance(payload.get(name), int)
+            and not isinstance(payload.get(name), bool)
+            and payload[name] > 0
+            for name in ("pid", "pgid", "start_ticks")
+        )
+        or not isinstance(payload.get("boot_id"), str)
+        or not payload["boot_id"]
+    ):
+        raise V6ContractError("Pilot stack contract runtime fields are invalid")
+    repositories = freeze["repositories"]
+    if not (
+        payload.get("integration_head") == repositories["integration"]["head"]
+        and payload.get("module2_head") == repositories["module2"]["head"]
+        and payload.get("module3_head") == repositories["module3"]["head"]
+        and payload.get("driver_version") == freeze["driver_version"]
+        and payload.get("kernel_release") == freeze["kernel_release"]
+    ):
+        raise V6ContractError("Pilot stack contract frozen tuple mismatch")
+    return payload, _stack_tuple_digest(payload)
 
 
 def validate_condition_stack_contract(

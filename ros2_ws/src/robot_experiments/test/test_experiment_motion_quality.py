@@ -1199,6 +1199,10 @@ def _static_sat_evidence_run(
     runner._provenance = {}
     runner._robot_config_hash = "robot"
     runner._nav2_config_hash = "nav2"
+    runner._scenario_runtime_hashes = {
+        "robot_config": "robot",
+        "nav2_config": "nav2",
+    }
     runner._nav2_profile = "stable"
     runner._clear_slam_localization_buffer = True
     runner._reset_map_base_translation_tolerance_m = 0.05
@@ -1273,6 +1277,10 @@ def test_run_evidence_records_condition_stack_attestation(tmp_path):
     assert manifest["condition_stack_id"] == "indoor_static"
     assert manifest["stack_session_id"] == session_id
     assert manifest["formal_freeze_digest"] == freeze_digest
+    assert manifest["scenario_runtime_hashes"] == {
+        "robot_config": "robot",
+        "nav2_config": "nav2",
+    }
     assert manifest["condition_stack_attestation"]["confirmed"] is True
     assert summary["condition_stack_id"] == "indoor_static"
     assert summary["stack_session_id"] == session_id
