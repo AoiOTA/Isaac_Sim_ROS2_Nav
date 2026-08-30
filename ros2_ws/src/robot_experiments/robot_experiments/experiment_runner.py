@@ -2647,7 +2647,11 @@ class ExperimentRunner(Node):
             str(status.mode) == "active"
             and not bool(status.applied)
             and int(status.active_cell_count) == 0
-            and "rejection_reason=no_costmap_cells" in str(status.fallback_reason)
+            and (
+                not bool(status.rejected)
+                or "rejection_reason=no_costmap_cells"
+                in str(status.fallback_reason)
+            )
             and int(status.maximum_cost) == 0
             and int(status.raised_cell_count) == 0
             and int(status.maximum_cost_increase) == 0

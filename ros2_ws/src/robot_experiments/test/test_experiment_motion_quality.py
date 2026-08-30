@@ -68,10 +68,15 @@ def test_obstacle_completion_requires_the_exact_selected_actor_set():
         )
 
 
-def test_dynamic_retirement_clearance_requires_fresh_empty_source_and_two_zero_consumers():
-    def stamp(value):
-        return SimpleNamespace(sec=int(value), nanosec=0)
+def _retirement_stamp(value):
+    seconds = int(value)
+    return SimpleNamespace(
+        sec=seconds,
+        nanosec=int(round((value - seconds) * 1.0e9)),
+    )
 
+
+def _retirement_clearance_runner(*, rejected, fallback_reason):
     runner = object.__new__(ExperimentRunner)
     runner._obstacle_state_stamp_s = 11.0
     runner._obstacle_state = {
@@ -83,16 +88,17 @@ def test_dynamic_retirement_clearance_requires_fresh_empty_source_and_two_zero_c
         reset_epoch=2,
         recurrent_session_id="session-2",
         map_version="map-v1",
-        header=SimpleNamespace(stamp=stamp(11.0)),
-        validation_stamp=stamp(11.0),
+        header=SimpleNamespace(stamp=_retirement_stamp(11.0)),
+        validation_stamp=_retirement_stamp(11.0),
         obstacles=[],
     )
     zero_status = lambda consumer: SimpleNamespace(
         consumer=consumer,
         mode="active",
         applied=False,
+        rejected=rejected,
         active_cell_count=0,
-        fallback_reason="rejection_reason=no_costmap_cells",
+        fallback_reason=fallback_reason,
         maximum_cost=0,
         raised_cell_count=0,
         maximum_cost_increase=0,
@@ -100,7 +106,7 @@ def test_dynamic_retirement_clearance_requires_fresh_empty_source_and_two_zero_c
         reset_epoch=2,
         recurrent_session_id="session-2",
         map_version="map-v1",
-        stamp=stamp(11.0),
+        stamp=_retirement_stamp(11.0),
     )
     runner._latest_cognitive_layer_statuses = {
         "/global_costmap/global_costmap:cognitive_obstacle_layer": zero_status(
@@ -110,80 +116,140 @@ def test_dynamic_retirement_clearance_requires_fresh_empty_source_and_two_zero_c
             "local"
         ),
     }
+    return runner
 
-    assert runner._dynamic_retirement_clearance_observed(
+
+def _retirement_clearance_observed(runner):
+    return runner._dynamic_retirement_clearance_observed(
         {"dynamic_box"}, 10.0, 8, {"global": 8, "local": 8}
     )
-    runner._latest_cognitive_obstacles.obstacles = [object()]
-    assert not runner._dynamic_retirement_clearance_observed(
-        {"dynamic_box"}, 10.0, 8, {"global": 8, "local": 8}
+
+
+@pytest.mark.parametrize(
+    ("rejected", "fallback_reason"),
+    (
+        (False, "rejection_reason=offered"),
+        (True, "rejection_reason=no_costmap_cells"),
+    ),
+    ids=("accepted-offered-zero", "processed-no-cost-zero"),
+)
+def test_dynamic_retirement_clearance_accepts_two_valid_zero_receipts(
+    rejected, fallback_reason
+):
+    runner = _retirement_clearance_runner(
+        rejected=rejected,
+        fallback_reason=fallback_reason,
     )
 
+    assert _retirement_clearance_observed(runner)
 
-def test_dynamic_retirement_clearance_rejects_stale_or_mismatched_evidence():
-    def stamp(value):
-        return SimpleNamespace(sec=int(value), nanosec=0)
 
-    source = SimpleNamespace(
-        sequence=9,
-        reset_epoch=2,
-        recurrent_session_id="session-2",
-        map_version="map-v1",
-        header=SimpleNamespace(stamp=stamp(11.0)),
-        validation_stamp=stamp(11.0),
-        obstacles=[],
+def test_dynamic_retirement_clearance_accepts_mixed_global_offered_local_processed():
+    runner = _retirement_clearance_runner(
+        rejected=False,
+        fallback_reason="rejection_reason=offered",
     )
-    status = SimpleNamespace(
-        mode="active",
-        applied=False,
-        active_cell_count=0,
+    local_status = runner._latest_cognitive_layer_statuses[
+        "/local_costmap/local_costmap:cognitive_obstacle_layer"
+    ]
+    local_status.rejected = True
+    local_status.fallback_reason = "rejection_reason=no_costmap_cells"
+
+    assert _retirement_clearance_observed(runner)
+
+
+def test_dynamic_retirement_clearance_rejects_precompletion_header():
+    runner = _retirement_clearance_runner(
+        rejected=True,
         fallback_reason="rejection_reason=no_costmap_cells",
-        maximum_cost=0,
-        raised_cell_count=0,
-        maximum_cost_increase=0,
-        source_sequence=9,
-        reset_epoch=2,
-        recurrent_session_id="session-2",
-        map_version="map-v1",
-        stamp=stamp(11.0),
     )
-    runner = object.__new__(ExperimentRunner)
-    runner._obstacle_state_stamp_s = 11.0
-    runner._obstacle_state = {
-        "obstacles": [{"id": "dynamic_box", "state": "retired"}],
-        "events": [],
-    }
-    runner._latest_cognitive_obstacles = source
-    runner._latest_cognitive_layer_statuses = {
-        "/global_costmap/global_costmap:cognitive_obstacle_layer": status,
-    }
+    runner._latest_cognitive_obstacles.header.stamp = _retirement_stamp(9.0)
+    runner._latest_cognitive_obstacles.validation_stamp = _retirement_stamp(11.0)
 
-    assert not runner._dynamic_retirement_clearance_observed(
-        {"dynamic_box"}, 10.0, 8, {"global": 8, "local": 8}
+    assert not _retirement_clearance_observed(runner)
+
+
+def test_dynamic_retirement_clearance_rejects_other_rejected_zero_receipt():
+    runner = _retirement_clearance_runner(
+        rejected=True,
+        fallback_reason="rejection_reason=validation_stale",
     )
-    runner._latest_cognitive_layer_statuses[
-        "/local_costmap/local_costmap:cognitive_obstacle_layer"
-    ] = SimpleNamespace(**vars(status))
-    source.sequence = 8
-    assert not runner._dynamic_retirement_clearance_observed(
-        {"dynamic_box"}, 10.0, 8, {"global": 8, "local": 8}
+
+    assert not _retirement_clearance_observed(runner)
+
+
+@pytest.mark.parametrize(
+    "invalid_evidence",
+    (
+        "stale-obstacle-state",
+        "actor-not-retired",
+        "nonempty-source",
+        "stale-validation",
+        "old-source-sequence",
+        "old-consumer-sequence",
+        "identity-reset-epoch",
+        "identity-session",
+        "identity-map",
+        "consumer-applied",
+        "active-cells-nonzero",
+        "maximum-cost-nonzero",
+        "raised-cells-nonzero",
+        "maximum-cost-increase-nonzero",
+        "consumer-mode-mismatch",
+        "consumer-status-stale",
+        "missing-local-consumer",
+    ),
+)
+def test_dynamic_retirement_clearance_preserves_all_other_gates(
+    invalid_evidence,
+):
+    runner = _retirement_clearance_runner(
+        rejected=False,
+        fallback_reason="rejection_reason=offered",
     )
-    source.sequence = 9
-    runner._latest_cognitive_layer_statuses[
-        "/local_costmap/local_costmap:cognitive_obstacle_layer"
-    ].reset_epoch = 1
-    assert not runner._dynamic_retirement_clearance_observed(
-        {"dynamic_box"}, 10.0, 8, {"global": 8, "local": 8}
-    )
-    runner._latest_cognitive_layer_statuses[
-        "/local_costmap/local_costmap:cognitive_obstacle_layer"
-    ].reset_epoch = 2
-    runner._latest_cognitive_layer_statuses[
-        "/local_costmap/local_costmap:cognitive_obstacle_layer"
-    ].fallback_reason = "rejection_reason=offered"
-    assert not runner._dynamic_retirement_clearance_observed(
-        {"dynamic_box"}, 10.0, 8, {"global": 8, "local": 8}
-    )
+    source = runner._latest_cognitive_obstacles
+    global_status = runner._latest_cognitive_layer_statuses[
+        "/global_costmap/global_costmap:cognitive_obstacle_layer"
+    ]
+
+    if invalid_evidence == "stale-obstacle-state":
+        runner._obstacle_state_stamp_s = 10.0
+    elif invalid_evidence == "actor-not-retired":
+        runner._obstacle_state["obstacles"][0]["state"] = "parked"
+    elif invalid_evidence == "nonempty-source":
+        source.obstacles = [object()]
+    elif invalid_evidence == "stale-validation":
+        source.validation_stamp = _retirement_stamp(10.0)
+    elif invalid_evidence == "old-source-sequence":
+        source.sequence = 8
+    elif invalid_evidence == "old-consumer-sequence":
+        global_status.source_sequence = 8
+    elif invalid_evidence == "identity-reset-epoch":
+        global_status.reset_epoch = 1
+    elif invalid_evidence == "identity-session":
+        global_status.recurrent_session_id = "other-session"
+    elif invalid_evidence == "identity-map":
+        global_status.map_version = "other-map"
+    elif invalid_evidence == "consumer-applied":
+        global_status.applied = True
+    elif invalid_evidence == "active-cells-nonzero":
+        global_status.active_cell_count = 1
+    elif invalid_evidence == "maximum-cost-nonzero":
+        global_status.maximum_cost = 1
+    elif invalid_evidence == "raised-cells-nonzero":
+        global_status.raised_cell_count = 1
+    elif invalid_evidence == "maximum-cost-increase-nonzero":
+        global_status.maximum_cost_increase = 1
+    elif invalid_evidence == "consumer-mode-mismatch":
+        global_status.mode = "fail_open"
+    elif invalid_evidence == "consumer-status-stale":
+        global_status.stamp = _retirement_stamp(10.0)
+    elif invalid_evidence == "missing-local-consumer":
+        runner._latest_cognitive_layer_statuses.pop(
+            "/local_costmap/local_costmap:cognitive_obstacle_layer"
+        )
+
+    assert not _retirement_clearance_observed(runner)
 
 
 def test_completion_clears_both_costmaps_before_returning():
@@ -225,19 +291,23 @@ def test_completion_clears_both_costmaps_before_returning():
     runner._latest_cognitive_obstacles = SimpleNamespace(sequence=8)
     runner._latest_cognitive_layer_statuses = {}
     runner._clock_seconds = lambda: 10.0
-    cleared = []
-    runner._clear_navigation_costmaps = lambda: cleared.append(True)
+    calls = []
+    runner._clear_navigation_costmaps = lambda: calls.append("clear")
     runner._dynamic_retirement_clearance_observed = (
         lambda retired, _barrier, source_cursor, _status_cursors: (
             retired == {"v6_dynamic_g2_crossing_box"} and source_cursor == 8
         )
     )
-    runner._wait_until = lambda predicate, _timeout: predicate()
+    def wait_until(predicate, _timeout):
+        calls.append("wait")
+        return predicate()
+
+    runner._wait_until = wait_until
 
     assert runner._complete_obstacle_group("G2") == (
         "v6_dynamic_g2_crossing_box",
     )
-    assert cleared == [True]
+    assert calls == ["clear", "wait"]
 
     runner._wait_until = lambda _predicate, _timeout: False
     with pytest.raises(RuntimeError, match="did not clear"):
