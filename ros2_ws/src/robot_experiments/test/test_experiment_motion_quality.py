@@ -14,6 +14,7 @@ from robot_experiments.experiment_runner import (
     _edge_prior_statistics,
     _episode_validity,
     _localization_node_ownership_evidence,
+    _mcap_inventory_evidence,
     _mcap_required_topic_coverage,
     _module2_readiness_required,
     _parse_obstacle_completion,
@@ -133,6 +134,30 @@ def test_required_topic_coverage_marks_recorder_errors_invalid(tmp_path):
 
     assert not coverage["passed"]
     assert coverage["recorder_error"] == "recorder_exit_code:1"
+
+
+def test_mcap_inventory_rejects_placeholder_and_requires_metadata_schema(tmp_path):
+    root = tmp_path / "run"
+    telemetry = root / "telemetry"
+    telemetry.mkdir(parents=True)
+    metadata = {
+        "rosbag2_bagfile_information": {
+            "storage_identifier": "mcap",
+            "relative_file_paths": ["telemetry_0.mcap"],
+            "message_count": 1,
+            "topics_with_message_count": [],
+        }
+    }
+    (telemetry / "metadata.yaml").write_text(
+        yaml.safe_dump(metadata), encoding="utf-8"
+    )
+    mcap = telemetry / "telemetry_0.mcap"
+    mcap.write_bytes(b"mcap")
+    assert not _mcap_inventory_evidence(root)["passed"]
+
+    magic = experiment_runner_module.MCAP_MAGIC
+    mcap.write_bytes(magic + b"payload" + magic)
+    assert _mcap_inventory_evidence(root)["passed"]
 
 
 @pytest.mark.parametrize(
@@ -1286,6 +1311,30 @@ def test_run_evidence_records_condition_stack_attestation(tmp_path):
     assert summary["stack_session_id"] == session_id
     assert summary["formal_freeze_digest"] == freeze_digest
     assert summary["episode_validity"]["valid"] is True
+
+
+def test_stack_local_episode_sequence_claims_fresh_cold_then_hot_receipts(tmp_path):
+    sequence_path = tmp_path / "episode.sequence.json"
+    sequence_path.write_text(json.dumps({
+        "schema": "bio_nav.v6_stack_episode_sequence.v1",
+        "stack_session_id": "a" * 64,
+        "last_sequence": 0,
+    }), encoding="utf-8")
+    runner = object.__new__(ExperimentRunner)
+    runner._stack_session_id = "a" * 64
+    runner._condition_stack_contract = {
+        "episode_sequence_path": str(sequence_path),
+        "t2_selector_path": "/module3/scripts/run_v6_kujiale_low_obstacles.sh",
+        "t2_selector_sha256": "b" * 64,
+    }
+
+    receipts = [runner._claim_stack_episode_sequence() for _ in range(3)]
+
+    assert [receipt["sequence"] for receipt in receipts] == [1, 2, 3]
+    assert all(receipt["baseline"] == 0 for receipt in receipts)
+    assert all(receipt["stack_session_id"] == "a" * 64 for receipt in receipts)
+    state = json.loads(sequence_path.read_text())
+    assert state["last_sequence"] == 3
 
 
 def test_sat_overlap_is_diagnostic_when_contact_sensor_is_clear(tmp_path):

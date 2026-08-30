@@ -283,6 +283,29 @@ def _current_driver_version() -> str:
         raise V6ContractError("NVIDIA driver version is unavailable") from exc
 
 
+def _validate_nas_mount(path: Path) -> dict[str, str]:
+    try:
+        output = subprocess.run(
+            ["findmnt", "-T", str(path), "-n", "-o", "TARGET,FSTYPE,SOURCE"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise V6ContractError("formal NAS mount is unavailable") from exc
+    fields = output.split(maxsplit=2)
+    if len(fields) != 3:
+        raise V6ContractError("formal NAS mount identity is malformed")
+    target, filesystem, source = fields
+    if (
+        Path(target).resolve() != FORMAL_NAS_ROOT.resolve()
+        or filesystem.lower() in {"overlay", "ext4", "xfs", "btrfs", "tmpfs"}
+        or not source
+    ):
+        raise V6ContractError("formal output root is not on the current NAS mount")
+    return {"target": target, "filesystem": filesystem, "source": source}
+
+
 def _validate_formal_freeze(
     value: Any,
     *,
@@ -597,6 +620,7 @@ def load_formal_campaign_manifest(path: str | Path) -> FormalCampaignManifest:
             "fail_stop",
             "condition_stack_id",
             "stack_session_id",
+            "condition_stack_contract_path",
         }
         if any(argument.split(":=", 1)[0] in reserved for argument in arguments):
             raise V6ContractError(
@@ -654,6 +678,12 @@ def load_formal_campaign_manifest(path: str | Path) -> FormalCampaignManifest:
         episodes = pilot_freeze_provenance.get("episodes")
         if not isinstance(episodes, list) or len(episodes) != 18:
             raise V6ContractError("pilot freeze provenance must index 18 episodes")
+        _revalidate_pilot_freeze_provenance(
+            pilot_freeze_provenance,
+            conditions=condition_tuple,
+            freeze=freeze,
+            freeze_digest=freeze_digest,
+        )
     return FormalCampaignManifest(
         path=manifest_path,
         authorization=authorization,
@@ -696,14 +726,20 @@ def _validate_sufficient_pilot_episode(
         episode = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise V6ContractError(f"Pilot episode evidence is unreadable: {exc}") from exc
-    if (
-        summary.get("episode_validity", {}).get("valid") is not True
-        or summary.get("strict_success") is not True
-        or summary.get("final_trial_metric_gate", {}).get("passed") is not True
-        or summary.get("checksums_verified") is not True
-        or not _checksums_verified(summary_path.parent)
-    ):
-        raise V6ContractError("Pilot episode is not valid strict success")
+    try:
+        from robot_experiments.experiment_runner import validate_recorded_run_evidence
+
+        validate_recorded_run_evidence(
+            summary_path.parent,
+            summary,
+            episode,
+            scene=condition.scene,
+            route_guided=True,
+            route_prior_required=True,
+            expected_leg_count=5,
+        )
+    except (ConfigurationError, ImportError) as exc:
+        raise V6ContractError(f"Pilot episode primary evidence failed: {exc}") from exc
     identity = _pilot_selection_identity(condition, rep)
     if not (
         episode.get("scenario_id") == condition.scenario_id
@@ -729,6 +765,22 @@ def _validate_sufficient_pilot_episode(
         and summary.get("formal_freeze_digest") == freeze_digest
     ):
         raise V6ContractError("Pilot episode frozen tuple/session mismatch")
+    sequence_receipt = episode.get("stack_episode_receipt", {})
+    if not (
+        isinstance(sequence_receipt, Mapping)
+        and summary.get("stack_episode_receipt") == sequence_receipt
+        and sequence_receipt.get("schema")
+        == "bio_nav.v6_stack_episode_receipt.v1"
+        and sequence_receipt.get("sequence") == rep
+        and sequence_receipt.get("baseline") == 0
+        and sequence_receipt.get("stack_session_id")
+        == stack_contract["stack_session_id"]
+        and sequence_receipt.get("t2_selector_path")
+        == stack_contract["t2_selector_path"]
+        and sequence_receipt.get("t2_selector_sha256")
+        == stack_contract["t2_selector_sha256"]
+    ):
+        raise V6ContractError("Pilot stack episode sequence/T2 receipt mismatch")
     reset_receipt = episode.get("reset_receipt", {})
     generation = reset_receipt.get("generation") if isinstance(reset_receipt, Mapping) else None
     if isinstance(generation, bool) or not isinstance(generation, int) or generation <= 0:
@@ -806,6 +858,7 @@ def freeze_formal_manifest_from_pilot(
         output_root.relative_to(FORMAL_NAS_ROOT.resolve())
     except ValueError as exc:
         raise V6ContractError("formal output root must be under the NAS root") from exc
+    _validate_nas_mount(output_root)
     if output_root.exists():
         raise V6ContractError("formal output root must be new")
     if output_path.exists() or not output_path.parent.is_dir():
@@ -979,6 +1032,66 @@ def freeze_formal_manifest_from_pilot(
                 pass
 
 
+def _revalidate_pilot_freeze_provenance(
+    provenance: Mapping[str, Any],
+    *,
+    conditions: tuple[FormalCondition, ...],
+    freeze: Mapping[str, Any],
+    freeze_digest: str,
+) -> None:
+    for name in ("pilot_manifest", "pilot_aggregate"):
+        _validate_frozen_file(
+            provenance.get(name), f"pilot_freeze_provenance.{name}"
+        )
+    rows = provenance.get("episodes")
+    assert isinstance(rows, list)
+    for index, row_value in enumerate(rows):
+        row = _mapping(row_value, f"pilot_freeze_provenance.episodes[{index}]")
+        _require_exact_keys(
+            row,
+            {
+                "condition_id",
+                "rep",
+                "summary",
+                "manifest",
+                "checksums",
+                "stack_contract",
+                "stack_tuple_digest",
+            },
+            f"pilot_freeze_provenance.episodes[{index}]",
+        )
+        condition = conditions[index // 3]
+        rep = index % 3 + 1
+        if row.get("condition_id") != condition.condition_id or row.get("rep") != rep:
+            raise V6ContractError("pilot freeze evidence index order mismatch")
+        summary_entry = _validate_frozen_file(
+            row.get("summary"), f"pilot_freeze_provenance.episodes[{index}].summary"
+        )
+        manifest_entry = _validate_frozen_file(
+            row.get("manifest"), f"pilot_freeze_provenance.episodes[{index}].manifest"
+        )
+        checksum_entry = _validate_frozen_file(
+            row.get("checksums"), f"pilot_freeze_provenance.episodes[{index}].checksums"
+        )
+        stack_entry = _validate_frozen_file(
+            row.get("stack_contract"),
+            f"pilot_freeze_provenance.episodes[{index}].stack_contract",
+        )
+        summary_path = Path(summary_entry["path"])
+        if Path(checksum_entry["path"]) != summary_path.parent / "checksums.sha256":
+            raise V6ContractError("pilot freeze checksum index path mismatch")
+        _validate_sufficient_pilot_episode(
+            condition=condition,
+            rep=rep,
+            summary_path=summary_path,
+            manifest_path=Path(manifest_entry["path"]),
+            stack_contract_path=Path(stack_entry["path"]),
+            expected_stack_tuple_digest=str(row.get("stack_tuple_digest", "")),
+            freeze=freeze,
+            freeze_digest=freeze_digest,
+        )
+
+
 def _checksums_verified(run_root: Path) -> bool:
     checksum_path = run_root / "checksums.sha256"
     if not checksum_path.is_file():
@@ -1045,6 +1158,9 @@ STACK_CONTRACT_KEYS = {
     "module3_head",
     "driver_version",
     "kernel_release",
+    "t2_selector_path",
+    "t2_selector_sha256",
+    "episode_sequence_path",
     "stack_session_id",
 }
 
@@ -1067,6 +1183,8 @@ STACK_TUPLE_KEYS = (
     "module3_head",
     "driver_version",
     "kernel_release",
+    "t2_selector_path",
+    "t2_selector_sha256",
 )
 
 
@@ -1125,6 +1243,21 @@ def _load_stack_contract_snapshot(
         and payload.get("kernel_release") == freeze["kernel_release"]
     ):
         raise V6ContractError("Pilot stack contract frozen tuple mismatch")
+    expected_selector = (
+        Path(repositories["module3"]["path"])
+        / "scripts"
+        / (
+            "run_v6_rivermark.sh"
+            if expected_condition_id.startswith("outdoor_")
+            else "run_v6_kujiale_low_obstacles.sh"
+        )
+    ).resolve()
+    if (
+        Path(str(payload.get("t2_selector_path", ""))).resolve() != expected_selector
+        or payload.get("t2_selector_sha256") != _file_sha256(expected_selector)
+        or not Path(str(payload.get("episode_sequence_path", ""))).is_absolute()
+    ):
+        raise V6ContractError("Pilot T2 selector/sequence attestation mismatch")
     return payload, _stack_tuple_digest(payload)
 
 
@@ -1434,6 +1567,11 @@ def execute_formal_campaign(
         condition_stack_contract,
         expected_condition_id=condition_stack_id,
     )
+    contract, _contract_tuple_digest = _load_stack_contract_snapshot(
+        Path(condition_stack_contract).expanduser().resolve(),
+        expected_condition_id=condition_stack_id,
+        freeze=manifest.freeze,
+    )
     freeze_repositories = manifest.freeze["repositories"]
     for contract_key, repository in (
         ("integration_head", "integration"),
@@ -1480,6 +1618,7 @@ def execute_formal_campaign(
         f"condition_stack_id:={condition_stack_id}",
         f"stack_session_id:={contract['stack_session_id']}",
         f"formal_freeze_digest:={manifest.freeze_digest}",
+        f"condition_stack_contract_path:={Path(condition_stack_contract).resolve()}",
     ]
     # The caller owns the already-running matching T1/T2 stack.  Dispatch one
     # episode only, then return so a stack switch can never occur implicitly.

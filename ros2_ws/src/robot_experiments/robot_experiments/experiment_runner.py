@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import csv
+import fcntl
 import gzip
 import hashlib
 import json
@@ -292,6 +293,207 @@ def _mcap_required_topic_coverage(
             and not empty
             and not observed_forbidden
         ),
+    }
+
+
+MCAP_MAGIC = b"\x89MCAP0\r\n"
+
+
+def _mcap_inventory_evidence(root: Path) -> dict[str, Any]:
+    metadata_path = root / "telemetry" / "metadata.yaml"
+    try:
+        document = yaml.safe_load(metadata_path.read_text(encoding="utf-8"))
+        information = document["rosbag2_bagfile_information"]
+        relative_paths = information["relative_file_paths"]
+        storage_identifier = information["storage_identifier"]
+        message_count = information["message_count"]
+    except (OSError, KeyError, TypeError, yaml.YAMLError) as exc:
+        return {"passed": False, "error": f"metadata_invalid:{type(exc).__name__}:{exc}"}
+    if (
+        storage_identifier != "mcap"
+        or not isinstance(relative_paths, list)
+        or not relative_paths
+        or isinstance(message_count, bool)
+        or not isinstance(message_count, int)
+        or message_count <= 0
+    ):
+        return {"passed": False, "error": "metadata_inventory_invalid"}
+    files = []
+    for relative in relative_paths:
+        if not isinstance(relative, str) or not relative.endswith(".mcap"):
+            return {"passed": False, "error": "metadata_mcap_path_invalid"}
+        candidate = root / "telemetry" / relative
+        try:
+            candidate.resolve().relative_to((root / "telemetry").resolve())
+            size = candidate.stat().st_size
+            with candidate.open("rb") as stream:
+                prefix = stream.read(len(MCAP_MAGIC))
+                stream.seek(-len(MCAP_MAGIC), 2)
+                suffix = stream.read(len(MCAP_MAGIC))
+        except (OSError, ValueError) as exc:
+            return {"passed": False, "error": f"mcap_unreadable:{type(exc).__name__}:{exc}"}
+        if size <= 2 * len(MCAP_MAGIC) or prefix != MCAP_MAGIC or suffix != MCAP_MAGIC:
+            return {"passed": False, "error": "mcap_structure_invalid"}
+        files.append({"path": str(candidate), "size": size})
+    return {
+        "passed": True,
+        "metadata_path": str(metadata_path),
+        "storage_identifier": storage_identifier,
+        "message_count": message_count,
+        "files": files,
+    }
+
+
+def validate_recorded_run_evidence(
+    root: Path,
+    summary: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    *,
+    scene: str,
+    route_guided: bool,
+    route_prior_required: bool,
+    expected_leg_count: int,
+) -> dict[str, Any]:
+    """Recompute strict acceptance from primary per-run evidence fields."""
+
+    reasons: list[str] = []
+    inventory = _mcap_inventory_evidence(root)
+    coverage = _mcap_required_topic_coverage(
+        root / "telemetry" / "metadata.yaml",
+        scene=scene,
+        route_guided=route_guided,
+    )
+    stored_coverage = summary.get("required_topic_coverage", {})
+    for key in (
+        "required_topics",
+        "message_counts",
+        "forbidden_topics",
+        "forbidden_message_counts",
+        "observed_forbidden_topics",
+        "passed",
+    ):
+        if not isinstance(stored_coverage, Mapping) or stored_coverage.get(key) != coverage.get(key):
+            reasons.append("required_topic_coverage_mismatch")
+            break
+    route_prior = _route_prior_application_evidence(
+        list(manifest.get("route_edge_costs", [])), required=route_prior_required
+    )
+    if summary.get("route_prior_application") != route_prior:
+        reasons.append("route_prior_application_mismatch")
+    legs = manifest.get("legs", [])
+    navigation_success = _strict_success_from_leg_count(
+        manifest.get("result"),
+        len(legs) if isinstance(legs, list) else -1,
+        expected_leg_count,
+        terminal_zero_confirmed=manifest.get("terminal_zero_confirmed") is True,
+    )
+    if summary.get("navigation_contract_success") is not navigation_success:
+        reasons.append("navigation_contract_mismatch")
+    collision_seen = manifest.get("observability", {}).get("collision_status_seen") is True
+    collision_free = manifest.get("isaac_contact_sensor_collision_detected") is False
+    if not collision_seen or not collision_free or summary.get("physical_collision_free") is not True:
+        reasons.append("contact_sensor_acceptance_failed")
+    ownership = summary.get("localization_node_ownership", {})
+    recomputed_ownership = _localization_node_ownership_evidence(
+        scene,
+        list(ownership.get("node_basenames", [])) if isinstance(ownership, Mapping) else [],
+    )
+    fixed_tf = bool(
+        scene != "outdoor"
+        or (
+            manifest.get("observability", {}).get("map_to_odom_seen") is True
+            and recomputed_ownership["passed"] is True
+        )
+    )
+    if summary.get("fixed_map_to_odom_evidence_confirmed") is not fixed_tf:
+        reasons.append("localization_owner_evidence_mismatch")
+    mandatory_files = {
+        "TRIAL_DISPATCHED.json",
+        "run_manifest.json",
+        "run_summary.json",
+        "events.jsonl",
+        "ground_truth.csv.gz",
+        "odom.csv.gz",
+        "cmd_vel.csv.gz",
+        "obstacles.csv.gz",
+        "dynamic_obstacles.csv.gz",
+        "leg_metrics.csv",
+        "depth_frame.pgm",
+        "depth_frame.json",
+        "scan.csv",
+        "scan.json",
+        "scan_safety.csv",
+        "scan_safety.json",
+        "local_costmap.pgm",
+        "local_costmap.json",
+        "global_costmap.pgm",
+        "global_costmap.json",
+        "FINAL_TRIAL_METRICS.json",
+        "telemetry/metadata.yaml",
+    }
+    if manifest.get("appearance", {}).get("profile_id") is not None:
+        mandatory_files |= {
+            "appearance_rgb_before_goal.ppm",
+            "appearance_rgb_before_goal.json",
+        }
+    required_files = summary.get("evidence", {}).get("required_files", [])
+    declared_mandatory = mandatory_files - {
+        "run_summary.json",
+        "FINAL_TRIAL_METRICS.json",
+        "telemetry/metadata.yaml",
+    }
+    required_files_complete = bool(
+        isinstance(required_files, list)
+        and declared_mandatory <= set(required_files)
+        and all((root / name).is_file() for name in mandatory_files)
+        and not any(
+        not isinstance(name, str) or not (root / name).is_file()
+        for name in required_files
+        )
+    )
+    if not required_files_complete:
+        reasons.append("required_files_incomplete")
+    checksums_verified = ExperimentRunner._checksums_are_verified(root)
+    if not inventory.get("passed") or not coverage["passed"]:
+        reasons.append("mcap_evidence_invalid")
+    if summary.get("data_complete") is not True:
+        reasons.append("data_incomplete")
+    if summary.get("checksums_verified") is not True or not checksums_verified:
+        reasons.append("checksums_unverified")
+    recomputed = dict(summary)
+    recomputed["navigation_contract_success"] = navigation_success
+    recomputed["terminal_zero_confirmed"] = manifest.get("terminal_zero_confirmed") is True
+    recomputed["reset_receipt"] = manifest.get("reset_receipt", {})
+    recomputed["reset_receipt_confirmed"] = bool(manifest.get("reset_receipt"))
+    recomputed["contact_sensor_evidence_confirmed"] = collision_seen
+    recomputed["physical_collision_free"] = collision_free
+    recomputed["fixed_map_to_odom_evidence_confirmed"] = fixed_tf
+    recomputed["required_topic_coverage"] = {**coverage, "required": True}
+    recomputed["route_prior_application"] = route_prior
+    recomputed["route_prior_application_confirmed"] = route_prior["confirmed"]
+    recomputed["data_complete"] = bool(
+        inventory.get("passed")
+        and coverage["passed"]
+        and required_files_complete
+        and summary.get("data_complete") is True
+    )
+    recomputed["checksums_verified"] = checksums_verified
+    _finalize_summary_acceptance(recomputed)
+    if summary.get("strict_success") is not recomputed["strict_success"]:
+        reasons.append("stored_strict_success_mismatch")
+    if summary.get("episode_validity") != recomputed["episode_validity"]:
+        reasons.append("stored_episode_validity_mismatch")
+    if recomputed["episode_validity"]["valid"] is not True or recomputed["strict_success"] is not True:
+        reasons.append("strict_acceptance_failed")
+    if summary.get("final_trial_metric_gate", {}).get("passed") is not True:
+        reasons.append("final_metric_gate_failed")
+    if reasons:
+        raise ConfigurationError("recorded run evidence invalid: " + ";".join(dict.fromkeys(reasons)))
+    return {
+        "strict_success": True,
+        "inventory": inventory,
+        "required_topic_coverage": coverage,
+        "route_prior_application": route_prior,
     }
 
 
@@ -731,6 +933,14 @@ class ExperimentRunner(Node):
         self._formal_freeze_digest = str(
             self.declare_parameter("formal_freeze_digest", "").value
         ).strip()
+        stack_contract_path = str(
+            self.declare_parameter("condition_stack_contract_path", "").value
+        ).strip()
+        self._condition_stack_contract_path = (
+            Path(stack_contract_path).expanduser().resolve()
+            if stack_contract_path
+            else None
+        )
         if bool(self._condition_stack_id) != bool(self._stack_session_id):
             raise ConfigurationError(
                 "condition_stack_id and stack_session_id must be supplied together"
@@ -760,6 +970,27 @@ class ExperimentRunner(Node):
             raise ConfigurationError(
                 "formal_freeze_digest requires condition stack attestation"
             )
+        if bool(self._condition_stack_contract_path) != bool(self._condition_stack_id):
+            raise ConfigurationError(
+                "condition_stack_contract_path requires condition stack attestation"
+            )
+        self._condition_stack_contract: dict[str, Any] = {}
+        if self._condition_stack_contract_path is not None:
+            try:
+                contract = json.loads(
+                    self._condition_stack_contract_path.read_text(encoding="utf-8")
+                )
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ConfigurationError("condition stack contract is unreadable") from exc
+            if (
+                not isinstance(contract, dict)
+                or contract.get("condition_id") != self._condition_stack_id
+                or contract.get("stack_session_id") != self._stack_session_id
+                or not isinstance(contract.get("episode_sequence_path"), str)
+            ):
+                raise ConfigurationError("condition stack contract identity mismatch")
+            self._condition_stack_contract = contract
+        self._active_stack_episode_receipt: dict[str, Any] = {}
         if self._formal_freeze_digest and (
             len(self._formal_freeze_digest) != 64
             or any(
@@ -1547,6 +1778,9 @@ class ExperimentRunner(Node):
             "condition_stack_id": getattr(self, "_condition_stack_id", "") or None,
             "stack_session_id": getattr(self, "_stack_session_id", "") or None,
             "formal_freeze_digest": getattr(self, "_formal_freeze_digest", "") or None,
+            "stack_episode_receipt": dict(
+                getattr(self, "_active_stack_episode_receipt", {})
+            ),
             "wall_time_utc": datetime.now(timezone.utc).isoformat(),
             "wall_ns": time.time_ns(),
             "monotonic_ns": time.monotonic_ns(),
@@ -4315,6 +4549,9 @@ class ExperimentRunner(Node):
             "condition_stack_id": getattr(self, "_condition_stack_id", "") or None,
             "stack_session_id": getattr(self, "_stack_session_id", "") or None,
             "formal_freeze_digest": getattr(self, "_formal_freeze_digest", "") or None,
+            "stack_episode_receipt": dict(
+                getattr(self, "_active_stack_episode_receipt", {})
+            ),
             "optimal_reference_hash": self._optimal_reference_hash,
             "dynamic_runtime_contract": dict(
                 self._dynamic_runtime_contract
@@ -4838,6 +5075,9 @@ class ExperimentRunner(Node):
             "condition_stack_id": condition_stack_id or None,
             "stack_session_id": stack_session_id or None,
             "formal_freeze_digest": formal_freeze_digest or None,
+            "stack_episode_receipt": dict(
+                manifest.get("stack_episode_receipt", {})
+            ),
             "confirmed": bool(condition_stack_id and stack_session_id),
         }
         manifest["condition_stack_attestation"] = condition_stack_attestation
@@ -5177,6 +5417,46 @@ class ExperimentRunner(Node):
         root.rename(target)
         return target
 
+    def _claim_stack_episode_sequence(self) -> dict[str, Any]:
+        if not self._condition_stack_contract:
+            return {}
+        sequence_path = Path(
+            str(self._condition_stack_contract["episode_sequence_path"])
+        ).expanduser().resolve()
+        try:
+            with sequence_path.open("r+", encoding="utf-8") as stream:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+                state = json.load(stream)
+                if (
+                    state.get("schema") != "bio_nav.v6_stack_episode_sequence.v1"
+                    or state.get("stack_session_id") != self._stack_session_id
+                    or isinstance(state.get("last_sequence"), bool)
+                    or not isinstance(state.get("last_sequence"), int)
+                    or state["last_sequence"] < 0
+                ):
+                    raise ConfigurationError("stack episode sequence state is invalid")
+                sequence = state["last_sequence"] + 1
+                state["last_sequence"] = sequence
+                stream.seek(0)
+                stream.truncate()
+                json.dump(state, stream, indent=2, sort_keys=True)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ConfigurationError("stack episode sequence claim failed") from exc
+        return {
+            "schema": "bio_nav.v6_stack_episode_receipt.v1",
+            "sequence": sequence,
+            "baseline": 0,
+            "stack_session_id": self._stack_session_id,
+            "sequence_path": str(sequence_path),
+            "t2_selector_path": self._condition_stack_contract.get("t2_selector_path"),
+            "t2_selector_sha256": self._condition_stack_contract.get(
+                "t2_selector_sha256"
+            ),
+        }
+
     def run_all(self) -> list[dict[str, Any]]:
         if not self._wait_until(lambda: self._clock_ready, self._clock_timeout_sec):
             raise TimeoutError("timed out waiting for a non-zero /clock")
@@ -5246,6 +5526,9 @@ class ExperimentRunner(Node):
             bag_complete = False
             run_summary: dict[str, Any] | None = None
             try:
+                self._active_stack_episode_receipt = (
+                    self._claim_stack_episode_sequence()
+                )
                 reset_case_id, reset_variant_id = _reset_dynamic_selection(
                     self._scenario.scenario_type, selection
                 )

@@ -1,4 +1,5 @@
 import json
+import hashlib
 import fcntl
 import math
 import os
@@ -3681,9 +3682,23 @@ def test_phase_f_stack_writes_live_deterministic_condition_contract(tmp_path):
         assert payload["pid"] == fake.process.pid
         assert payload["pgid"] == fake.process.pid
         assert payload["stack_session_id"] == v6_formal._stack_session_id(payload)
+        assert payload["t2_selector_path"].endswith(
+            "/scripts/run_v6_kujiale_low_obstacles.sh"
+        )
+        assert payload["t2_selector_sha256"] == hashlib.sha256(
+            Path(payload["t2_selector_path"]).read_bytes()
+        ).hexdigest()
+        sequence_path = Path(payload["episode_sequence_path"])
+        sequence = json.loads(sequence_path.read_text())
+        assert sequence == {
+            "schema": "bio_nav.v6_stack_episode_sequence.v1",
+            "stack_session_id": payload["stack_session_id"],
+            "last_sequence": 0,
+        }
     finally:
         _stop_fake_phase_f_stack(fake)
     assert not contract_path.exists()
+    assert not sequence_path.exists()
 
 
 def _stop_fake_phase_f_stack(fake: SimpleNamespace) -> None:

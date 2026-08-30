@@ -132,6 +132,7 @@ write_stack_contract() {
   local arm_name="$5" domain="$6" profile="$7" pid="$8" pgid="$9"
   local start_ticks boot_id temporary integration_head module2_head module3_head
   local driver_version kernel_release module3_root
+  local t2_selector t2_selector_sha256 sequence_path
   start_ticks="$(awk '{print $22}' "/proc/${pid}/stat")"
   boot_id="$(< /proc/sys/kernel/random/boot_id)"
   module3_root="$(cd "${script_dir}/.." && pwd -P)"
@@ -140,12 +141,18 @@ write_stack_contract() {
   module3_head="$(git -C "${module3_root}" rev-parse HEAD)"
   driver_version="$(head -n 1 /proc/driver/nvidia/version)"
   kernel_release="$(uname -r)"
+  t2_selector="${module3_root}/scripts/run_v6_kujiale_low_obstacles.sh"
+  [[ "${scene_name}" == "outdoor" ]] \
+    && t2_selector="${module3_root}/scripts/run_v6_rivermark.sh"
+  t2_selector_sha256="$(sha256sum "${t2_selector}" | awk '{print $1}')"
+  sequence_path="${directory}/episode.sequence.json"
   temporary="${directory}/.stack.contract.$$.tmp"
   python3 - "${temporary}" "${condition_id}" "${scene_name}" \
     "${condition_name}" "${arm_name}" "${domain}" "${profile}" \
     "${pid}" "${pgid}" "${start_ticks}" "${boot_id}" \
     "${integration_head}" "${module2_head}" "${module3_head}" \
-    "${driver_version}" "${kernel_release}" <<'PY'
+    "${driver_version}" "${kernel_release}" "${t2_selector}" \
+    "${t2_selector_sha256}" "${sequence_path}" <<'PY'
 import hashlib
 import json
 import os
@@ -170,11 +177,22 @@ payload = {
     "module3_head": sys.argv[14],
     "driver_version": sys.argv[15],
     "kernel_release": sys.argv[16],
+    "t2_selector_path": sys.argv[17],
+    "t2_selector_sha256": sys.argv[18],
+    "episode_sequence_path": sys.argv[19],
 }
 canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
 payload["stack_session_id"] = hashlib.sha256(canonical.encode()).hexdigest()
 target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 os.replace(target, target.with_name("stack.contract.json"))
+sequence = Path(payload["episode_sequence_path"])
+sequence_tmp = sequence.with_name(f".{sequence.name}.{payload['pid']}.tmp")
+sequence_tmp.write_text(json.dumps({
+    "schema": "bio_nav.v6_stack_episode_sequence.v1",
+    "stack_session_id": payload["stack_session_id"],
+    "last_sequence": 0,
+}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+os.replace(sequence_tmp, sequence)
 PY
 }
 
@@ -793,6 +811,7 @@ shutdown() {
   done
   rm -f "${run_dir}/stack.identity" "${run_dir}/stack.pid" \
     "${run_dir}/stack.pgid" "${run_dir}/stack.contract.json"
+  rm -f "${run_dir}/episode.sequence.json"
   if [[ "${failed}" == true ]]; then
     echo "Phase-F stack cleanup left a tracked process group alive" >&2
     exit 1

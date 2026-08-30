@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 import robot_experiments.v6_formal as v6_formal_module
+import robot_experiments.experiment_runner as experiment_runner_module
 import yaml
 from robot_experiments.scenario import load_scenario
 
@@ -49,6 +50,15 @@ LEGACY_MANIFESTS = tuple(
     for world in ("kujiale", "rivermark")
     for category in ("static", "dynamic", "appearance")
 )
+
+
+@pytest.fixture(autouse=True)
+def _stub_formal_nas_mount(monkeypatch):
+    monkeypatch.setattr(
+        v6_formal_module,
+        "_validate_nas_mount",
+        lambda path: {"target": str(path), "filesystem": "test", "source": "test"},
+    )
 
 
 def _raw() -> dict:
@@ -201,11 +211,109 @@ def _write_formal_run(
         / f"run-{run_index:04d}-seed-{seed}"
     )
     root.mkdir(parents=True)
+    telemetry = root / "telemetry"
+    telemetry.mkdir()
+    required_topics = (
+        *experiment_runner_module.COMMON_REQUIRED_RECORDED_TOPICS,
+        *experiment_runner_module.ROUTE_GUIDED_REQUIRED_RECORDED_TOPICS,
+        *experiment_runner_module.SCENE_REQUIRED_RECORDED_TOPICS[condition.scene],
+    )
+    topic_counts = {topic: 1 for topic in required_topics}
+    metadata = {
+        "rosbag2_bagfile_information": {
+            "storage_identifier": "mcap",
+            "relative_file_paths": ["telemetry_0.mcap"],
+            "message_count": sum(topic_counts.values()),
+            "topics_with_message_count": [
+                {"topic_metadata": {"name": topic}, "message_count": count}
+                for topic, count in topic_counts.items()
+            ],
+        }
+    }
+    (telemetry / "metadata.yaml").write_text(
+        yaml.safe_dump(metadata), encoding="utf-8"
+    )
+    magic = experiment_runner_module.MCAP_MAGIC
+    (telemetry / "telemetry_0.mcap").write_bytes(magic + b"payload" + magic)
+    coverage = experiment_runner_module._mcap_required_topic_coverage(
+        telemetry / "metadata.yaml",
+        scene=condition.scene,
+        route_guided=True,
+    )
+    coverage["required"] = True
+    route_costs = [{
+        "request_id": 1,
+        "edges": [{
+            "requested_module2_delta_m": 0.5,
+            "applied_module2_delta_m": 0.5,
+        }],
+    }]
+    route_prior = experiment_runner_module._route_prior_application_evidence(
+        route_costs, required=True
+    )
+    declared_required_files = {
+        "TRIAL_DISPATCHED.json",
+        "run_manifest.json",
+        "events.jsonl",
+        "ground_truth.csv.gz",
+        "odom.csv.gz",
+        "cmd_vel.csv.gz",
+        "obstacles.csv.gz",
+        "dynamic_obstacles.csv.gz",
+        "leg_metrics.csv",
+        "depth_frame.pgm",
+        "depth_frame.json",
+        "scan.csv",
+        "scan.json",
+        "scan_safety.csv",
+        "scan_safety.json",
+        "local_costmap.pgm",
+        "local_costmap.json",
+        "global_costmap.pgm",
+        "global_costmap.json",
+    }
+    if identity["appearance_profile_id"] is not None:
+        declared_required_files |= {
+            "appearance_rgb_before_goal.ppm",
+            "appearance_rgb_before_goal.json",
+        }
+    for name in declared_required_files - {"run_manifest.json"}:
+        target = root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("fixture\n", encoding="utf-8")
+    (root / "FINAL_TRIAL_METRICS.json").write_text(
+        '{"passed": true}\n', encoding="utf-8"
+    )
     summary = {
+        "navigation_contract_success": True,
         "strict_success": strict_success,
+        "terminal_zero_confirmed": True,
+        "reset_receipt": {"generation": run_index},
+        "reset_receipt_confirmed": True,
+        "physical_collision_free": True,
+        "contact_sensor_evidence_confirmed": True,
+        "fixed_map_to_odom_evidence_confirmed": True,
+        "localization_node_ownership": {
+            **experiment_runner_module._localization_node_ownership_evidence(
+                condition.scene,
+                ["ideal_localization_tf"] if condition.scene == "outdoor" else [],
+            ),
+            "graph_error": None,
+        },
+        "data_complete": True,
         "checksums_verified": True,
-        "episode_validity": {"valid": valid},
+        "episode_validity": {
+            "valid": valid,
+            "status": "valid" if valid else "invalid",
+            "invalid_reasons": [] if valid else ["fixture_invalid"],
+        },
         "final_trial_metric_gate": {"passed": True},
+        "required_topic_coverage": coverage,
+        "route_prior_application": route_prior,
+        "route_prior_application_confirmed": True,
+        "evidence": {
+            "required_files": sorted(declared_required_files)
+        },
         "condition_stack_id": condition.condition_id,
         "stack_session_id": stack_session_id,
         "formal_freeze_digest": formal_freeze_digest,
@@ -220,15 +328,20 @@ def _write_formal_run(
             "variant_id": identity["dynamic_variant_id"],
         },
         "appearance": {"profile_id": identity["appearance_profile_id"]},
+        "result": "success",
+        "terminal_zero_confirmed": True,
+        "legs": [{"id": f"G{index}"} for index in range(1, 6)],
+        "route_edge_costs": route_costs,
+        "observability": {
+            "collision_status_seen": True,
+            "map_to_odom_seen": True,
+        },
+        "isaac_contact_sensor_collision_detected": False,
         "condition_stack_id": condition.condition_id,
         "stack_session_id": stack_session_id,
         "formal_freeze_digest": formal_freeze_digest,
         "reset_receipt": {"generation": run_index},
     }
-    telemetry = root / "telemetry"
-    telemetry.mkdir()
-    (telemetry / "metadata.yaml").write_text("metadata\n", encoding="utf-8")
-    (telemetry / "telemetry_0.mcap").write_bytes(b"mcap")
     (root / "run_summary.json").write_text(json.dumps(summary), encoding="utf-8")
     (root / "run_manifest.json").write_text(json.dumps(episode), encoding="utf-8")
     _refresh_checksums(root)
@@ -259,6 +372,15 @@ def _live_stack_contract(
     pid = os.getpid() if pid is None else pid
     stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
     scene, condition = condition_id.split("_", 1)
+    module3_root = Path(
+        "/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/"
+        "bio_nav_module3"
+    )
+    t2_selector = module3_root / "scripts" / (
+        "run_v6_rivermark.sh"
+        if scene == "outdoor"
+        else "run_v6_kujiale_low_obstacles.sh"
+    )
     payload = {
         "schema": "bio_nav.v6_stack_contract.v1",
         "condition_id": condition_id,
@@ -304,6 +426,9 @@ def _live_stack_contract(
         ).stdout.strip(),
         "driver_version": v6_formal_module._current_driver_version(),
         "kernel_release": os.uname().release,
+        "t2_selector_path": str(t2_selector.resolve()),
+        "t2_selector_sha256": hashlib.sha256(t2_selector.read_bytes()).hexdigest(),
+        "episode_sequence_path": str((tmp_path / "episode.sequence.json").resolve()),
     }
     payload.update(overrides)
     payload["stack_session_id"] = v6_formal_module._stack_session_id(payload)
@@ -354,7 +479,9 @@ def _write_sufficient_pilot_inputs(tmp_path: Path):
                 stack_session_id=contract["stack_session_id"],
             )
             manifest_path = root / "run_manifest.json"
+            summary_path = root / "run_summary.json"
             episode = json.loads(manifest_path.read_text())
+            summary = json.loads(summary_path.read_text())
             scenario = load_scenario(condition.scenario_file)
             episode["robot_config_hash"] = hashlib.sha256(
                 scenario.resolve_path(scenario.robot_config_file).read_bytes()
@@ -386,12 +513,24 @@ def _write_sufficient_pilot_inputs(tmp_path: Path):
                     for name in map_keys
                 },
             }
+            stack_episode_receipt = {
+                "schema": "bio_nav.v6_stack_episode_receipt.v1",
+                "sequence": rep,
+                "baseline": 0,
+                "stack_session_id": contract["stack_session_id"],
+                "sequence_path": contract["episode_sequence_path"],
+                "t2_selector_path": contract["t2_selector_path"],
+                "t2_selector_sha256": contract["t2_selector_sha256"],
+            }
+            episode["stack_episode_receipt"] = stack_episode_receipt
+            summary["stack_episode_receipt"] = stack_episode_receipt
             manifest_path.write_text(json.dumps(episode), encoding="utf-8")
+            summary_path.write_text(json.dumps(summary), encoding="utf-8")
             _refresh_checksums(root)
             episode_rows.append({
                 "rep": rep,
                 "boundary": "cold" if rep == 1 else "hot_reset",
-                "summary_path": str(root / "run_summary.json"),
+                "summary_path": str(summary_path),
                 "manifest_path": str(manifest_path),
                 "stack_contract_path": str(contract_path),
                 "stack_tuple_digest": stack_tuple_digest,
@@ -613,10 +752,11 @@ def test_sufficient_pilot_freezer_writes_not_authorized_formal_manifest(
 @pytest.mark.parametrize(
     ("fault", "message"),
     [
-        ("strict", "not valid strict success"),
+        ("strict", "primary evidence failed"),
         ("config", "source/config provenance mismatch"),
         ("runtime_hashes", "source/config provenance mismatch"),
         ("session", "frozen tuple/session mismatch"),
+        ("sequence", "stack episode sequence/T2 receipt mismatch"),
         ("boundary", "cold/hot episode order mismatch"),
         ("order", "condition order/identity mismatch"),
     ],
@@ -641,16 +781,19 @@ def test_sufficient_pilot_freezer_fails_closed_and_writes_nothing(
         episode["nav2_config_hash"] = "0" * 64
         manifest_path.write_text(json.dumps(episode), encoding="utf-8")
         _refresh_checksums(manifest_path.parent)
-    elif fault in {"runtime_hashes", "session"}:
+    elif fault in {"runtime_hashes", "session", "sequence"}:
         manifest_path = Path(first_episode["manifest_path"])
         summary_path = Path(first_episode["summary_path"])
         episode = json.loads(manifest_path.read_text())
         summary = json.loads(summary_path.read_text())
         if fault == "runtime_hashes":
             episode["scenario_runtime_hashes"]["nav2_config"] = "0" * 64
-        else:
+        elif fault == "session":
             episode["stack_session_id"] = "b" * 64
             summary["stack_session_id"] = "b" * 64
+        else:
+            episode["stack_episode_receipt"]["sequence"] = 2
+            summary["stack_episode_receipt"]["sequence"] = 2
         manifest_path.write_text(json.dumps(episode), encoding="utf-8")
         summary_path.write_text(json.dumps(summary), encoding="utf-8")
         _refresh_checksums(manifest_path.parent)
@@ -779,6 +922,28 @@ def test_sufficient_pilot_freezer_atomic_publish_never_clobbers(
     assert not formal_root.exists()
 
 
+def test_formal_loader_rejects_post_freeze_pilot_evidence_drift(
+    tmp_path, monkeypatch
+):
+    pilot_manifest, aggregate, _reference = _write_sufficient_pilot_inputs(tmp_path)
+    output = tmp_path / "formal.json"
+    formal_root = tmp_path / "nas" / "formal"
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+    frozen = freeze_formal_manifest_from_pilot(
+        pilot_manifest_path=pilot_manifest,
+        pilot_aggregate_path=aggregate,
+        output_manifest_path=output,
+        formal_output_root=formal_root,
+    )
+    summary_path = Path(
+        frozen.pilot_freeze_provenance["episodes"][0]["summary"]["path"]
+    )
+    summary_path.write_text(summary_path.read_text() + "\n", encoding="utf-8")
+
+    with pytest.raises(V6ContractError, match="sha256 mismatch"):
+        load_formal_campaign_manifest(output)
+
+
 def test_formal_manifest_requires_source_runner_and_route_prior_contract(tmp_path):
     raw = _formal_raw(tmp_path)
     raw["runner_entrypoint"] = str(tmp_path / "missing-runner")
@@ -881,8 +1046,8 @@ def test_formal_execution_rejects_wrong_stack_without_subprocess(
 @pytest.mark.parametrize(
     ("override", "message"),
     [
-        ({"integration_head": "0" * 40}, "repository head mismatch"),
-        ({"driver_version": "stale-driver"}, "system freeze mismatch"),
+        ({"integration_head": "0" * 40}, "frozen tuple mismatch"),
+        ({"driver_version": "stale-driver"}, "frozen tuple mismatch"),
     ],
 )
 def test_formal_execution_rejects_stack_freeze_mismatch(
@@ -984,6 +1149,7 @@ def test_formal_execution_dispatches_one_episode_and_returns(
         for argument in calls[0][0]
     )
     assert f"formal_freeze_digest:={campaign.freeze_digest}" in calls[0][0]
+    assert f"condition_stack_contract_path:={contract.resolve()}" in calls[0][0]
     assert aggregate["present_episodes"] == 1
 
 

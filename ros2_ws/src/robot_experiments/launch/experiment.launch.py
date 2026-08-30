@@ -50,6 +50,7 @@ def generate_launch_description():
             DeclareLaunchArgument("condition_stack_id", default_value=""),
             DeclareLaunchArgument("stack_session_id", default_value=""),
             DeclareLaunchArgument("formal_freeze_digest", default_value=""),
+            DeclareLaunchArgument("condition_stack_contract_path", default_value=""),
             DeclareLaunchArgument("dynamic_case_id", default_value=""),
             DeclareLaunchArgument("dynamic_variant_id", default_value=""),
             DeclareLaunchArgument("dynamic_seed", default_value="0"),
@@ -143,6 +144,10 @@ def generate_launch_description():
                         ),
                         "formal_freeze_digest": ParameterValue(
                             LaunchConfiguration("formal_freeze_digest"),
+                            value_type=str,
+                        ),
+                        "condition_stack_contract_path": ParameterValue(
+                            LaunchConfiguration("condition_stack_contract_path"),
                             value_type=str,
                         ),
                         "dynamic_case_id": LaunchConfiguration("dynamic_case_id"),
