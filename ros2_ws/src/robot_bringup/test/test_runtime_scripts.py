@@ -741,6 +741,9 @@ def test_v6_rivermark_isaac_argv_covers_three_pilot_scenes(tmp_path):
         assert 'rgbd_navigation' in arguments
         assert arguments.count('--disable-dlss') == 1
         assert '--no-disable-dlss' not in arguments
+        assert arguments.count('--rtx-descriptor-sets') == 1
+        descriptor_index = arguments.index('--rtx-descriptor-sets')
+        assert arguments[descriptor_index + 1] == '20000'
         assert metadata['GROUND_TRUTH'] == 'true'
 
     for run_root in (
@@ -788,7 +791,8 @@ def test_v6_rivermark_isaac_argv_covers_three_pilot_scenes(tmp_path):
 
     for override in (
             '--disable-dlss', '--no-disable-dlss',
-            '--localization-owner', '--localization-owner=amcl'):
+            '--localization-owner', '--localization-owner=amcl',
+            '--rtx-descriptor-sets', '--rtx-descriptor-sets=10000'):
         rejected = subprocess.run(
             [str(static_root / 'scripts' / RUN_V6_RIVERMARK.name),
              'isaac', 'static', override],

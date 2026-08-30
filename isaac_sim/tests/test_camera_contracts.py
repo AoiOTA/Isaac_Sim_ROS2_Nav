@@ -13,6 +13,7 @@ from isaac_sim.apps.navigation_sim import (
     _apply_cli_overrides,
     _parser,
     _simulation_app_config,
+    _verify_rtx_descriptor_sets,
     run,
 )
 from isaac_sim.graphs.camera_graph import (
@@ -218,13 +219,20 @@ def test_camera_cli_accepts_only_named_profiles():
 
     assert parser.parse_args([]).camera_profile is None
     assert parser.parse_args([]).disable_dlss is False
+    assert parser.parse_args([]).rtx_descriptor_sets is None
     assert parser.parse_args(["--disable-dlss"]).disable_dlss is True
     assert parser.parse_args(["--no-disable-dlss"]).disable_dlss is False
+    assert parser.parse_args(
+        ["--rtx-descriptor-sets", "20000"]
+    ).rtx_descriptor_sets == 20000
     assert parser.parse_args(
         ["--headless", "--camera-profile", "standard"]
     ).camera_profile == "standard"
     with pytest.raises(SystemExit):
         parser.parse_args(["--camera-profile", "turbo"])
+    for invalid in ("0", "-1", "not-an-int"):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--rtx-descriptor-sets", invalid])
 
 
 def test_stage_readiness_cli_uses_typed_config_override(monkeypatch):
@@ -267,6 +275,50 @@ def test_simulation_app_enables_supported_multitick_sensor_settings_early():
     assert dlss_disabled["anti_aliasing"] == 0
     assert dlss_disabled["extra_args"] == launch["extra_args"] + dlss_off_args
 
+    descriptor_override = _simulation_app_config(
+        _config(), rtx_descriptor_sets=20000
+    )
+    assert descriptor_override["extra_args"] == launch["extra_args"] + [
+        "--/rtx/descriptorSets=20000"
+    ]
+    assert sum(
+        argument.startswith("--/rtx/descriptorSets=")
+        for argument in descriptor_override["extra_args"]
+    ) == 1
+
+
+def test_rtx_descriptor_sets_verification_reports_and_fails_closed(
+    monkeypatch, capsys
+):
+    class Settings:
+        def __init__(self, applied):
+            self.applied = applied
+
+        def get(self, path):
+            assert path == "/rtx/descriptorSets"
+            return self.applied
+
+    applied = Settings(20000)
+    monkeypatch.setitem(
+        sys.modules,
+        "carb",
+        SimpleNamespace(
+            settings=SimpleNamespace(get_settings=lambda: applied)
+        ),
+    )
+
+    _verify_rtx_descriptor_sets(20000)
+    assert capsys.readouterr().out == (
+        "RTX_DESCRIPTOR_SETS requested=20000 applied=20000\n"
+    )
+
+    applied.applied = 10000
+    with pytest.raises(RuntimeError, match="requested=20000 applied=10000"):
+        _verify_rtx_descriptor_sets(20000)
+    assert capsys.readouterr().out == (
+        "RTX_DESCRIPTOR_SETS requested=20000 applied=10000\n"
+    )
+
 
 def test_run_passes_single_gpu_launch_contract_to_simulation_app(monkeypatch):
     captured = {}
@@ -293,22 +345,72 @@ def test_run_passes_single_gpu_launch_contract_to_simulation_app(monkeypatch):
             None,
             "baseline",
             disable_dlss=True,
+            rtx_descriptor_sets=20000,
         )
 
     assert captured["multi_gpu"] is False
     assert captured["anti_aliasing"] == 0
-    assert captured == _simulation_app_config(_config(), disable_dlss=True)
+    assert captured == _simulation_app_config(
+        _config(), disable_dlss=True, rtx_descriptor_sets=20000
+    )
+
+
+def test_run_closes_simulation_app_when_descriptor_verification_fails(
+    monkeypatch
+):
+    closed = []
+
+    class FakeSimulationApp:
+        def __init__(self, _launch):
+            pass
+
+        def close(self, *, exit_code):
+            closed.append(exit_code)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "isaacsim",
+        SimpleNamespace(SimulationApp=FakeSimulationApp),
+    )
+    monkeypatch.setattr(
+        navigation_sim,
+        "_verify_rtx_descriptor_sets",
+        lambda _requested: (_ for _ in ()).throw(RuntimeError("mismatch")),
+    )
+
+    with pytest.raises(RuntimeError, match="mismatch"):
+        run(
+            _config(),
+            None,
+            None,
+            None,
+            None,
+            "baseline",
+            rtx_descriptor_sets=20000,
+        )
+
+    assert closed == [1]
 
 
 @pytest.mark.parametrize(
-    ("argv", "expected_localization_owner"),
+    ("argv", "expected_localization_owner", "expected_descriptor_sets"),
     (
-        (["--disable-dlss"], "auto"),
-        (["--disable-dlss", "--localization-owner", "ideal"], "ideal"),
+        (["--disable-dlss"], "auto", None),
+        (
+            [
+                "--disable-dlss",
+                "--localization-owner",
+                "ideal",
+                "--rtx-descriptor-sets",
+                "20000",
+            ],
+            "ideal",
+            20000,
+        ),
     ),
 )
 def test_main_passes_runtime_contract_directly_to_run(
-    monkeypatch, argv, expected_localization_owner
+    monkeypatch, argv, expected_localization_owner, expected_descriptor_sets
 ):
     selected_pose = SimpleNamespace(map=SimpleNamespace(calibrated=True))
     captured = {}
@@ -334,5 +436,8 @@ def test_main_passes_runtime_contract_directly_to_run(
     assert navigation_sim.main(argv) == 0
     assert captured == {
         "localization_owner": expected_localization_owner,
-        "run_kwargs": {"disable_dlss": True},
+        "run_kwargs": {
+            "disable_dlss": True,
+            "rtx_descriptor_sets": expected_descriptor_sets,
+        },
     }

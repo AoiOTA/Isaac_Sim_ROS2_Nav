@@ -293,6 +293,13 @@ def effective_reset_seed(dynamic_seed: int | None, scenario_seed: int) -> int:
     return seed
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be a positive integer")
+    return parsed
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run the Isaac Sim + ROS 2 Jackal navigation simulation"
@@ -401,6 +408,12 @@ def _parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=False,
         help="disable DLSS anti-aliasing before Kit starts",
+    )
+    parser.add_argument(
+        "--rtx-descriptor-sets",
+        type=_positive_int,
+        default=None,
+        help="override /rtx/descriptorSets before Kit starts",
     )
     parser.add_argument(
         "--environment-usd",
@@ -692,6 +705,7 @@ def _enable_extensions(app: object, extension_ids: Sequence[str]) -> None:
 def _simulation_app_config(
     config: ProjectConfig,
     disable_dlss: bool = False,
+    rtx_descriptor_sets: int | None = None,
 ) -> dict[str, object]:
     launch = {
         "headless": config.simulation.headless,
@@ -719,7 +733,29 @@ def _simulation_app_config(
                 "--/rtx-transient/post/aa/limitedOps=false",
             ]
         )
+    if rtx_descriptor_sets is not None:
+        launch["extra_args"].append(
+            f"--/rtx/descriptorSets={rtx_descriptor_sets}"
+        )
     return launch
+
+
+def _verify_rtx_descriptor_sets(requested: int | None) -> None:
+    if requested is None:
+        return
+
+    import carb
+
+    applied = carb.settings.get_settings().get("/rtx/descriptorSets")
+    print(
+        f"RTX_DESCRIPTOR_SETS requested={requested} applied={applied}",
+        flush=True,
+    )
+    if applied != requested:
+        raise RuntimeError(
+            "RTX descriptor-set setting mismatch: "
+            f"requested={requested} applied={applied}"
+        )
 
 
 def run(
@@ -744,6 +780,7 @@ def run(
     imu_regime_phase_trace_path: Path | None = None,
     imu_regime_diagnostic_config_path: Path = V6_IMU_REGIME_DIAGNOSTIC_CONFIG,
     disable_dlss: bool = False,
+    rtx_descriptor_sets: int | None = None,
 ) -> None:
     configure_process_environment(config)
 
@@ -754,9 +791,20 @@ def run(
         # SimulationApp otherwise forwards this application's argparse flags
         # to Kit as if they were native settings.
         sys.argv = [sys.argv[0]]
-        app = SimulationApp(_simulation_app_config(config, disable_dlss))
+        app = SimulationApp(
+            _simulation_app_config(
+                config,
+                disable_dlss,
+                rtx_descriptor_sets,
+            )
+        )
     finally:
         sys.argv = original_argv
+    try:
+        _verify_rtx_descriptor_sets(rtx_descriptor_sets)
+    except Exception:
+        app.close(exit_code=1)
+        raise
     runtime = None
     sensors = None
     camera_graph_paths: tuple[str, ...] = ()
@@ -3011,6 +3059,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         args.imu_regime_diagnostic_config.expanduser().resolve(),
         disable_dlss=args.disable_dlss,
+        rtx_descriptor_sets=args.rtx_descriptor_sets,
     )
     return 0
 

@@ -76,6 +76,7 @@ if [[ "${entrypoint}" == "isaac" ]]; then
       --structure-tf-source|--structure-tf-source=*|\
       --localization-owner|--localization-owner=*|\
       --camera-profile|--camera-profile=*|\
+      --rtx-descriptor-sets|--rtx-descriptor-sets=*|\
       --disable-dlss|--disable-dlss=*|\
       --no-disable-dlss|--no-disable-dlss=*|\
       --dynamic-obstacle-config|--dynamic-obstacle-config=*|\
@@ -112,6 +113,7 @@ if [[ "${entrypoint}" == "isaac" ]]; then
     --structure-tf-source isaac \
     --localization-owner ideal \
     --camera-profile rgbd_navigation \
+    --rtx-descriptor-sets 20000 \
     --disable-dlss \
     --dynamic-obstacle-config "${obstacle_config}" \
     "${dynamic_args[@]}" \
