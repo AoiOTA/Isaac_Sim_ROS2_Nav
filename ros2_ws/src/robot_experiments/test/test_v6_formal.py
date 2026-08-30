@@ -677,6 +677,71 @@ def test_formal_execution_dispatches_one_episode_and_returns(
     assert aggregate["present_episodes"] == 1
 
 
+def test_formal_execution_rejects_live_session_change_before_subprocess(
+    tmp_path, monkeypatch
+):
+    campaign = load_formal_campaign_manifest(
+        _write_formal_manifest(tmp_path, authorization="AUTHORIZED")
+    )
+    _write_formal_run(
+        campaign.conditions[0],
+        1,
+        strict_success=True,
+        formal_freeze_digest=campaign.freeze_digest,
+        stack_session_id="a" * 64,
+    )
+    contract = _live_stack_contract(tmp_path)
+    monkeypatch.setenv("ROS_DOMAIN_ID", "150")
+    calls = []
+    monkeypatch.setattr(
+        v6_formal_module.subprocess,
+        "run",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(V6ContractError, match="differs from recorded episodes"):
+        execute_formal_campaign(
+            campaign,
+            condition_stack_id="indoor_static",
+            condition_stack_contract=contract,
+        )
+
+    assert calls == []
+
+
+def test_formal_execution_raises_when_post_dispatch_aggregate_blocks(
+    tmp_path, monkeypatch
+):
+    campaign = load_formal_campaign_manifest(
+        _write_formal_manifest(tmp_path, authorization="AUTHORIZED")
+    )
+    contract = _live_stack_contract(tmp_path)
+    contract_payload = json.loads(contract.read_text())
+    monkeypatch.setenv("ROS_DOMAIN_ID", "150")
+    calls = []
+
+    def fake_run(command, *, check):
+        calls.append((command, check))
+        _write_formal_run(
+            campaign.conditions[0],
+            1,
+            strict_success=False,
+            formal_freeze_digest=campaign.freeze_digest,
+            stack_session_id=contract_payload["stack_session_id"],
+        )
+
+    monkeypatch.setattr(v6_formal_module.subprocess, "run", fake_run)
+
+    with pytest.raises(V6ContractError, match="blocked after dispatch"):
+        execute_formal_campaign(
+            campaign,
+            condition_stack_id="indoor_static",
+            condition_stack_contract=contract,
+        )
+
+    assert len(calls) == 1
+
+
 def test_formal_execution_requires_exactly_one_new_strict_target(
     tmp_path, monkeypatch
 ):

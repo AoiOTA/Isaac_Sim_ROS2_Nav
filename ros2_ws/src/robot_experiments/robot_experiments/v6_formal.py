@@ -1047,6 +1047,19 @@ def execute_formal_campaign(
         raise V6ContractError("formal condition stack is not the M3 active profile")
     if os.environ.get("ROS_DOMAIN_ID") != str(contract["domain"]):
         raise V6ContractError("formal condition stack ROS domain mismatch")
+    selected_aggregate = next(
+        condition
+        for condition in aggregate["conditions"]
+        if condition["id"] == condition_stack_id
+    )
+    recorded_stack_session = selected_aggregate.get("stack_session_id")
+    if (
+        recorded_stack_session
+        and recorded_stack_session != contract["stack_session_id"]
+    ):
+        raise V6ContractError(
+            "live condition stack session differs from recorded episodes"
+        )
     before_completed = {
         (condition["id"], run["run_index"], run["status"])
         for condition in aggregate["conditions"]
@@ -1063,6 +1076,11 @@ def execute_formal_campaign(
     # episode only, then return so a stack switch can never occur implicitly.
     subprocess.run(command, check=True)
     after = evaluate_formal_campaign(manifest)
+    if after["blockers"]:
+        raise V6ContractError(
+            "formal campaign blocked after dispatch: "
+            + ",".join(after["blockers"])
+        )
     after_completed = {
         (condition["id"], run["run_index"], run["status"])
         for condition in after["conditions"]
