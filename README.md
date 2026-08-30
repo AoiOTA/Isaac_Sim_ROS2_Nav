@@ -37,6 +37,8 @@ attempt. Generated data belongs on NAS, not in Git.
 - Both: Module1 wheel+IMU odometry without TF, Module2 obstacle output, GVG,
   SR/DR RoutePrior, cognitive obstacle layers, and risk critic in the M3 arm.
 
-At the current stop boundary, the Rivermark-only DLSS-disabled startup is an
-unlive candidate. Read [Current state](docs/CURRENT_STATE.md) before launching
-anything.
+Rivermark now uses the sole DLSS-off, RTX descriptor-set `20000` startup
+setting, which passed startup engineering `3/3`. Outdoor static engineering
+`3/3` is the next eligible stage, but the current user stop boundary is after
+the Module3 push, so do not run it now. Read [Current state](docs/CURRENT_STATE.md)
+before launching anything.

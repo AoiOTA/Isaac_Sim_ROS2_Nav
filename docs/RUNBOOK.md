@@ -5,6 +5,14 @@ live run. Read [Module3 current state](CURRENT_STATE.md) and the authoritative
 [Integration current state](/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration/docs/CURRENT_STATE.md)
 before using it.
 
+## Current user stop boundary
+
+Publishing current Module3 is the present stop boundary. Do not start the
+outdoor static engineering repetitions, sufficient-Pilot aggregation, formal
+freezer, formal dry-run, ROS, or Isaac without renewed authorization. The
+commands below document the next production path only. Current counts remain
+Pilot `0/18` and formal `0/120`; formal is `NOT_AUTHORIZED`.
+
 ## 1. Clean shell and one underlay
 
 Use the same values in every terminal. Source ROS/setup scripts before enabling
@@ -77,7 +85,12 @@ Rivermark uses a 240 s fail-closed activation timeout because cold USD/RTX
 startup has exceeded 120 s. This is an upper bound, not a fixed sleep, and does
 not relax any readiness predicate.
 
-## 4. Indoor M3 stack
+## 4. Indoor engineering reference — not current Pilot
+
+The commands in this section predate the current condition-stack attestation
+contract. They remain an engineering reference only and must not be used for a
+counted sufficient-Pilot episode. The unified six-condition Pilot procedure
+will be documented separately after its entrypoint is ready.
 
 Terminal T1:
 
@@ -131,19 +144,24 @@ fi
   resume:=false
 ```
 
-`rep1` qualifies the cold-start boundary. Inspect its `episode_validity`, topic
-coverage, RoutePrior requested/applied counts, ContactSensor result,
-terminal-zero, and checksums before continuing. `rep2` and `rep3` are hot
-resets on that same T1/T2 stack; changing the stack turns them into new cold
-runs and invalidates the three-repetition sequence.
+For engineering use, inspect `rep1` `episode_validity`, topic coverage,
+RoutePrior requested/applied counts, ContactSensor result, terminal-zero, and
+checksums before continuing. `rep2` and `rep3` are hot resets on that same T1/T2
+stack; changing the stack turns them into new cold runs and invalidates the
+three-repetition sequence. None of these commands count toward current Pilot.
 
-## 5. Outdoor Rivermark startup reference — BLOCKED
+## 5. Outdoor Rivermark startup — PASSED FOR STATIC ENGINEERING
 
-**BLOCKED: do not execute this section.** The tested PointInstancer candidate
-failed its startup gate and was removed from the current runtime. These
-commands remain only as component/provenance reference. A new GPU attempt
-requires a different discriminative hypothesis to be recorded first in the
-Integration current state. Do not start T3.
+The descriptor-set value `20000` is the sole current Rivermark setting. The
+authoritative campaign root is
+`/mnt/nas_home/Bio_Nav_Data/experiments/pilots/v6_rivermark_descriptor_ab_33136fa2_20260830T105641Z`:
+A1/A2/A3 produced same-location pre-READY page faults and Xid 109, so A passed
+`0/3` at `33136fa2`; B1/B2/B3 ran `d62f482`, reported
+`requested=20000 applied=20000`, reached complete READY with fixed TF and no
+AMCL, held `603/604/603 s`, and passed `3/3` with zero kernel faults. The B tree
+is identical to integrated `7ba6816`, which current `bb4e78d` contains. This
+permits outdoor static engineering only and is not a driver or lower-level
+root-cause claim.
 
 Terminal T1:
 
@@ -171,19 +189,24 @@ Terminal T2, after only `/wheel_odometry/reset` exists (do not wait for EKF
 
 The wrapper fixes the original map/route/regions, mixed Compute Odometry,
 calibrated fixed `map -> odom`, Module2/GVG/RoutePrior M3 chain, RGB-D profile,
-and Rivermark-only DLSS disable. Caller overrides are rejected.
+Rivermark-only DLSS disable, and `--rtx-descriptor-sets 20000`. Caller overrides
+are rejected. The startup log must report
+`RTX_DESCRIPTOR_SETS requested=20000 applied=20000`.
 
 The startup discriminator passes only when Isaac and Nav2 are READY, no DLSS
 internal-upscale warning or GPU page fault/device-lost occurs, and live RGB,
 depth, CameraInfo, scan, odom, GT, fixed TF, Module2, and catalog identities are
-current. Hold a bounded stability window, then stop without an episode.
+current. A startup-only discriminator holds a bounded stability window and then
+stops without an episode. After separate renewed authorization for outdoor
+static engineering, continue to Section 6 on that same attested stack instead
+of restarting it.
 
-## 6. Outdoor static runner — BLOCKED
+## 6. Outdoor static engineering runner — FUTURE / CURRENTLY STOPPED
 
-**Current state: prohibited.** Terminal T3 may run only after the Integration
-current state records that a new Rivermark RCA candidate—not the rejected
-PointInstancer candidate—has passed its complete fresh startup gate. Until
-then, do not run outdoor static3 or the command below.
+After renewed authorization, Terminal T3 may run outdoor static engineering
+`3/3` only after T1/T2 meet the complete current startup contract above. This
+is not sufficient Pilot or formal execution; those counts remain `0/18` and
+`0/120`, and formal remains `NOT_AUTHORIZED`.
 
 `run_experiment.sh` otherwise falls back to the Kujiale spawn manifest, which
 does not define `rivermark_start`.
@@ -191,10 +214,38 @@ does not define `rivermark_start`.
 ```bash
 export ISAAC_NAV_SPAWN_POSES="${BIO_NAV_MODULE3_ROOT}/data/rivermark_demo/rivermark.spawn.yaml"
 test -f "${ISAAC_NAV_SPAWN_POSES}"
+export BIO_NAV_REP=rep1  # then rep2 and rep3 without restarting T1 or T2
+case "${BIO_NAV_REP}" in
+  rep1) BIO_NAV_RUN_INDEX=1 ;;
+  rep2) BIO_NAV_RUN_INDEX=2 ;;
+  rep3) BIO_NAV_RUN_INDEX=3 ;;
+  *) echo "BIO_NAV_REP must be rep1, rep2, or rep3" >&2; exit 2 ;;
+esac
+test ! -e "${BIO_NAV_RUN_ROOT}/${BIO_NAV_REP}"
+
+export BIO_NAV_STACK_CONTRACT="${BIO_NAV_RUN_ROOT}/runtime/stack.contract.json"
+test -r "${BIO_NAV_STACK_CONTRACT}"
+export BIO_NAV_STACK_SESSION_ID="$(
+  /usr/bin/python3 - "${BIO_NAV_STACK_CONTRACT}" <<'PY'
+import json
+from pathlib import Path
+import re
+import sys
+
+path = Path(sys.argv[1]).resolve()
+payload = json.loads(path.read_text(encoding="utf-8"))
+if payload.get("condition_id") != "outdoor_static":
+    raise SystemExit("stack contract condition_id must be outdoor_static")
+session = payload.get("stack_session_id")
+if not isinstance(session, str) or re.fullmatch(r"[0-9a-f]{64}", session) is None:
+    raise SystemExit("stack contract stack_session_id must be a SHA-256 digest")
+print(session)
+PY
+)"
 
 ./scripts/run_experiment.sh \
   ros2_ws/src/robot_experiments/config/final_rivermark_static.yaml \
-  "${BIO_NAV_RUN_ROOT}/rep1" \
+  "${BIO_NAV_RUN_ROOT}/${BIO_NAV_REP}" \
   nav2_profile:=v6_low_obstacle_isolation \
   nav2_config_file:="${BIO_NAV_MODULE3_ROOT}/ros2_ws/src/robot_navigation/config/nav2_v6_low_obstacle_isolation.yaml" \
   navigation_execution_backend:=route_guided \
@@ -203,14 +254,25 @@ test -f "${ISAAC_NAV_SPAWN_POSES}"
   record_bag:=true \
   clear_slam_localization_buffer:=false \
   reset_map_base_translation_tolerance_m:=0.15 \
-  run_indices:=1 \
+  condition_stack_id:=outdoor_static \
+  stack_session_id:="${BIO_NAV_STACK_SESSION_ID}" \
+  condition_stack_contract_path:="${BIO_NAV_STACK_CONTRACT}" \
+  run_indices:="${BIO_NAV_RUN_INDEX}" \
   resume:=false
 ```
 
-Omit `experiment_arm`; the Phase-F stack already owns the M3 arm. For the
-sufficient static Pilot, repeat index 1 in fresh `rep1`, `rep2`, and `rep3`
-outputs on one stack, stopping after the first valid product failure or invalid
-episode.
+Omit `experiment_arm`; the Phase-F stack already owns the M3 arm. Run index 1
+in fresh `rep1`, index 2 in `rep2`, and index 3 in `rep3` on one attested stack.
+The stack contract starts with sequence `0` and startup reset generation
+baseline `1`; the three episode receipts must therefore bind cold
+sequence/generation `1/2`, then hot `2/3` and `3/4`, without restarting T1 or
+T2. Leave `formal_freeze_digest` empty: engineering attests the stack identity
+but has no formal freeze. At episode start, the runner copies the live contract
+into that episode's run root as `stack_contract.json`; this per-episode snapshot
+is the authoritative aggregate/freezer input and survives later owned cleanup
+of `runtime/stack.contract.json`. Stop after the first valid product failure or
+invalid episode. These are three engineering repetitions and do not pre-count
+toward sufficient Pilot.
 
 ## 7. Readiness essentials
 
@@ -240,7 +302,41 @@ apps, and owned locks are gone. Never use global `pkill`.
 Preserve NAS logs and bags for any failure or invalid attempt. Record invalid
 operator/startup runs separately and do not count them as Pilot episodes.
 
-## 9. Formal manifest dry-run — NOT AUTHORIZED / 0 of 120
+## 9. Future Pilot aggregate, freezer, and formal dry-run — STOPPED
+
+Do not run this section at the current stop boundary. Only after all six future
+condition roots contain cold `rep1` plus hot `rep2`/`rep3`, with 18 strict
+successes and the required per-episode `stack_contract.json` snapshots, use the
+existing wrapper in this exact order. All paths must be absolute, under the NAS
+formal root, and the output paths must not already exist.
+
+First build the sufficient-Pilot manifest and aggregate pair:
+
+```bash
+./scripts/run_v6_formal_episode.sh --aggregate-pilot \
+  /absolute/path/to/PILOT_ROOT \
+  /absolute/path/to/OUT_PILOT_MANIFEST.json \
+  /absolute/path/to/OUT_PILOT_AGGREGATE.json
+```
+
+Only a successful `18/18` aggregate may be frozen into a still-unauthorized
+formal manifest:
+
+```bash
+./scripts/run_v6_formal_episode.sh --freeze-pilot \
+  /absolute/path/to/OUT_PILOT_MANIFEST.json \
+  /absolute/path/to/OUT_PILOT_AGGREGATE.json \
+  /absolute/path/to/OUT_FORMAL_MANIFEST.json \
+  /absolute/path/to/NEW_FORMAL_OUTPUT_ROOT
+```
+
+Then, and still without dispatching ROS or Isaac, validate the frozen manifest
+and report its digest and `0/120` progress:
+
+```bash
+./scripts/run_v6_formal_episode.sh --formal \
+  /absolute/path/to/OUT_FORMAL_MANIFEST.json
+```
 
 The formal manifest contains exactly six ordered conditions and 20 run
 identities per condition. Repeated seeds across dynamic or appearance variants
@@ -251,11 +347,8 @@ driver/kernel, six scenario/config sets, active checkpoints, RoutePrior arrays,
 Rivermark assets, maps, and formal evaluator sources. Dry-run validates that
 freeze and reports its digest, immutable-evidence
 aggregate state and the next resume point without requiring a live stack or
-starting ROS or Isaac:
-
-```bash
-./scripts/run_v6_formal_episode.sh --formal /absolute/path/to/formal_manifest.yaml
-```
+starting ROS or Isaac. The freezer keeps execution `NOT_AUTHORIZED`; neither a
+successful aggregate nor dry-run grants permission to execute formal episodes.
 
 Each dispatch-plan row states `cold` for rep1 and `hot_reset` for reps 2-20,
 and requires the matching condition stack to be owned outside the episode
@@ -266,7 +359,7 @@ both an `AUTHORIZED` manifest and the explicit command below:
 ./scripts/run_v6_formal_episode.sh --formal --execute-formal \
   --condition-stack-id indoor_static \
   --condition-stack-contract "${BIO_NAV_RUN_ROOT}/runtime/stack.contract.json" \
-  /absolute/path/to/formal_manifest.yaml
+  /absolute/path/to/OUT_FORMAL_MANIFEST.json
 ```
 
 The stack id must name the condition actually running in T1/T2. One invocation

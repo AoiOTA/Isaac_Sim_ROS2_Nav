@@ -13,13 +13,17 @@ rejected runtime paths.
   `/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3`
 - branch: `v6-compute-amcl-dual-odom`
 - current runtime implementation commit:
-  `10aaf6803c42c6c7025fbfbd1213cd4a6385e5bf`
+  `bb4e78daa2e97ca85d48a2bdd2591828eb826f99`
+- current cross-repository runtime tuple: Integration `493a65be`, Module2
+  `8928cd8f`, Module3 `bb4e78d`
 - indoor live-evidence commit: `350105e`
 
-Current `10aaf68` is the post-run commit that removes the rejected Rivermark
-PointInstancer filter. It must not be attributed to live runs executed at
-`350105e`. Before any run, verify that local HEAD, upstream, and remote agree
-and that tracked files are clean.
+The indoor runs at `350105e` must not be attributed to the current runtime
+tuple. Rivermark A controls ran `33136fa2`; B ran `d62f482`, whose source tree is
+identical to integrated descriptor candidate `7ba6816` in current `bb4e78d`.
+The documentation-only commits that record this handoff are not runtime
+implementation commits. Before any run, verify that local HEAD, upstream, and
+remote agree and that tracked files are clean.
 
 ## Active ownership and scene contracts
 
@@ -38,7 +42,8 @@ Outdoor Rivermark:
 - AMCL is absent;
 - `ideal_localization_tf` alone publishes calibrated fixed `map -> odom`;
 - the original `rivermark_selected` map and 30-tile catalog remain active;
-- RGB-D remains `320x180 @ 10 Hz` and Rivermark alone uses DLSS-off.
+- RGB-D remains `320x180 @ 10 Hz`, Rivermark alone uses DLSS-off, and the sole
+  Rivermark wrapper fixes `--rtx-descriptor-sets 20000`.
 
 Both scenes keep Module1, Module2 obstacle output, GVG, SR/DR RoutePrior,
 cognitive obstacle layers, and `CognitiveRiskCritic` active in the M3 arm. The
@@ -54,6 +59,10 @@ raw RGB-D voxel writer is not active.
 - G2 completion reports actual actor retirements, requires the actor to be
   retired/invisible/collision-disabled, clears both global and local costmaps,
   and waits for fresh empty Module2 and layer status before G3.
+- Current `bb4e78d` implements condition-stack attestation, immutable
+  per-episode `stack_contract.json` snapshots, and the six-root sufficient-Pilot
+  aggregate generator/freezer input path. This tooling has code/focused-test
+  evidence only and has not produced Pilot or formal results.
 - At `350105e`, focused LiDAR-visible retirement passed `2/2`; dynamic and
   appearance engineering closure passed `3/3` each. Static has only a fresh
   `1/1` smoke; its earlier `3/3` evidence ran an older commit and cannot be
@@ -64,16 +73,22 @@ raw RGB-D voxel writer is not active.
 Exact roots and evidence boundaries are in the
 [Integration experiment ledger](/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration/docs/handoff/EXPERIMENT_LEDGER.md#2026-08-30--v6-dynamic-retirement-indoor-closure-and-rivermark-candidate-verdict).
 
-## Outdoor blocker and resume point
+## Outdoor startup verdict and resume point
 
-The official `350105e` startup campaign observed A1 filter OFF for 602 s with
-zero GPU faults. B1 filter ON produced the exact expected inspection counts,
-then encountered Xid 109 / device-lost / SIGSEGV. The PointInstancer candidate
-failed its gate; this does not prove that the filter caused the fault. T3 was
-not started, and the filter was removed in `10aaf68`.
+The authoritative descriptor campaign root is
+`/mnt/nas_home/Bio_Nav_Data/experiments/pilots/v6_rivermark_descriptor_ab_33136fa2_20260830T105641Z`.
+All valid A1/A2/A3 control runs page-faulted at the same location before READY,
+so A passed `0/3`; A ran `33136fa2`. B1/B2/B3 ran `d62f482` and each reported
+`RTX_DESCRIPTOR_SETS requested=20000 applied=20000`, reached READY with all
+required topics, fixed TF, and no AMCL, then held for `603/604/603 s` with zero
+kernel faults. B passed `3/3`; its source tree is identical to integrated
+`7ba6816`, which current `bb4e78d` contains. Descriptor sets `20000` is promoted
+as the only Rivermark startup setting.
 
-Do not rerun the rejected candidate and do not start outdoor static3. Resume
-only after the Integration current state records a new discriminative
-Rivermark hypothesis with a fresh startup gate. The
-[Module3 runbook](RUNBOOK.md) retains component commands as blocked reference,
-not authorization.
+This is startup engineering evidence, not a driver or lower-level root-cause
+claim. The rejected PointInstancer filter remains retired. Outdoor static
+engineering `3/3` is the next eligible engineering stage, but the current user
+stop boundary is immediately after publishing Module3: do not run it now. The
+sufficient Pilot remains `0/18`, formal remains `0/120`, and formal execution
+remains `NOT_AUTHORIZED`. The [Module3 runbook](RUNBOOK.md) records the future
+procedure without authorizing execution.
