@@ -294,7 +294,7 @@ def test_rtx_descriptor_sets_verification_reports_and_fails_closed(
         def __init__(self, applied):
             self.applied = applied
 
-        def get(self, path):
+        def get_as_int(self, path):
             assert path == "/rtx/descriptorSets"
             return self.applied
 

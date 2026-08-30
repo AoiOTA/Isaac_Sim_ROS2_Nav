@@ -746,7 +746,7 @@ def _verify_rtx_descriptor_sets(requested: int | None) -> None:
 
     import carb
 
-    applied = carb.settings.get_settings().get("/rtx/descriptorSets")
+    applied = carb.settings.get_settings().get_as_int("/rtx/descriptorSets")
     print(
         f"RTX_DESCRIPTOR_SETS requested={requested} applied={applied}",
         flush=True,
