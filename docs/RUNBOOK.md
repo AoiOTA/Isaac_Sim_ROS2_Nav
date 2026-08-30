@@ -1,8 +1,9 @@
 # V6 Module3 runbook
 
 This runbook contains the current component commands. It does not authorize a
-live run. Read `docs/CURRENT_STATE.md` and the authoritative Integration
-`docs/CURRENT_STATE.md` before using it.
+live run. Read [Module3 current state](CURRENT_STATE.md) and the authoritative
+[Integration current state](/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration/docs/CURRENT_STATE.md)
+before using it.
 
 ## 1. Clean shell and one underlay
 
@@ -99,9 +100,13 @@ Terminal T2, after the ROS reset services exist:
 
 Indoor keeps mixed Compute Odometry plus AMCL.
 
-## 5. Outdoor Rivermark startup discriminator
+## 5. Outdoor Rivermark startup reference — BLOCKED
 
-At the current handoff, run only this startup discriminator. Do not start T3.
+**BLOCKED: do not execute this section.** The tested PointInstancer candidate
+failed its startup gate and was removed from the current runtime. These
+commands remain only as component/provenance reference. A new GPU attempt
+requires a different discriminative hypothesis to be recorded first in the
+Integration current state. Do not start T3.
 
 Terminal T1:
 
@@ -136,9 +141,12 @@ internal-upscale warning or GPU page fault/device-lost occurs, and live RGB,
 depth, CameraInfo, scan, odom, GT, fixed TF, Module2, and catalog identities are
 current. Hold a bounded stability window, then stop without an episode.
 
-## 6. Outdoor static runner after startup PASS
+## 6. Outdoor static runner — BLOCKED
 
-Only after Section 5 passes on a separate fresh root may Terminal T3 run:
+**Current state: prohibited.** Terminal T3 may run only after the Integration
+current state records that a new Rivermark RCA candidate—not the rejected
+PointInstancer candidate—has passed its complete fresh startup gate. Until
+then, do not run outdoor static3 or the command below.
 
 `run_experiment.sh` otherwise falls back to the Kujiale spawn manifest, which
 does not define `rivermark_start`.

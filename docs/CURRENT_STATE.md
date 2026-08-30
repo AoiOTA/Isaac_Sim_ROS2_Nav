@@ -2,96 +2,78 @@
 
 Date: 2026-08-30
 
-The authoritative cross-repository handoff is Integration
-`docs/CURRENT_STATE.md` on branch `v6-compute-amcl-dual-odom`. This file records
-only the Module3 boundary needed to avoid launching a stale runtime.
+The authoritative cross-repository handoff is the
+[Integration current state](/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration/docs/CURRENT_STATE.md).
+This file records only the Module3 boundary needed to avoid launching stale or
+rejected runtime paths.
 
 ## Runtime implementation
 
 - canonical worktree:
   `/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3`
 - branch: `v6-compute-amcl-dual-odom`
-- reviewed runtime commit:
-  `e3c4385d8a50d78d1fb41f5a1ceca7bfd0f6c83d`
+- current runtime implementation commit:
+  `10aaf6803c42c6c7025fbfbd1213cd4a6385e5bf`
+- indoor live-evidence commit: `350105e`
 
-This documentation update descends that runtime implementation, which adds
-the cognitive-obstacle-layer `track_ttl_s` ghost purge on top of `7ad02f8`.
-Before any run, verify local HEAD, upstream, and the remote branch agree and
-tracked files are clean.
+Current `10aaf68` is the post-run commit that removes the rejected Rivermark
+PointInstancer filter. It must not be attributed to live runs executed at
+`350105e`. Before any run, verify that local HEAD, upstream, and remote agree
+and that tracked files are clean.
 
-## Active ownership
+## Active ownership and scene contracts
 
 Indoor Kujiale:
 
 - Compute Odometry owns `/odom` and `odom -> base_link`;
 - AMCL owns `map -> odom`;
-- Module1 wheel+IMU EKF publishes `/bio_nav/module1/odom` without TF.
+- Module1 wheel+IMU EKF publishes `/bio_nav/module1/odom` without TF;
+- static and appearance use the low obstacle;
+- dynamic uses the LiDAR-visible G2 crossing actor and therefore does not prove
+  sub-LiDAR dynamic-obstacle perception.
 
 Outdoor Rivermark:
 
 - Compute Odometry owns `/odom` and `odom -> base_link`;
 - AMCL is absent;
 - `ideal_localization_tf` alone publishes calibrated fixed `map -> odom`;
-- the original `rivermark_selected` map and current 30-tile catalog remain in
-  use; no regenerated map was adopted;
-- Rivermark alone passes `--disable-dlss`, which maps to SimulationApp
-  `anti_aliasing=0`. RGB-D remains `320x180 @ 10 Hz`.
+- the original `rivermark_selected` map and 30-tile catalog remain active;
+- RGB-D remains `320x180 @ 10 Hz` and Rivermark alone uses DLSS-off.
 
 Both scenes keep Module1, Module2 obstacle output, GVG, SR/DR RoutePrior,
-cognitive obstacle layers, and `CognitiveRiskCritic` in the M3 arm. The active
-low-obstacle profile does not use the raw RGB-D voxel writer.
+cognitive obstacle layers, and `CognitiveRiskCritic` active in the M3 arm. The
+raw RGB-D voxel writer is not active.
 
-## Current evidence boundary
+## Current behavior and indoor evidence
 
-- fixed outdoor TF and Module2/cognitive readiness were observed live on d232,
-  but its T3 runner came from a stale overlay; d232 is invalid, not a Pilot;
-- d211 proved T2 cannot start first because its startup reset needs the ROS
-  wheel/EKF reset services;
-- d210 and d208 failed before READY with Isaac/RTX GPU faults;
-- the DLSS-disabled candidate ran live: d218 held 30 min stable (GPU question
-  passed), but the identical d219 cold start crashed 71 s into startup with
-  Xid 109 / CTX_SWITCH_TIMEOUT after foliage point-instancer warnings — DLSS
-  is not the root cause; outdoor escalation (load-halving A/B) is chosen and
-  parked until the user resumes outdoor work;
-- indoor d215 formal 3x20 on `7ad02f8`: static 19/20, dynamic 16/20,
-  appearance 20/20 (55/60);
-- the dynamic ghost family (costmap LETHAL persisting after the box retires)
-  is fixed by `e3c4385` (`track_ttl_s`) and validated live on d220: dynamic
-  rep01-03 all pass, layer status shows zero applied cells from the retire
-  event onward, and both costmap instances log the TTL expiry;
-- **regression found in the pilot rerun on `e3c4385`**: static 3/3, dynamic
-  3/3, but appearance 1/3 — the 5.0 s TTL is shorter than the static box's
-  worst sighting gap (24.1 s on the G3 approach), so rep03 ended in a real
-  contact (Isaac contact sensor fired) and rep01 in a collision-monitor stop
-  with no contact. Contact judgments use the Isaac contact sensor only; SAT
-  overlap is diagnostic-only. The revised design (not yet implemented): TTL
-  default 90 s as leak backstop + runner clears both costmaps right after a
-  dynamic group retires at leg success (the layer's `reset()` already calls
-  `clearStaticTracks()`);
-- sufficient Pilot: `0/43`;
-- formal campaign: `0/120`;
-- the previous indoor static20 stress run is excluded from both counts.
+- SAT overlap is permanently diagnostic-only. Only Isaac ContactSensor
+  `/simulation/collision` determines physical collision; Collision Monitor
+  stops remain independent navigation/safety failures.
+- `CognitiveObstacleLayer.track_ttl_s` defaults to 90 s so static/appearance
+  tracks survive the observed 24.1 s sighting gap.
+- G2 completion reports actual actor retirements, requires the actor to be
+  retired/invisible/collision-disabled, clears both global and local costmaps,
+  and waits for fresh empty Module2 and layer status before G3.
+- At `350105e`, focused LiDAR-visible retirement passed `2/2`; dynamic and
+  appearance engineering closure passed `3/3` each. Static has only a fresh
+  `1/1` smoke; its earlier `3/3` evidence ran an older commit and cannot be
+  attributed to the current baseline, whose planned static `3/3` remains
+  unmet. These are engineering runs, not sufficient Pilot or formal
+  qualification.
 
-## Resume point
+Exact roots and evidence boundaries are in the
+[Integration experiment ledger](/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration/docs/handoff/EXPERIMENT_LEDGER.md#2026-08-30--v6-dynamic-retirement-indoor-closure-and-rivermark-candidate-verdict).
 
-Implement the TTL revision first (see the evidence bullet above): in
-`bio_nav_fusion` raise the `track_ttl_s` default to 90.0 (leak backstop) and
-keep the layer tests pinned to an explicit TTL; in `robot_experiments` make
-`_complete_obstacle_group` report actual retirements and, on dynamic leg
-success with at least one retirement, clear both costmaps via the existing
-`_costmap_clear_clients` before the next leg. Rebuild both packages in the
-scrubbed environment of Integration `docs/RUNBOOK.md` section 1 (never with an
-inherited polluted shell — the prefix-chain pollution incident is recorded in
-Integration `docs/CURRENT_STATE.md`), run both packages' tests, then rerun the
-per-condition pilot (static/dynamic/appearance x3, fresh cold stack per
-condition, canonical runner arguments `run_indices:=N resume:=false
-clear_slam_localization_buffer:=false
-reset_map_base_translation_tolerance_m:=0.1
-navigation_execution_backend:=route_guided`). Appearance must reach 3/3 with
-zero contact-sensor events before any counted rerun; then report for a
-counted-rerun decision.
+## Outdoor blocker and resume point
 
-Do not relaunch Rivermark until the user resumes outdoor work. When resumed,
-run the load-halving cold-start A/B per Integration `docs/CURRENT_STATE.md`.
-See that file for exact commits, asset paths, invalid roots, Pilot matrix,
-and the rest of the plan.
+The official `350105e` startup campaign observed A1 filter OFF for 602 s with
+zero GPU faults. B1 filter ON produced the exact expected inspection counts,
+then encountered Xid 109 / device-lost / SIGSEGV. The PointInstancer candidate
+failed its gate; this does not prove that the filter caused the fault. T3 was
+not started, and the filter was removed in `10aaf68`.
+
+Do not rerun the rejected candidate and do not start outdoor static3. Resume
+only after the Integration current state records a new discriminative
+Rivermark hypothesis with a fresh startup gate. The
+[Module3 runbook](RUNBOOK.md) retains component commands as blocked reference,
+not authorization.
