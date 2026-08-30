@@ -29,9 +29,13 @@ from robot_experiments.v6_formal import (
     authorize_manifest,
     cli,
     evaluate_formal_campaign,
+    evaluate_indoor_campaign,
     execute_formal_campaign,
+    execute_indoor_campaign,
     formal_dispatch_plan,
+    freeze_indoor_campaign_from_pilot,
     freeze_formal_manifest_from_pilot,
+    load_indoor_campaign_manifest,
     load_formal_campaign_manifest,
     load_manifest,
     validate_condition_stack_contract,
@@ -53,6 +57,13 @@ LEGACY_MANIFESTS = tuple(
     for category in ("static", "dynamic", "appearance")
 )
 REAL_NAS_GUARD = v6_formal_module._validate_nas_mount
+REAL_TRACKED_GUARD = v6_formal_module._repository_tracked_dirty
+MODULE3_HEAD = subprocess.run(
+    ["git", "-C", str(REPO), "rev-parse", "HEAD"],
+    check=True,
+    capture_output=True,
+    text=True,
+).stdout.strip()
 
 
 @pytest.fixture(autouse=True)
@@ -62,6 +73,10 @@ def _stub_formal_nas_mount(monkeypatch):
         "_validate_nas_mount",
         lambda path: {"target": str(path), "filesystem": "test", "source": "test"},
     )
+    # Freeze validation is exercised against the real canonical repositories,
+    # whose source files are intentionally dirty while this test change is
+    # under development. Dedicated tests cover the tracked-dirty predicate.
+    monkeypatch.setattr(v6_formal_module, "_repository_tracked_dirty", lambda _path: False)
 
 
 def test_formal_nas_guard_resolves_nearest_existing_mount_parent():
@@ -70,6 +85,27 @@ def test_formal_nas_guard_resolves_nearest_existing_mount_parent():
     )
     assert evidence["target"] == "/mnt/nas_home"
     assert evidence["filesystem"].lower() == "cifs"
+
+
+def test_freeze_tracked_dirty_check_ignores_untracked_and_catches_index(tmp_path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("initial\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "tracked.txt"], check=True)
+    subprocess.run(
+        [
+            "git", "-C", str(tmp_path), "-c", "user.name=Codex Test",
+            "-c", "user.email=codex@example.invalid", "commit", "-qm", "fixture",
+        ],
+        check=True,
+    )
+    (tmp_path / "build.log").write_text("untracked\n", encoding="utf-8")
+
+    assert REAL_TRACKED_GUARD(tmp_path) is False
+
+    tracked.write_text("staged\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "tracked.txt"], check=True)
+    assert REAL_TRACKED_GUARD(tmp_path) is True
 
 
 def _raw() -> dict:
@@ -99,6 +135,7 @@ def _formal_raw(tmp_path: Path, *, authorization: str = "NOT_AUTHORIZED") -> dic
                 "output_directory": str(tmp_path / f"{scene}-{category}"),
                 "runner_arguments": [
                     "nav2_profile:=v6_low_obstacle_isolation",
+                    f"nav2_config_file:={v6_formal_module._canonical_nav2_config()}",
                     "navigation_execution_backend:=route_guided",
                     "require_module2_planning_ready:=true",
                 ],
@@ -115,17 +152,9 @@ def _formal_raw(tmp_path: Path, *, authorization: str = "NOT_AUTHORIZED") -> dic
         scenario_path = Path(row["scenario_file"])
         scenario_entries[row["id"]] = file_entry(scenario_path)
         scenario = load_scenario(scenario_path)
-        config_paths = {
-            scenario.resolve_path(path)
-            for path in (
-                scenario.robot_config_file,
-                scenario.nav2_config_file,
-                scenario.dynamic_config_file,
-                scenario.appearance_config_file,
-                scenario.optimal_reference_file,
-            )
-            if path is not None
-        }
+        config_paths = v6_formal_module._scenario_runtime_config_paths(
+            scenario, row["runner_arguments"]
+        )
         scenario_configs[row["id"]] = [
             file_entry(path) for path in sorted(config_paths)
         ]
@@ -215,6 +244,7 @@ def _write_formal_run(
     stack_session_id: str = "a" * 64,
     collision_detected: bool = False,
     route_completion_count: int = 5,
+    path_deviation_percent: float = 10.0,
 ) -> Path:
     identity = condition.episode_identities[run_index - 1]
     seed = identity["seed"]
@@ -355,13 +385,13 @@ def _write_formal_run(
         '{"passed": true}\n', encoding="utf-8"
     )
     summary = {
-        "navigation_contract_success": True,
+        "navigation_contract_success": strict_success,
         "strict_success": strict_success,
         "terminal_zero_confirmed": True,
         "reset_receipt": {"generation": run_index},
         "reset_receipt_confirmed": True,
-        "physical_collision_free": True,
-        "isaac_contact_sensor_collision_detected": False,
+        "physical_collision_free": not collision_detected,
+        "isaac_contact_sensor_collision_detected": collision_detected,
         "contact_sensor_evidence_confirmed": True,
         "fixed_map_to_odom_evidence_confirmed": True,
         "localization_node_ownership": {
@@ -388,6 +418,7 @@ def _write_formal_run(
         "condition_stack_id": condition.condition_id,
         "stack_session_id": stack_session_id,
         "formal_freeze_digest": formal_freeze_digest,
+        "path_deviation_percent": path_deviation_percent,
     }
     episode = {
         "scenario_id": condition.scenario_id,
@@ -399,7 +430,7 @@ def _write_formal_run(
             "variant_id": identity["dynamic_variant_id"],
         },
         "appearance": {"profile_id": identity["appearance_profile_id"]},
-        "result": "success",
+        "result": "success" if strict_success else "failure",
         "terminal_zero_confirmed": True,
         "legs": [{"id": f"G{index}"} for index in range(1, 6)],
         "route_edge_costs": route_costs,
@@ -407,12 +438,28 @@ def _write_formal_run(
             "collision_status_seen": True,
             "map_to_odom_seen": True,
         },
-        "isaac_contact_sensor_collision_detected": False,
+        "isaac_contact_sensor_collision_detected": collision_detected,
         "condition_stack_id": condition.condition_id,
         "stack_session_id": stack_session_id,
         "formal_freeze_digest": formal_freeze_digest,
         "reset_receipt": {"generation": run_index},
+        "metrics": {"path_deviation_percent": path_deviation_percent},
     }
+    robot_hash, nav2_hash, runtime_hashes = (
+        v6_formal_module._expected_scenario_runtime_hashes(condition)
+    )
+    episode.update({
+        "robot_config_hash": robot_hash,
+        "nav2_config_hash": nav2_hash,
+        "scenario_runtime_hashes": runtime_hashes,
+        "provenance": {
+            "git_head": MODULE3_HEAD,
+            "git_dirty": True,
+            "git_tracked_dirty": False,
+            "map_and_posegraph_hashes": {},
+        },
+    })
+    episode["optimal_reference_hash"] = runtime_hashes.get("optimal_reference")
     (root / "run_summary.json").write_text(json.dumps(summary), encoding="utf-8")
     (root / "run_manifest.json").write_text(json.dumps(episode), encoding="utf-8")
     _refresh_checksums(root)
@@ -579,18 +626,12 @@ def _write_sufficient_pilot_inputs(
                 scenario.resolve_path(scenario.robot_config_file).read_bytes()
             ).hexdigest()
             episode["nav2_config_hash"] = hashlib.sha256(
-                scenario.resolve_path(scenario.nav2_config_file).read_bytes()
+                v6_formal_module._effective_nav2_config(
+                    condition.runner_arguments
+                ).read_bytes()
             ).hexdigest()
             episode["scenario_runtime_hashes"] = {
-                name: hashlib.sha256(scenario.resolve_path(path).read_bytes()).hexdigest()
-                for name, path in (
-                    ("robot_config", scenario.robot_config_file),
-                    ("nav2_config", scenario.nav2_config_file),
-                    ("dynamic_config", scenario.dynamic_config_file),
-                    ("appearance_config", scenario.appearance_config_file),
-                    ("optimal_reference", scenario.optimal_reference_file),
-                )
-                if path is not None
+                **v6_formal_module._expected_scenario_runtime_hashes(condition)[2]
             }
             map_keys = (
                 ("outdoor_map_yaml", "outdoor_map_pgm")
@@ -600,6 +641,7 @@ def _write_sufficient_pilot_inputs(
             episode["provenance"] = {
                 "git_head": reference.freeze["repositories"]["module3"]["head"],
                 "git_dirty": False,
+                "git_tracked_dirty": False,
                 "map_and_posegraph_hashes": {
                     name: reference.freeze["frozen_assets"][name]["sha256"]
                     for name in map_keys
@@ -671,6 +713,98 @@ def _write_authorized_formal_manifest(tmp_path: Path) -> Path:
     raw["execution_authorization"] = "AUTHORIZED"
     output.write_text(json.dumps(raw), encoding="utf-8")
     return output
+
+
+def _write_indoor_pilot_inputs(tmp_path: Path):
+    pilot_manifest, aggregate_path, _reference = _write_sufficient_pilot_inputs(
+        tmp_path
+    )
+    pilot = json.loads(pilot_manifest.read_text())
+    pilot["schema_version"] = v6_formal_module.INDOOR_PILOT_MANIFEST_SCHEMA
+    pilot["intended_use"] = "indoor_pilot"
+    pilot["conditions"] = [
+        next(row for row in pilot["conditions"] if row["id"] == condition_id)
+        for condition_id in v6_formal_module.INDOOR_CONDITION_IDS
+    ]
+    for row in pilot["conditions"]:
+        row["runner_arguments"].append(
+            f"spawn_poses_file:={v6_formal_module._canonical_indoor_spawn_manifest()}"
+        )
+    pilot["freeze"]["scenarios"] = {
+        condition_id: pilot["freeze"]["scenarios"][condition_id]
+        for condition_id in v6_formal_module.INDOOR_CONDITION_IDS
+    }
+    pilot["freeze"]["scenario_configs"] = {
+        condition_id: pilot["freeze"]["scenario_configs"][condition_id]
+        for condition_id in v6_formal_module.INDOOR_CONDITION_IDS
+    }
+    pilot["freeze"]["frozen_assets"] = {
+        name: pilot["freeze"]["frozen_assets"][name]
+        for name in v6_formal_module.INDOOR_FROZEN_ASSET_KEYS
+    }
+    for name, path in (
+        ("indoor_map_yaml", REPO / "data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml"),
+        ("indoor_map_pgm", REPO / "data/maps/occupancy/v6_kujiale_isaacgen_v1.pgm"),
+    ):
+        pilot["freeze"]["frozen_assets"][name] = {
+            "path": str(path.resolve()),
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+    spawn_manifest = v6_formal_module._canonical_indoor_spawn_manifest()
+    physical_contracts = {}
+    for row in pilot["conditions"]:
+        scenario_path = Path(row["scenario_file"])
+        scenario = load_scenario(scenario_path)
+        static_ids, dynamic_ids = v6_formal_module.INDOOR_EXPECTED_OBSTACLES[
+            row["id"]
+        ]
+        assert scenario.dynamic_config_file is not None
+
+        def frozen_file(path: Path) -> dict[str, str]:
+            path = path.resolve()
+            return {
+                "path": str(path),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+
+        physical_contracts[row["id"]] = {
+            "static_obstacle_ids": list(static_ids),
+            "static_obstacle_count": len(static_ids),
+            "dynamic_actor_ids": list(dynamic_ids),
+            "dynamic_actor_count": len(dynamic_ids),
+            "physical_config": frozen_file(
+                scenario.resolve_path(scenario.dynamic_config_file)
+            ),
+            "scenario": frozen_file(scenario_path),
+            "spawn_manifest": frozen_file(spawn_manifest),
+        }
+    pilot["freeze"]["physical_contracts"] = physical_contracts
+    indoor_manifest = tmp_path / "indoor-pilot-manifest.json"
+    indoor_manifest.write_text(json.dumps(pilot), encoding="utf-8")
+    aggregate = json.loads(aggregate_path.read_text())
+    aggregate["schema_version"] = v6_formal_module.INDOOR_PILOT_AGGREGATE_SCHEMA
+    aggregate["pilot_manifest"] = str(indoor_manifest)
+    aggregate["conditions"] = [
+        next(row for row in aggregate["conditions"] if row["id"] == condition_id)
+        for condition_id in v6_formal_module.INDOOR_CONDITION_IDS
+    ]
+    map_hashes = {
+        pilot["freeze"]["frozen_assets"][name]["sha256"]
+        for name in ("indoor_map_yaml", "indoor_map_pgm")
+    }
+    for condition in aggregate["conditions"]:
+        for row in condition["episodes"]:
+            manifest_path = Path(row["manifest_path"])
+            episode = json.loads(manifest_path.read_text())
+            episode["provenance"]["map_and_posegraph_hashes"] = {
+                f"map-{index}": digest
+                for index, digest in enumerate(sorted(map_hashes))
+            }
+            manifest_path.write_text(json.dumps(episode), encoding="utf-8")
+            _refresh_checksums(manifest_path.parent)
+    indoor_aggregate = tmp_path / "indoor-pilot-aggregate.json"
+    indoor_aggregate.write_text(json.dumps(aggregate), encoding="utf-8")
+    return indoor_manifest, indoor_aggregate
 
 
 def _write_production_pilot_root(tmp_path: Path, monkeypatch):
@@ -777,6 +911,15 @@ def _write_production_pilot_root(tmp_path: Path, monkeypatch):
             summary_path.write_text(json.dumps(summary), encoding="utf-8")
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             _refresh_checksums(destination)
+    return pilot_root
+
+
+def _write_indoor_production_pilot_root(tmp_path: Path, monkeypatch):
+    pilot_root = _write_production_pilot_root(tmp_path, monkeypatch)
+    for condition_id in set(v6_formal_module.FORMAL_CONDITION_IDS) - set(
+        v6_formal_module.INDOOR_CONDITION_IDS
+    ):
+        shutil.rmtree(pilot_root / condition_id)
     return pilot_root
 
 
@@ -942,6 +1085,30 @@ def test_formal_manifest_dry_run_freezes_six_conditions_and_120_runs(
     }) == 20
 
 
+@pytest.mark.parametrize("mutation", ["missing", "relative", "duplicate", "wrong"])
+def test_campaign_loader_requires_unique_canonical_absolute_nav2_override(
+    tmp_path, mutation
+):
+    raw = _formal_raw(tmp_path)
+    arguments = raw["conditions"][0]["runner_arguments"]
+    index = next(
+        i for i, value in enumerate(arguments) if value.startswith("nav2_config_file:=")
+    )
+    if mutation == "missing":
+        arguments.pop(index)
+    elif mutation == "relative":
+        arguments[index] = "nav2_config_file:=nav2_v6_low_obstacle_isolation.yaml"
+    elif mutation == "duplicate":
+        arguments.append(arguments[index])
+    else:
+        arguments[index] = f"nav2_config_file:={tmp_path / 'wrong.yaml'}"
+    path = tmp_path / "formal.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(V6ContractError, match="nav2_config_file|duplicate"):
+        load_formal_campaign_manifest(path)
+
+
 def test_sufficient_pilot_freezer_writes_not_authorized_formal_manifest(
     tmp_path, monkeypatch
 ):
@@ -1035,6 +1202,296 @@ def test_sufficient_pilot_aggregate_cli_never_dispatches(
     assert payload["qualification"] == "SUFFICIENT_PILOT_READY"
     assert payload["strict_successes"] == 18
     assert payload["dispatch"] is False
+
+
+def test_indoor_pilot_aggregate_publishes_only_nine_indoor_runs(
+    tmp_path, monkeypatch
+):
+    pilot_root = _write_indoor_production_pilot_root(tmp_path, monkeypatch)
+    manifest_output = tmp_path / "nas" / "indoor-pilot-manifest.json"
+    aggregate_output = tmp_path / "nas" / "indoor-pilot-aggregate.json"
+
+    result = v6_formal_module.aggregate_indoor_pilot(
+        pilot_root=pilot_root,
+        output_manifest=manifest_output,
+        output_aggregate=aggregate_output,
+    )
+
+    assert result["qualification"] == "INDOOR_PILOT_READY"
+    assert result["formal_qualification"] == NOT_QUALIFIED
+    assert result["strict_successes"] == 9
+    aggregate = json.loads(aggregate_output.read_text())
+    assert aggregate["schema_version"] == v6_formal_module.INDOOR_PILOT_AGGREGATE_SCHEMA
+    assert [row["id"] for row in aggregate["conditions"]] == list(
+        v6_formal_module.INDOOR_CONDITION_IDS
+    )
+    assert sum(len(row["episodes"]) for row in aggregate["conditions"]) == 9
+
+
+def test_indoor_pilot_aggregate_rejects_non_indoor_root(tmp_path, monkeypatch):
+    pilot_root = _write_indoor_production_pilot_root(tmp_path, monkeypatch)
+    (pilot_root / "outdoor_static").mkdir()
+
+    with pytest.raises(V6ContractError, match="exactly the three indoor"):
+        v6_formal_module.aggregate_indoor_pilot(
+            pilot_root=pilot_root,
+            output_manifest=tmp_path / "nas" / "manifest.json",
+            output_aggregate=tmp_path / "nas" / "aggregate.json",
+        )
+
+
+def test_indoor_pilot_aggregate_rejects_unknown_top_level_directory(
+    tmp_path, monkeypatch
+):
+    pilot_root = _write_indoor_production_pilot_root(tmp_path, monkeypatch)
+    (pilot_root / "stale_old_campaign").mkdir()
+
+    with pytest.raises(V6ContractError, match="exactly the three indoor"):
+        v6_formal_module.aggregate_indoor_pilot(
+            pilot_root=pilot_root,
+            output_manifest=tmp_path / "nas" / "manifest.json",
+            output_aggregate=tmp_path / "nas" / "aggregate.json",
+        )
+
+
+def test_indoor_pilot_aggregate_rejects_extra_rep(tmp_path, monkeypatch):
+    pilot_root = _write_indoor_production_pilot_root(tmp_path, monkeypatch)
+    (pilot_root / "indoor_static" / "rep4").mkdir()
+
+    with pytest.raises(V6ContractError, match="exactly rep1-rep3"):
+        v6_formal_module.aggregate_indoor_pilot(
+            pilot_root=pilot_root,
+            output_manifest=tmp_path / "nas" / "manifest.json",
+            output_aggregate=tmp_path / "nas" / "aggregate.json",
+        )
+
+
+def test_indoor_pilot_aggregate_rejects_unknown_rep_sibling(
+    tmp_path, monkeypatch
+):
+    pilot_root = _write_indoor_production_pilot_root(tmp_path, monkeypatch)
+    (pilot_root / "indoor_static" / "rep1" / "stale_old_campaign").mkdir()
+
+    with pytest.raises(V6ContractError, match="rep topology mismatch"):
+        v6_formal_module.aggregate_indoor_pilot(
+            pilot_root=pilot_root,
+            output_manifest=tmp_path / "nas" / "manifest.json",
+            output_aggregate=tmp_path / "nas" / "aggregate.json",
+        )
+
+
+def test_indoor_freezer_and_dry_run_are_scope_separated(tmp_path, monkeypatch, capsys):
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+    output = tmp_path / "indoor-campaign.json"
+    output_root = tmp_path / "nas" / "indoor-60"
+
+    campaign = freeze_indoor_campaign_from_pilot(
+        pilot_manifest_path=pilot_manifest,
+        pilot_aggregate_path=aggregate,
+        output_manifest_path=output,
+        indoor_output_root=output_root,
+    )
+
+    assert len(campaign.pilot_freeze_provenance["episodes"]) == 9
+    assert [row.condition_id for row in campaign.conditions] == list(
+        v6_formal_module.INDOOR_CONDITION_IDS
+    )
+    assert all(len(row.episode_identities) == 20 for row in campaign.conditions)
+    frozen_raw = json.loads(output.read_text())
+    physical = frozen_raw["freeze"]["physical_contracts"]
+    assert physical["indoor_static"]["static_obstacle_ids"] == ["v6_low_box_solo"]
+    assert physical["indoor_static"]["static_obstacle_count"] == 1
+    assert physical["indoor_dynamic"]["dynamic_actor_ids"] == [
+        "v6_dynamic_g2_crossing_box"
+    ]
+    assert physical["indoor_dynamic"]["dynamic_actor_count"] == 1
+    assert all(
+        set(row) >= {"physical_config", "scenario", "spawn_manifest"}
+        for row in physical.values()
+    )
+    assert {
+        row["spawn_manifest"]["sha256"] for row in physical.values()
+    } == {"df06635cf706f407f5d58e8ebcf7788b0bea3fe1914589e768ade754a0098d70"}
+    with pytest.raises(V6ContractError, match="formal_manifest keys|formal schema_version"):
+        load_formal_campaign_manifest(output)
+    full_root = tmp_path / "full"
+    full_root.mkdir()
+    full = _write_formal_manifest(full_root)
+    with pytest.raises(V6ContractError, match="indoor_manifest keys|indoor schema_version"):
+        load_indoor_campaign_manifest(full)
+    assert cli(["--indoor-manifest", str(output)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["aggregate"]["expected_episodes"] == 60
+    assert payload["aggregate"]["present_episodes"] == 0
+    assert payload["aggregate"]["formal_qualification"] == NOT_QUALIFIED
+    assert payload["qualification"] == "INCOMPLETE"
+    assert payload["dispatch"] is False
+    assert len(payload["dispatch_plan"]) == 1
+    assert payload["dispatch_plan"][0]["condition_id"] == "indoor_static"
+
+
+def test_indoor_loader_rejects_physical_obstacle_identity_drift(
+    tmp_path, monkeypatch
+):
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+    output = tmp_path / "indoor.json"
+    freeze_indoor_campaign_from_pilot(
+        pilot_manifest_path=pilot_manifest,
+        pilot_aggregate_path=aggregate,
+        output_manifest_path=output,
+        indoor_output_root=tmp_path / "nas" / "indoor-60",
+    )
+    raw = json.loads(output.read_text())
+    raw["freeze"]["physical_contracts"]["indoor_static"][
+        "static_obstacle_ids"
+    ] = ["wrong"]
+    output.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(V6ContractError, match="physical obstacle identity mismatch"):
+        load_indoor_campaign_manifest(output)
+
+
+@pytest.mark.parametrize("mutation", ["missing", "relative", "duplicate", "generic"])
+def test_indoor_freezer_requires_unique_canonical_v6_spawn_override(
+    tmp_path, monkeypatch, mutation
+):
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    pilot = json.loads(pilot_manifest.read_text())
+    arguments = pilot["conditions"][0]["runner_arguments"]
+    index = next(
+        i for i, value in enumerate(arguments) if value.startswith("spawn_poses_file:=")
+    )
+    if mutation == "missing":
+        arguments.pop(index)
+    elif mutation == "relative":
+        arguments[index] = "spawn_poses_file:=kujiale.spawn.yaml"
+    elif mutation == "duplicate":
+        arguments.append(arguments[index])
+    else:
+        arguments[index] = (
+            "spawn_poses_file:="
+            + str(
+                REPO
+                / "isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.spawn.yaml"
+            )
+        )
+    pilot_manifest.write_text(json.dumps(pilot), encoding="utf-8")
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+
+    with pytest.raises(V6ContractError, match="spawn_poses_file|duplicate"):
+        freeze_indoor_campaign_from_pilot(
+            pilot_manifest_path=pilot_manifest,
+            pilot_aggregate_path=aggregate,
+            output_manifest_path=tmp_path / "indoor.json",
+            indoor_output_root=tmp_path / "nas" / "indoor-60",
+        )
+
+
+def test_indoor_freezer_never_clobbers_existing_outputs(tmp_path, monkeypatch):
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+    output = tmp_path / "indoor-campaign.json"
+    output.write_text("owner\n", encoding="utf-8")
+
+    with pytest.raises(V6ContractError, match="new file"):
+        freeze_indoor_campaign_from_pilot(
+            pilot_manifest_path=pilot_manifest,
+            pilot_aggregate_path=aggregate,
+            output_manifest_path=output,
+            indoor_output_root=tmp_path / "nas" / "indoor-60",
+        )
+
+    assert output.read_text() == "owner\n"
+
+
+@pytest.mark.parametrize("provenance_value", [None, True])
+def test_indoor_freezer_requires_explicit_clean_tracked_provenance(
+    tmp_path, monkeypatch, provenance_value
+):
+    pilot_manifest, aggregate_path = _write_indoor_pilot_inputs(tmp_path)
+    aggregate = json.loads(aggregate_path.read_text())
+    manifest_path = Path(aggregate["conditions"][0]["episodes"][0]["manifest_path"])
+    episode = json.loads(manifest_path.read_text())
+    if provenance_value is None:
+        episode["provenance"].pop("git_tracked_dirty")
+    else:
+        episode["provenance"]["git_tracked_dirty"] = provenance_value
+    manifest_path.write_text(json.dumps(episode), encoding="utf-8")
+    _refresh_checksums(manifest_path.parent)
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+
+    with pytest.raises(V6ContractError, match="source/config provenance mismatch"):
+        freeze_indoor_campaign_from_pilot(
+            pilot_manifest_path=pilot_manifest,
+            pilot_aggregate_path=aggregate_path,
+            output_manifest_path=tmp_path / "indoor.json",
+            indoor_output_root=tmp_path / "nas" / "indoor-60",
+        )
+
+
+def test_indoor_freezer_allows_untracked_diagnostics_when_tracked_clean(
+    tmp_path, monkeypatch
+):
+    pilot_manifest, aggregate_path = _write_indoor_pilot_inputs(tmp_path)
+    aggregate = json.loads(aggregate_path.read_text())
+    manifest_path = Path(aggregate["conditions"][0]["episodes"][0]["manifest_path"])
+    episode = json.loads(manifest_path.read_text())
+    episode["provenance"]["git_dirty"] = True
+    episode["provenance"]["git_tracked_dirty"] = False
+    manifest_path.write_text(json.dumps(episode), encoding="utf-8")
+    _refresh_checksums(manifest_path.parent)
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+
+    campaign = freeze_indoor_campaign_from_pilot(
+        pilot_manifest_path=pilot_manifest,
+        pilot_aggregate_path=aggregate_path,
+        output_manifest_path=tmp_path / "indoor.json",
+        indoor_output_root=tmp_path / "nas" / "indoor-60",
+    )
+
+    assert campaign.freeze_digest
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("head", "source/config provenance mismatch"),
+        ("session", "frozen tuple/session mismatch"),
+        ("generation", "reset generations"),
+    ],
+)
+def test_indoor_freezer_rejects_mixed_head_session_or_generation(
+    tmp_path, monkeypatch, mutation, message
+):
+    pilot_manifest, aggregate_path = _write_indoor_pilot_inputs(tmp_path)
+    aggregate = json.loads(aggregate_path.read_text())
+    row = aggregate["conditions"][0]["episodes"][1]
+    manifest_path = Path(row["manifest_path"])
+    summary_path = Path(row["summary_path"])
+    episode = json.loads(manifest_path.read_text())
+    summary = json.loads(summary_path.read_text())
+    if mutation == "head":
+        episode["provenance"]["git_head"] = "0" * 40
+    elif mutation == "session":
+        episode["stack_session_id"] = "b" * 64
+        summary["stack_session_id"] = "b" * 64
+    else:
+        episode["reset_receipt"]["generation"] = 9
+        summary["reset_receipt"]["generation"] = 9
+    manifest_path.write_text(json.dumps(episode), encoding="utf-8")
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    _refresh_checksums(manifest_path.parent)
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+
+    with pytest.raises(V6ContractError, match=message):
+        freeze_indoor_campaign_from_pilot(
+            pilot_manifest_path=pilot_manifest,
+            pilot_aggregate_path=aggregate_path,
+            output_manifest_path=tmp_path / "indoor.json",
+            indoor_output_root=tmp_path / "nas" / "indoor-60",
+        )
 
 
 def test_sufficient_pilot_aggregate_rejects_missing_exact_run_path(
@@ -1522,6 +1979,394 @@ def test_formal_execution_dispatches_one_episode_and_returns(
     assert aggregate["present_episodes"] == 1
 
 
+def test_indoor_execution_dispatches_exactly_one_episode(tmp_path, monkeypatch):
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+    campaign = freeze_indoor_campaign_from_pilot(
+        pilot_manifest_path=pilot_manifest,
+        pilot_aggregate_path=aggregate,
+        output_manifest_path=tmp_path / "indoor.json",
+        indoor_output_root=tmp_path / "nas" / "indoor-60",
+    )
+    contract = _live_stack_contract(tmp_path, condition_id="indoor_static")
+    contract_payload = json.loads(contract.read_text())
+    monkeypatch.setenv("ROS_DOMAIN_ID", "150")
+    calls = []
+
+    dynamic_root = tmp_path / "dynamic"
+    dynamic_root.mkdir()
+    dynamic_contract = _live_stack_contract(
+        dynamic_root, condition_id="indoor_dynamic"
+    )
+    with pytest.raises(V6ContractError, match="no unique pending"):
+        execute_indoor_campaign(
+            campaign,
+            condition_stack_id="indoor_dynamic",
+            condition_stack_contract=dynamic_contract,
+        )
+
+    def fake_run(command, *, check):
+        calls.append((command, check))
+        _write_formal_run(
+            campaign.conditions[0],
+            1,
+            strict_success=True,
+            formal_freeze_digest=campaign.freeze_digest,
+            stack_session_id=contract_payload["stack_session_id"],
+        )
+
+    monkeypatch.setattr(v6_formal_module.subprocess, "run", fake_run)
+
+    result = execute_indoor_campaign(
+        campaign,
+        condition_stack_id="indoor_static",
+        condition_stack_contract=contract,
+    )
+
+    assert len(calls) == 1
+    assert "run_indices:=1" in calls[0][0]
+    assert (
+        f"spawn_poses_file:={v6_formal_module._canonical_indoor_spawn_manifest()}"
+        in calls[0][0]
+    )
+    assert result["present_episodes"] == 1
+    assert result["formal_qualification"] == NOT_QUALIFIED
+
+
+def test_indoor_execution_keeps_valid_failure_and_advances_identity(
+    tmp_path, monkeypatch
+):
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+    campaign = freeze_indoor_campaign_from_pilot(
+        pilot_manifest_path=pilot_manifest,
+        pilot_aggregate_path=aggregate,
+        output_manifest_path=tmp_path / "indoor.json",
+        indoor_output_root=tmp_path / "nas" / "indoor-60",
+    )
+    contract = _live_stack_contract(tmp_path, condition_id="indoor_static")
+    contract_payload = json.loads(contract.read_text())
+    monkeypatch.setenv("ROS_DOMAIN_ID", "150")
+
+    def fake_run(_command, *, check):
+        assert check is True
+        _write_formal_run(
+            campaign.conditions[0],
+            1,
+            strict_success=False,
+            formal_freeze_digest=campaign.freeze_digest,
+            stack_session_id=contract_payload["stack_session_id"],
+            path_deviation_percent=20.0,
+        )
+
+    monkeypatch.setattr(v6_formal_module.subprocess, "run", fake_run)
+
+    result = execute_indoor_campaign(
+        campaign,
+        condition_stack_id="indoor_static",
+        condition_stack_contract=contract,
+    )
+
+    static = result["conditions"][0]
+    assert static["runs"][0]["status"] == "product_failure"
+    assert static["valid_episodes"] == 1
+    assert static["next_run_index"] == 2
+
+
+def test_complete_indoor_campaign_never_reports_formal_pass(tmp_path, monkeypatch):
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+    campaign = freeze_indoor_campaign_from_pilot(
+        pilot_manifest_path=pilot_manifest,
+        pilot_aggregate_path=aggregate,
+        output_manifest_path=tmp_path / "indoor.json",
+        indoor_output_root=tmp_path / "nas" / "indoor-60",
+    )
+    for condition in campaign.conditions:
+        for run_index in range(1, 21):
+            allowed_failure = (
+                condition.condition_id == "indoor_static" and run_index == 20
+            ) or (
+                condition.condition_id in {"indoor_dynamic", "indoor_appearance"}
+                and run_index in {19, 20}
+            )
+            _write_formal_run(
+                condition,
+                run_index,
+                strict_success=not allowed_failure,
+                formal_freeze_digest=campaign.freeze_digest,
+                path_deviation_percent=(20.0 if allowed_failure else 10.0),
+            )
+
+    result = evaluate_indoor_campaign(campaign)
+
+    assert result["strict_successes"] == 55
+    assert result["valid_episodes"] == 60
+    assert result["qualification"] == "INDOOR_QUALIFICATION_PASS"
+    assert result["formal_qualification"] == NOT_QUALIFIED
+    static = result["conditions"][0]
+    assert static["strict_successes"] == 19
+    assert static["product_failures"] == 1
+    assert static["path_deviation_percent"]["count"] == 19
+    assert static["path_deviation_percent"]["max"] == 10.0
+
+
+def test_indoor_threshold_does_not_pass_before_all_twenty_valid_runs(
+    tmp_path, monkeypatch
+):
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+    campaign = freeze_indoor_campaign_from_pilot(
+        pilot_manifest_path=pilot_manifest,
+        pilot_aggregate_path=aggregate,
+        output_manifest_path=tmp_path / "indoor.json",
+        indoor_output_root=tmp_path / "nas" / "indoor-60",
+    )
+    static = campaign.conditions[0]
+    for run_index in range(1, 20):
+        _write_formal_run(
+            static,
+            run_index,
+            strict_success=True,
+            formal_freeze_digest=campaign.freeze_digest,
+        )
+
+    result = evaluate_indoor_campaign(campaign)
+
+    static_result = result["conditions"][0]
+    assert static_result["strict_successes"] == 19
+    assert static_result["valid_episodes"] == 19
+    assert static_result["qualification"] == "INCOMPLETE"
+    assert static_result["next_run_index"] == 20
+    assert result["campaign_status"] == "IN_PROGRESS"
+
+
+def test_indoor_valid_failures_continue_until_budget_is_unreachable(
+    tmp_path, monkeypatch
+):
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+    campaign = freeze_indoor_campaign_from_pilot(
+        pilot_manifest_path=pilot_manifest,
+        pilot_aggregate_path=aggregate,
+        output_manifest_path=tmp_path / "indoor.json",
+        indoor_output_root=tmp_path / "nas" / "indoor-60",
+    )
+    static = campaign.conditions[0]
+    _write_formal_run(
+        static,
+        1,
+        strict_success=False,
+        formal_freeze_digest=campaign.freeze_digest,
+        path_deviation_percent=20.0,
+    )
+    within_budget = evaluate_indoor_campaign(campaign)
+    assert within_budget["conditions"][0]["runs"][0]["status"] == "product_failure"
+    assert within_budget["conditions"][0]["next_run_index"] == 2
+    assert within_budget["blockers"] == []
+
+    _write_formal_run(
+        static,
+        2,
+        strict_success=False,
+        formal_freeze_digest=campaign.freeze_digest,
+        path_deviation_percent=21.0,
+    )
+    unreachable = evaluate_indoor_campaign(campaign)
+    assert unreachable["campaign_status"] == "EARLY_FAIL_UNREACHABLE"
+    assert unreachable["conditions"][0]["next_run_index"] is None
+    assert unreachable["conditions"][0]["product_failures"] == 2
+
+
+def test_indoor_invalid_evidence_stops_without_entering_valid_denominator(
+    tmp_path, monkeypatch
+):
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+    campaign = freeze_indoor_campaign_from_pilot(
+        pilot_manifest_path=pilot_manifest,
+        pilot_aggregate_path=aggregate,
+        output_manifest_path=tmp_path / "indoor.json",
+        indoor_output_root=tmp_path / "nas" / "indoor-60",
+    )
+    _write_formal_run(
+        campaign.conditions[0],
+        1,
+        strict_success=False,
+        valid=False,
+        formal_freeze_digest=campaign.freeze_digest,
+    )
+
+    result = evaluate_indoor_campaign(campaign)
+
+    assert result["campaign_status"] == "STOP_INVALID"
+    assert result["valid_episodes"] == 0
+    assert result["conditions"][0]["next_run_index"] is None
+
+
+def test_indoor_final_rejects_summary_success_tampering_over_manifest_failure(
+    tmp_path, monkeypatch
+):
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+    campaign = freeze_indoor_campaign_from_pilot(
+        pilot_manifest_path=pilot_manifest,
+        pilot_aggregate_path=aggregate,
+        output_manifest_path=tmp_path / "indoor.json",
+        indoor_output_root=tmp_path / "nas" / "indoor-60",
+    )
+    root = _write_formal_run(
+        campaign.conditions[0],
+        1,
+        strict_success=True,
+        formal_freeze_digest=campaign.freeze_digest,
+    )
+    manifest_path = root / "run_manifest.json"
+    summary_path = root / "run_summary.json"
+    episode = json.loads(manifest_path.read_text())
+    summary = json.loads(summary_path.read_text())
+    episode["result"] = "failure"
+    summary["navigation_contract_success"] = True
+    summary["strict_success"] = True
+    manifest_path.write_text(json.dumps(episode), encoding="utf-8")
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    _refresh_checksums(root)
+
+    result = evaluate_indoor_campaign(campaign)
+
+    run = result["conditions"][0]["runs"][0]
+    assert run["status"] == "invalid_evidence"
+    assert "navigation_contract_mismatch" in run["detail"]
+    assert result["campaign_status"] == "STOP_INVALID"
+
+
+def test_indoor_final_rejects_one_of_five_route_forged_to_strict_success(
+    tmp_path, monkeypatch
+):
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+    campaign = freeze_indoor_campaign_from_pilot(
+        pilot_manifest_path=pilot_manifest,
+        pilot_aggregate_path=aggregate,
+        output_manifest_path=tmp_path / "indoor.json",
+        indoor_output_root=tmp_path / "nas" / "indoor-60",
+    )
+    root = _write_formal_run(
+        campaign.conditions[0],
+        1,
+        strict_success=False,
+        route_completion_count=1,
+        formal_freeze_digest=campaign.freeze_digest,
+    )
+    manifest_path = root / "run_manifest.json"
+    summary_path = root / "run_summary.json"
+    episode = json.loads(manifest_path.read_text())
+    summary = json.loads(summary_path.read_text())
+    episode["result"] = "success"
+    summary["navigation_contract_success"] = True
+    summary["strict_success"] = True
+    manifest_path.write_text(json.dumps(episode), encoding="utf-8")
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    _refresh_checksums(root)
+
+    result = evaluate_indoor_campaign(campaign)
+
+    run = result["conditions"][0]["runs"][0]
+    assert run["status"] == "invalid_evidence"
+    assert "strict_recorded_navigation_completion_missing" in run["detail"]
+    assert result["strict_successes"] == 0
+    assert result["campaign_status"] == "STOP_INVALID"
+
+
+def test_indoor_final_keeps_one_of_five_route_as_valid_product_failure(
+    tmp_path, monkeypatch
+):
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+    campaign = freeze_indoor_campaign_from_pilot(
+        pilot_manifest_path=pilot_manifest,
+        pilot_aggregate_path=aggregate,
+        output_manifest_path=tmp_path / "indoor.json",
+        indoor_output_root=tmp_path / "nas" / "indoor-60",
+    )
+    _write_formal_run(
+        campaign.conditions[0],
+        1,
+        strict_success=False,
+        route_completion_count=1,
+        formal_freeze_digest=campaign.freeze_digest,
+    )
+
+    result = evaluate_indoor_campaign(campaign)
+
+    run = result["conditions"][0]["runs"][0]
+    assert run["status"] == "product_failure"
+    assert result["valid_episodes"] == 1
+    assert result["strict_successes"] == 0
+    assert result["blockers"] == []
+
+
+def test_indoor_final_cross_checks_contact_sensor_product_failure(
+    tmp_path, monkeypatch
+):
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+    campaign = freeze_indoor_campaign_from_pilot(
+        pilot_manifest_path=pilot_manifest,
+        pilot_aggregate_path=aggregate,
+        output_manifest_path=tmp_path / "indoor.json",
+        indoor_output_root=tmp_path / "nas" / "indoor-60",
+    )
+    _write_formal_run(
+        campaign.conditions[0],
+        1,
+        strict_success=False,
+        collision_detected=True,
+        formal_freeze_digest=campaign.freeze_digest,
+    )
+
+    result = evaluate_indoor_campaign(campaign)
+
+    run = result["conditions"][0]["runs"][0]
+    assert run["status"] == "product_failure"
+    assert result["valid_episodes"] == 1
+    assert result["blockers"] == []
+
+
+@pytest.mark.parametrize("metric", [None, float("nan")])
+def test_indoor_static_requires_nonnull_finite_executed_path_deviation(
+    tmp_path, monkeypatch, metric
+):
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+    campaign = freeze_indoor_campaign_from_pilot(
+        pilot_manifest_path=pilot_manifest,
+        pilot_aggregate_path=aggregate,
+        output_manifest_path=tmp_path / "indoor.json",
+        indoor_output_root=tmp_path / "nas" / "indoor-60",
+    )
+    root = _write_formal_run(
+        campaign.conditions[0],
+        1,
+        strict_success=True,
+        formal_freeze_digest=campaign.freeze_digest,
+    )
+    summary_path = root / "run_summary.json"
+    manifest_path = root / "run_manifest.json"
+    summary = json.loads(summary_path.read_text())
+    episode = json.loads(manifest_path.read_text())
+    summary["path_deviation_percent"] = metric
+    episode["metrics"]["path_deviation_percent"] = metric
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    manifest_path.write_text(json.dumps(episode), encoding="utf-8")
+    _refresh_checksums(root)
+
+    result = evaluate_indoor_campaign(campaign)
+
+    assert result["campaign_status"] == "STOP_INVALID"
+    assert result["conditions"][0]["runs"][0]["status"] == "invalid_evidence"
+
+
 def test_formal_execution_rejects_live_session_change_before_subprocess(
     tmp_path, monkeypatch
 ):
@@ -1614,6 +2459,98 @@ def test_formal_shell_requires_and_forwards_condition_stack_id():
     assert '--output-manifest "$3"' in source
     assert "formal execution requires stack ID and contract path" in source
     assert '--condition-stack-contract "$5"' in source
+    assert "--aggregate-indoor-pilot PILOT_ROOT OUT_MANIFEST OUT_AGGREGATE" in source
+    assert '--aggregate-indoor-pilot-root "$1"' in source
+    assert "--freeze-indoor-pilot PILOT_MANIFEST PILOT_AGGREGATE" in source
+    assert '--indoor-pilot-aggregate "$2"' in source
+    assert "--execute-indoor" in source
+    assert "indoor execution requires stack ID and contract path" in source
+    assert '--indoor-manifest "$manifest"' in source
+
+
+def test_run_experiment_forwards_effective_spawn_exactly_once(tmp_path):
+    project = tmp_path / "project"
+    scripts = project / "scripts"
+    (scripts / "lib").mkdir(parents=True)
+    source = (REPO / "scripts" / "run_experiment.sh").read_text()
+    source = source.replace(
+        "source_ros --require-workspace --require-integration-underlay",
+        ": # test harness skips ROS setup",
+    )
+    runner = scripts / "run_experiment.sh"
+    runner.write_text(source, encoding="utf-8")
+    runner.chmod(0o755)
+    common = (REPO / "scripts/lib/common.sh").read_text()
+    common = common.replace(
+        "declare -ag ISAAC_NAV_LOCK_FDS=()\nvalidate_runtime_environment\n",
+        "declare -ag ISAAC_NAV_LOCK_FDS=()\n",
+    )
+    (scripts / "lib/common.sh").write_text(common, encoding="utf-8")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_ros2 = fake_bin / "ros2"
+    fake_ros2.write_text(
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "${CAPTURE_ARGS}"\n',
+        encoding="utf-8",
+    )
+    fake_ros2.chmod(0o755)
+    scenario = tmp_path / "scenario.yaml"
+    scenario.write_text("scenario\n", encoding="utf-8")
+    output = tmp_path / "output"
+    output.mkdir()
+    generic_spawn = tmp_path / "generic.spawn.yaml"
+    canonical_spawn = tmp_path / "v6.spawn.yaml"
+    generic_spawn.write_text("generic\n", encoding="utf-8")
+    canonical_spawn.write_text("v6\n", encoding="utf-8")
+    capture = tmp_path / "args.txt"
+    environment = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "CAPTURE_ARGS": str(capture),
+        "ISAAC_NAV_SPAWN_POSES": str(generic_spawn),
+    }
+
+    subprocess.run(
+        [str(runner), str(scenario), str(output)],
+        check=True,
+        env=environment,
+    )
+    default_args = capture.read_text().splitlines()
+    assert [arg for arg in default_args if arg.startswith("spawn_poses_file:=")] == [
+        f"spawn_poses_file:={generic_spawn}"
+    ]
+
+    subprocess.run(
+        [
+            str(runner),
+            str(scenario),
+            str(output),
+            f"spawn_poses_file:={canonical_spawn}",
+        ],
+        check=True,
+        env=environment,
+    )
+    override_args = capture.read_text().splitlines()
+    assert [arg for arg in override_args if arg.startswith("spawn_poses_file:=")] == [
+        f"spawn_poses_file:={canonical_spawn}"
+    ]
+    assert f"spawn_poses_file:={generic_spawn}" not in override_args
+
+    duplicate = subprocess.run(
+        [
+            str(runner),
+            str(scenario),
+            str(output),
+            f"spawn_poses_file:={canonical_spawn}",
+            f"spawn_poses_file:={generic_spawn}",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert duplicate.returncode != 0
+    assert "at most once" in duplicate.stderr
 
 
 def test_formal_aggregate_resumes_after_valid_strict_episode(tmp_path):

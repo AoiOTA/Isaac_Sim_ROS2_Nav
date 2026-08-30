@@ -482,8 +482,9 @@ def validate_recorded_run_evidence(
     route_guided: bool,
     route_prior_required: bool,
     expected_leg_count: int,
+    require_strict_success: bool = True,
 ) -> dict[str, Any]:
-    """Recompute strict acceptance from primary per-run evidence fields."""
+    """Cross-check primary evidence and optionally require strict success."""
 
     reasons: list[str] = []
     inventory = _mcap_inventory_evidence(root)
@@ -520,10 +521,14 @@ def validate_recorded_run_evidence(
         ):
             reasons.append("required_topic_schema_mismatch")
         semantic = inventory["semantic"]
-        if semantic["collision_true_count"] != 0:
+        if require_strict_success and semantic["collision_true_count"] != 0:
             reasons.append("recorded_contact_detected")
-        if semantic["route_complete_true_count"] != expected_leg_count:
+        if require_strict_success and semantic["route_complete_true_count"] != expected_leg_count:
             reasons.append("recorded_navigation_completion_missing")
+        if not require_strict_success and not (
+            0 <= semantic["route_complete_true_count"] <= expected_leg_count
+        ):
+            reasons.append("recorded_navigation_completion_invalid")
         if (
             semantic["terminal_zero_count"] < 2
             or semantic["terminal_nonzero_count"] != 0
@@ -549,9 +554,24 @@ def validate_recorded_run_evidence(
     if summary.get("navigation_contract_success") is not navigation_success:
         reasons.append("navigation_contract_mismatch")
     collision_seen = manifest.get("observability", {}).get("collision_status_seen") is True
-    collision_free = summary.get("isaac_contact_sensor_collision_detected") is False
-    if not collision_seen or not collision_free or summary.get("physical_collision_free") is not True:
+    manifest_collision = manifest.get("isaac_contact_sensor_collision_detected")
+    summary_collision = summary.get("isaac_contact_sensor_collision_detected")
+    collision_evidence_consistent = bool(
+        isinstance(manifest_collision, bool)
+        and isinstance(summary_collision, bool)
+        and manifest_collision is summary_collision
+        and summary.get("physical_collision_free") is (not summary_collision)
+        and (
+            not inventory.get("passed")
+            or (inventory["semantic"]["collision_true_count"] > 0)
+            is summary_collision
+        )
+    )
+    collision_free = bool(collision_evidence_consistent and not summary_collision)
+    if not collision_seen or not collision_evidence_consistent:
         reasons.append("contact_sensor_acceptance_failed")
+    if require_strict_success and not collision_free:
+        reasons.append("contact_sensor_strict_failure")
     ownership = summary.get("localization_node_ownership", {})
     recomputed_ownership = _localization_node_ownership_evidence(
         scene,
@@ -627,7 +647,9 @@ def validate_recorded_run_evidence(
     recomputed["reset_receipt"] = manifest.get("reset_receipt", {})
     recomputed["reset_receipt_confirmed"] = bool(manifest.get("reset_receipt"))
     recomputed["contact_sensor_evidence_confirmed"] = collision_seen
-    recomputed["physical_collision_free"] = collision_free
+    recomputed["physical_collision_free"] = bool(
+        collision_evidence_consistent and not summary_collision
+    )
     recomputed["fixed_map_to_odom_evidence_confirmed"] = fixed_tf
     recomputed["required_topic_coverage"] = {**coverage, "required": True}
     recomputed["route_prior_application"] = route_prior
@@ -640,11 +662,23 @@ def validate_recorded_run_evidence(
     )
     recomputed["checksums_verified"] = checksums_verified
     _finalize_summary_acceptance(recomputed)
+    recorded_route_completion_count = (
+        inventory.get("semantic", {}).get("route_complete_true_count")
+        if inventory.get("passed")
+        else None
+    )
+    if (
+        recomputed["strict_success"] is True
+        and recorded_route_completion_count != expected_leg_count
+    ):
+        reasons.append("strict_recorded_navigation_completion_missing")
     if summary.get("strict_success") is not recomputed["strict_success"]:
         reasons.append("stored_strict_success_mismatch")
     if summary.get("episode_validity") != recomputed["episode_validity"]:
         reasons.append("stored_episode_validity_mismatch")
-    if recomputed["episode_validity"]["valid"] is not True or recomputed["strict_success"] is not True:
+    if recomputed["episode_validity"]["valid"] is not True:
+        reasons.append("episode_validity_failed")
+    if require_strict_success and recomputed["strict_success"] is not True:
         reasons.append("strict_acceptance_failed")
     if summary.get("final_trial_metric_gate", {}).get("passed") is not True:
         reasons.append("final_metric_gate_failed")
@@ -663,7 +697,9 @@ def validate_recorded_run_evidence(
     if reasons:
         raise ConfigurationError("recorded run evidence invalid: " + ";".join(dict.fromkeys(reasons)))
     return {
-        "strict_success": True,
+        "strict_success": recomputed["strict_success"],
+        "episode_validity": recomputed["episode_validity"],
+        "recorded_route_completion_count": recorded_route_completion_count,
         "inventory": inventory,
         "required_topic_coverage": coverage,
         "route_prior_application": route_prior,
@@ -1046,6 +1082,21 @@ def _command_output(arguments: list[str], cwd: Path) -> str | None:
 def _campaign_provenance(workspace: Path, map_version: str, posegraph_version: str) -> dict[str, Any]:
     """Capture enough immutable context to reproduce a formal run later."""
     status = _command_output(["git", "status", "--porcelain=v1"], workspace) or ""
+    tracked_dirty = any(
+        subprocess.run(
+            arguments,
+            cwd=workspace,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10.0,
+        ).returncode
+        != 0
+        for arguments in (
+            ["git", "diff", "--quiet", "--"],
+            ["git", "diff", "--cached", "--quiet", "--"],
+        )
+    )
     map_root = workspace / "data" / "maps"
     map_files = [map_root / "occupancy" / f"{map_version}{suffix}" for suffix in (".yaml", ".pgm")]
     posegraph_dir = map_root / "posegraphs"
@@ -1060,6 +1111,7 @@ def _campaign_provenance(workspace: Path, map_version: str, posegraph_version: s
         "git_head": _command_output(["git", "rev-parse", "HEAD"], workspace),
         "git_status_sha256": hashlib.sha256(status.encode("utf-8")).hexdigest(),
         "git_dirty": bool(status),
+        "git_tracked_dirty": tracked_dirty,
         "map_and_posegraph_hashes": hashes,
         "host": {"platform": platform.platform(), "python": platform.python_version()},
         "environment": {key: os.environ.get(key) for key in ("ROS_DISTRO", "RMW_IMPLEMENTATION", "ISAAC_SIM_VERSION") if os.environ.get(key)},
@@ -4436,7 +4488,7 @@ class ExperimentRunner(Node):
                     planned_path_deviation_percent = abs(
                         planned_path_length - reference_length
                     ) / reference_length * 100.0
-                if path_deviation_percent > 20.0:
+                if path_deviation_percent >= 20.0:
                     reasons.append("ground_truth_path_deviation_exceeds_20_percent")
                 for leg in self._leg_results:
                     identifier = leg.get("id")

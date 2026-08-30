@@ -2,6 +2,7 @@ from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -31,6 +32,35 @@ from robot_experiments.experiment_runner import (
 )
 from robot_experiments.configuration import ConfigurationError
 from robot_experiments.scenario import RunSelection, load_scenario
+
+
+def test_campaign_provenance_distinguishes_untracked_from_tracked_dirty(tmp_path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("initial\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "tracked.txt"], check=True)
+    subprocess.run(
+        [
+            "git", "-C", str(tmp_path), "-c", "user.name=Codex Test",
+            "-c", "user.email=codex@example.invalid", "commit", "-qm", "fixture",
+        ],
+        check=True,
+    )
+    (tmp_path / "build.log").write_text("untracked\n", encoding="utf-8")
+
+    provenance = experiment_runner_module._campaign_provenance(
+        tmp_path, "missing-map", "missing-posegraph"
+    )
+
+    assert provenance["git_dirty"] is True
+    assert provenance["git_tracked_dirty"] is False
+
+    tracked.write_text("changed\n", encoding="utf-8")
+    provenance = experiment_runner_module._campaign_provenance(
+        tmp_path, "missing-map", "missing-posegraph"
+    )
+    assert provenance["git_dirty"] is True
+    assert provenance["git_tracked_dirty"] is True
 
 
 def test_tracked_route_length_replaces_untrimmed_canonical_edge_sum():
@@ -1182,6 +1212,7 @@ def _static_sat_evidence_run(
     condition_stack_id: str = "",
     stack_session_id: str = "",
     formal_freeze_digest: str = "",
+    path_deviation_percent: float | None = None,
 ):
     scenario = load_scenario(
         Path(__file__).parents[1] / "config" / "static.yaml"
@@ -1214,6 +1245,12 @@ def _static_sat_evidence_run(
     runner._ground_truth_samples = [
         OdometrySample(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0)
     ]
+    if path_deviation_percent is not None:
+        actual_length = 10.0 * (1.0 + path_deviation_percent / 100.0)
+        runner._ground_truth_samples = [
+            OdometrySample(0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0),
+            OdometrySample(actual_length, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0),
+        ]
     runner._odom_samples = [
         OdometrySample(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0)
     ]
@@ -1253,6 +1290,12 @@ def _static_sat_evidence_run(
     runner._appearance_config_hash = None
     runner._optimal_reference = None
     runner._optimal_reference_hash = None
+    if path_deviation_percent is not None:
+        runner._optimal_reference = {
+            "total_length_m_0_05": 10.0,
+            "legs": [{"id": "G1", "length_m_0_05": 10.0}],
+        }
+        runner._optimal_reference_hash = "reference"
     runner._navigation_graph = None
     runner._minimum_safety_scan_range_m = None
     runner._provenance = {}
@@ -1344,6 +1387,22 @@ def test_run_evidence_records_condition_stack_attestation(tmp_path):
     assert summary["condition_stack_id"] == "indoor_static"
     assert summary["stack_session_id"] == session_id
     assert summary["formal_freeze_digest"] == freeze_digest
+    assert summary["episode_validity"]["valid"] is True
+
+
+def test_exactly_twenty_percent_executed_path_deviation_is_a_failure(tmp_path):
+    _runner, manifest, summary, _root = _static_sat_evidence_run(
+        tmp_path,
+        obstacle_position=None,
+        contact_sensor_collision=False,
+        path_deviation_percent=20.0,
+    )
+
+    assert manifest["metrics"]["path_deviation_percent"] == pytest.approx(20.0)
+    assert "ground_truth_path_deviation_exceeds_20_percent" in manifest[
+        "failure_reason"
+    ]
+    assert summary["strict_success"] is False
     assert summary["episode_validity"]["valid"] is True
 
 

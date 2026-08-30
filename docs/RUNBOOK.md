@@ -1,17 +1,17 @@
 # V6 Module3 runbook
 
-This runbook contains the current component commands. It does not authorize a
-live run. Read [Module3 current state](CURRENT_STATE.md) and the authoritative
+This runbook contains the current component commands and evidence boundaries.
+Read [Module3 current state](CURRENT_STATE.md) and the authoritative
 [Integration current state](/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration/docs/CURRENT_STATE.md)
 before using it.
 
 ## Current user stop boundary
 
-Publishing current Module3 is the present stop boundary. Do not start the
-outdoor static engineering repetitions, sufficient-Pilot aggregation, formal
-freezer, formal dry-run, ROS, or Isaac without renewed authorization. The
-commands below document the next production path only. Current counts remain
-Pilot `0/18` and formal `0/120`; formal is `NOT_AUTHORIZED`.
+The current authorized execution scope is indoor only: collect a fresh
+static/dynamic/appearance `3/3` Pilot, freeze that exact nine-episode evidence,
+then run the indoor static -> dynamic -> appearance `3x20` campaign. Outdoor
+engineering, six-condition sufficient-Pilot, and formal `120` execution remain
+stopped. Indoor success never authorizes or counts toward formal qualification.
 
 ## 1. Clean shell and one underlay
 
@@ -33,6 +33,8 @@ export BIO_NAV_MODULE2_ASSET_ROOT=/mnt/nas_home/Bio_Nav_Data/experiments/assets/
 export BIO_NAV_ROUTE_PRIOR_SNAPSHOT=/mnt/nas_home/Bio_Nav_Data/experiments/assets/v6_kujiale_isaacgen_v1_sr_snapshot_d7db461171893953
 export BIO_NAV_ROUTE_PRIOR_CATALOG=/mnt/nas_home/Bio_Nav_Data/experiments/assets/rivermark_a_srdr_tile_catalog_v1
 export RIVERMARK_USD=/mnt/nas_home/Bio_Nav_Data/experiments/assets/rivermark_plaza_v6_final_20260829/rivermark.usd
+export ISAAC_NAV_SPAWN_POSES="${BIO_NAV_MODULE3_ROOT}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml"
+test -f "${ISAAC_NAV_SPAWN_POSES}"
 
 source "${BIO_NAV_INTEGRATION_ROOT}/env/v6_pilot_setup.sh" "${V6_DOMAIN}"
 cd "${BIO_NAV_MODULE3_ROOT}"
@@ -85,20 +87,31 @@ Rivermark uses a 240 s fail-closed activation timeout because cold USD/RTX
 startup has exceeded 120 s. This is an upper bound, not a fixed sleep, and does
 not relax any readiness predicate.
 
-## 4. Indoor engineering reference — not current Pilot
+## 4. Indoor Pilot collection — current 3x3 input
 
-The commands in this section predate the current condition-stack attestation
-contract. They remain an engineering reference only and must not be used for a
-counted sufficient-Pilot episode. The unified six-condition Pilot procedure
-will be documented separately after its entrypoint is ready.
+Run static, dynamic, then appearance as three separate condition stacks. Each
+condition requires a fresh cold `rep1` followed by hot-reset `rep2` and `rep3`;
+do not restart T1/T2 within those three episodes. Set the condition once per
+stack:
+
+```bash
+export BIO_NAV_CONDITION=static  # then dynamic, then appearance on fresh stacks
+export BIO_NAV_CONDITION_ID="indoor_${BIO_NAV_CONDITION}"
+export BIO_NAV_CONDITION_ROOT="${BIO_NAV_RUN_ROOT}/${BIO_NAV_CONDITION_ID}"
+export BIO_NAV_STACK_RUNTIME_ROOT="${BIO_NAV_RUN_ROOT}.runtime/${BIO_NAV_CONDITION_ID}"
+test ! -e "${BIO_NAV_CONDITION_ROOT}"
+test ! -e "${BIO_NAV_STACK_RUNTIME_ROOT}"
+```
 
 Terminal T1:
 
 ```bash
 ./scripts/run_v6_low_obstacle_phase_f_stack.sh M3 \
   --domain "${V6_DOMAIN}" \
-  --run-dir "${BIO_NAV_RUN_ROOT}/runtime" \
+  --run-dir "${BIO_NAV_STACK_RUNTIME_ROOT}" \
   --socket "${BIO_NAV_PHASE_F_SOCKET}" \
+  --scene kujiale \
+  --condition "${BIO_NAV_CONDITION}" \
   --module2-root "${BIO_NAV_MODULE2_ROOT}" \
   --module2-asset-root "${BIO_NAV_MODULE2_ASSET_ROOT}" \
   --enable-route-prior \
@@ -108,10 +121,12 @@ Terminal T1:
 Terminal T2, after the ROS reset services exist:
 
 ```bash
-./scripts/run_v6_kujiale_low_obstacles.sh --condition static isaac
+./scripts/run_v6_kujiale_low_obstacles.sh --condition "${BIO_NAV_CONDITION}" isaac
 ```
 
-Indoor keeps mixed Compute Odometry plus AMCL.
+Indoor keeps mixed Compute Odometry plus AMCL. The condition selector is the
+authoritative T2/T3 source and fixes the V6 IsaacGen spawn, condition scenario,
+and canonical low-obstacle Nav2 config.
 
 Terminal T3, after T1 and T2 are READY, is the only indoor episode command:
 
@@ -123,16 +138,29 @@ case "${BIO_NAV_REP}" in
   rep3) BIO_NAV_RUN_INDEX=3 ;;  # seed 8603, hot reset
   *) echo "BIO_NAV_REP must be rep1, rep2, or rep3" >&2; exit 2 ;;
 esac
-if [[ -e "${BIO_NAV_RUN_ROOT}/${BIO_NAV_REP}" ]]; then
-  echo "refusing to reuse episode output: ${BIO_NAV_RUN_ROOT}/${BIO_NAV_REP}" >&2
+if [[ -e "${BIO_NAV_CONDITION_ROOT}/${BIO_NAV_REP}" ]]; then
+  echo "refusing to reuse episode output: ${BIO_NAV_CONDITION_ROOT}/${BIO_NAV_REP}" >&2
   exit 2
 fi
 
-./scripts/run_experiment.sh \
-  ros2_ws/src/robot_experiments/config/v6_final_kujiale_static.yaml \
-  "${BIO_NAV_RUN_ROOT}/${BIO_NAV_REP}" \
-  nav2_profile:=v6_low_obstacle_isolation \
-  nav2_config_file:="${BIO_NAV_MODULE3_ROOT}/ros2_ws/src/robot_navigation/config/nav2_v6_low_obstacle_isolation.yaml" \
+export BIO_NAV_STACK_CONTRACT="${BIO_NAV_STACK_RUNTIME_ROOT}/stack.contract.json"
+test -r "${BIO_NAV_STACK_CONTRACT}"
+export BIO_NAV_STACK_SESSION_ID="$(
+  /usr/bin/python3 - "${BIO_NAV_STACK_CONTRACT}" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if payload.get("condition_id") != __import__("os").environ["BIO_NAV_CONDITION_ID"]:
+    raise SystemExit("stack contract condition mismatch")
+print(payload["stack_session_id"])
+PY
+)"
+
+./scripts/run_v6_kujiale_low_obstacles.sh \
+  --condition "${BIO_NAV_CONDITION}" runner \
+  "${BIO_NAV_CONDITION_ROOT}/${BIO_NAV_REP}" \
   navigation_execution_backend:=route_guided \
   require_module2_planning_ready:=true \
   module2_planning_ready_timeout_sec:=120.0 \
@@ -140,15 +168,19 @@ fi
   record_bag:=true \
   clear_slam_localization_buffer:=false \
   reset_map_base_translation_tolerance_m:=0.1 \
+  condition_stack_id:="${BIO_NAV_CONDITION_ID}" \
+  stack_session_id:="${BIO_NAV_STACK_SESSION_ID}" \
+  condition_stack_contract_path:="${BIO_NAV_STACK_CONTRACT}" \
   run_indices:="${BIO_NAV_RUN_INDEX}" \
   resume:=false
 ```
 
-For engineering use, inspect `rep1` `episode_validity`, topic coverage,
+For counted Pilot use, inspect `rep1` `episode_validity`, topic coverage,
 RoutePrior requested/applied counts, ContactSensor result, terminal-zero, and
 checksums before continuing. `rep2` and `rep3` are hot resets on that same T1/T2
 stack; changing the stack turns them into new cold runs and invalidates the
-three-repetition sequence. None of these commands count toward current Pilot.
+three-repetition sequence. All three conditions must finish `3/3`; a valid
+product failure does not satisfy Pilot readiness.
 
 ## 5. Outdoor Rivermark startup — PASSED FOR STATIC ENGINEERING
 
@@ -302,7 +334,81 @@ apps, and owned locks are gone. Never use global `pkill`.
 Preserve NAS logs and bags for any failure or invalid attempt. Record invalid
 operator/startup runs separately and do not count them as Pilot episodes.
 
-## 9. Future Pilot aggregate, freezer, and formal dry-run — STOPPED
+## 9. Indoor Pilot freeze and 3x20 campaign
+
+The indoor Pilot root must contain exactly `indoor_static`, `indoor_dynamic`,
+and `indoor_appearance`. Each condition contains cold `rep1` followed by hot
+reset `rep2` and `rep3` from one unchanged stack. Each episode must include its
+immutable `stack_contract.json`, clean tracked-source provenance, the canonical
+effective `nav2_v6_low_obstacle_isolation.yaml` hash, complete evidence, and a
+strict success. Untracked build/install/log directories remain diagnostic and
+do not make tracked source dirty.
+
+Aggregate the exact `9/9` Pilot into the indoor-only schemas:
+
+```bash
+./scripts/run_v6_formal_episode.sh --aggregate-indoor-pilot \
+  /absolute/path/to/INDOOR_PILOT_ROOT \
+  /absolute/path/to/OUT_INDOOR_PILOT_MANIFEST.json \
+  /absolute/path/to/OUT_INDOOR_PILOT_AGGREGATE.json
+```
+
+The only readiness label from this step is `INDOOR_PILOT_READY`; it never emits
+`SUFFICIENT_PILOT_READY`. Freeze the nine indexed episodes and a new output
+root without dispatching:
+
+```bash
+./scripts/run_v6_formal_episode.sh --freeze-indoor-pilot \
+  /absolute/path/to/OUT_INDOOR_PILOT_MANIFEST.json \
+  /absolute/path/to/OUT_INDOOR_PILOT_AGGREGATE.json \
+  /absolute/path/to/OUT_INDOOR_CAMPAIGN.json \
+  /absolute/path/to/NEW_INDOOR_3X20_OUTPUT_ROOT
+```
+
+Both output paths must be absent. The freezer binds the three repository HEADs,
+driver/kernel, indoor scenarios and effective configs, the static/dynamic
+obstacle IDs and counts, physical-config/scenario/spawn-manifest hashes,
+checkpoints, RoutePrior, maps, runner/evaluator sources, the current-map
+single-obstacle static reference, and all nine Pilot evidence files. Validate
+the result and inspect the `0/60` plan without starting ROS or Isaac:
+
+```bash
+./scripts/run_v6_formal_episode.sh --indoor \
+  /absolute/path/to/OUT_INDOOR_CAMPAIGN.json
+```
+
+The indoor manifest and every dispatch command explicitly carry the canonical
+V6 IsaacGen `spawn_poses_file`; relative paths, duplicates, the generic
+warehouse identity, and hash drift are rejected even though the generic file's
+pose numbers happen to match.
+
+Execute only the next episode of the matching externally owned stack:
+
+```bash
+./scripts/run_v6_formal_episode.sh --indoor --execute-indoor \
+  --condition-stack-id indoor_static \
+  --condition-stack-contract "${BIO_NAV_RUN_ROOT}/runtime/stack.contract.json" \
+  /absolute/path/to/OUT_INDOOR_CAMPAIGN.json
+```
+
+Complete all 20 static identities before switching to dynamic, then complete
+all 20 dynamic identities before appearance. Keep each condition's stack alive
+for its hot resets. Every invocation dispatches at most one episode. Preserve
+every valid product failure in its fixed identity and denominator; never retry
+it or substitute a seed. Static requires at least `19/20`, dynamic at least
+`18/20`, and appearance at least `18/20`. Static additionally requires every
+strict-success run's finite executed `path_deviation_percent` to be strictly
+below `20`; exactly `20` is a valid product failure. Static path-deviation
+mean/p50/p95/max are reports, not replacement gates. Continue within the
+failure budget and stop early only when the threshold is mathematically
+unreachable (`>1`, `>2`, or `>2` valid failures respectively). Invalid evidence
+stops immediately and does not enter the 20-run denominator. Qualification is
+evaluated only after all three conditions reach exactly 20 valid identities;
+`INDOOR_QUALIFICATION_PASS` always carries
+`formal_qualification=NOT_QUALIFIED`. This indoor `3x20` may later combine with
+the separately completed outdoor `3x20`; do not rerun another `6x3` or `6x20`.
+
+## 10. Six-condition Pilot, freezer, and formal dry-run — STOPPED
 
 Do not run this section at the current stop boundary. Only after all six future
 condition roots contain cold `rep1` plus hot `rep2`/`rep3`, with 18 strict
