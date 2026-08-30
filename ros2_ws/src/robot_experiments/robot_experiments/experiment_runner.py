@@ -164,6 +164,55 @@ SCENE_FORBIDDEN_RECORDED_TOPICS = {
     "indoor": (),
     "outdoor": ("/amcl_pose",),
 }
+FINAL_V6_SCENARIO_IDS = frozenset(
+    f"{prefix}_{category}"
+    for prefix in ("v6_final_kujiale", "final_rivermark")
+    for category in ("static", "dynamic", "appearance")
+)
+KNOWN_OUTDOOR_LOCALIZATION_CONFLICTS = frozenset({"amcl", "slam_toolbox"})
+
+
+def _module2_readiness_required(scenario_id: str, configured: object) -> bool:
+    is_final = scenario_id in FINAL_V6_SCENARIO_IDS
+    if isinstance(configured, str) and configured.strip().lower() == "auto":
+        return is_final
+    required = _boolean_parameter(configured, "require_module2_planning_ready")
+    if is_final and not required:
+        raise ConfigurationError(
+            "final V6 scenarios cannot disable Module2 planning readiness"
+        )
+    return required
+
+
+def _localization_node_ownership_evidence(
+    scene: str, node_names: list[tuple[str, str]] | list[str]
+) -> dict[str, Any]:
+    basenames: list[str] = []
+    for entry in node_names:
+        name = entry[0] if isinstance(entry, tuple) else entry
+        if isinstance(name, str) and name.strip("/"):
+            basenames.append(name.strip("/").rsplit("/", 1)[-1])
+    counts = {name: basenames.count(name) for name in sorted(set(basenames))}
+    forbidden = sorted(
+        name for name in KNOWN_OUTDOOR_LOCALIZATION_CONFLICTS if counts.get(name, 0)
+    )
+    applicable = scene == "outdoor"
+    passed = bool(
+        not applicable
+        or (counts.get("ideal_localization_tf", 0) == 1 and not forbidden)
+    )
+    return {
+        "scene": scene,
+        "applicable": applicable,
+        "node_basenames": sorted(basenames),
+        "basename_counts": counts,
+        "required_owner": "ideal_localization_tf" if applicable else None,
+        "required_owner_count": counts.get("ideal_localization_tf", 0),
+        "known_forbidden_basenames": sorted(KNOWN_OUTDOOR_LOCALIZATION_CONFLICTS),
+        "observed_forbidden_basenames": forbidden,
+        "passed": passed,
+        "scope": "known_localization_nodes_not_arbitrary_tf_publishers",
+    }
 
 
 def _evidence_scene(scenario_id: str, map_version: str) -> str:
@@ -876,9 +925,11 @@ class ExperimentRunner(Node):
             ).value,
             "clear_slam_localization_buffer",
         )
-        self._require_module2_planning_ready = _boolean_parameter(
-            self.declare_parameter("require_module2_planning_ready", False).value,
-            "require_module2_planning_ready",
+        self._require_module2_planning_ready = _module2_readiness_required(
+            self._scenario.scenario_id,
+            self.declare_parameter(
+                "require_module2_planning_ready", "auto"
+            ).value,
         )
         self._module2_planning_ready_timeout_sec = float(
             self.declare_parameter(
@@ -4694,6 +4745,21 @@ class ExperimentRunner(Node):
         scene = _evidence_scene(
             self._scenario.scenario_id, self._scenario.map_version
         )
+        try:
+            graph_nodes = list(self.get_node_names_and_namespaces())
+            localization_node_ownership = _localization_node_ownership_evidence(
+                scene, graph_nodes
+            )
+            localization_node_ownership["graph_error"] = None
+        except Exception as exc:
+            localization_node_ownership = _localization_node_ownership_evidence(
+                scene, []
+            )
+            localization_node_ownership["graph_error"] = (
+                f"{type(exc).__name__}:{exc}"
+            )
+            if scene == "outdoor":
+                localization_node_ownership["passed"] = False
         if self._record_bag:
             required_topic_coverage = _mcap_required_topic_coverage(
                 root / "telemetry" / "metadata.yaml",
@@ -4740,6 +4806,7 @@ class ExperimentRunner(Node):
             "confirmed": bool(condition_stack_id and stack_session_id),
         }
         manifest["condition_stack_attestation"] = condition_stack_attestation
+        manifest["localization_node_ownership"] = localization_node_ownership
         (root / "run_manifest.json").write_text(
             json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
         )
@@ -4837,7 +4904,9 @@ class ExperimentRunner(Node):
                 scene != "outdoor"
                 or manifest.get("observability", {}).get("map_to_odom_seen")
                 is True
+                and localization_node_ownership["passed"] is True
             ),
+            "localization_node_ownership": localization_node_ownership,
             "isaac_contact_sensor_collision_detected": (
                 self._isaac_contact_sensor_collision_detected
             ),

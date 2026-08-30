@@ -590,7 +590,7 @@ def test_experiment_launch_types_and_forwards_module2_planning_readiness():
     ).read_text()
 
     assert (
-        '"require_module2_planning_ready", default_value="false"'
+        '"require_module2_planning_ready", default_value="auto"'
         in launch_source
     )
     assert (
@@ -600,6 +600,7 @@ def test_experiment_launch_types_and_forwards_module2_planning_readiness():
     assert 'LaunchConfiguration("require_module2_planning_ready")' in launch_source
     assert 'LaunchConfiguration(\n                                "module2_planning_ready_timeout_sec"' in launch_source
     assert launch_source.count("value_type=bool") >= 1
+    assert 'LaunchConfiguration("require_module2_planning_ready"),\n                            value_type=str' in launch_source
     assert launch_source.count("value_type=float") >= 1
     gate = runner_source.index(
         "if self._require_module2_planning_ready and not self._wait_until("

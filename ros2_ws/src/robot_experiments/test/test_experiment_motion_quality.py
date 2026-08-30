@@ -13,7 +13,9 @@ from robot_experiments.attempt31_rivermark_qualification import _rate_group
 from robot_experiments.experiment_runner import (
     _edge_prior_statistics,
     _episode_validity,
+    _localization_node_ownership_evidence,
     _mcap_required_topic_coverage,
+    _module2_readiness_required,
     _parse_obstacle_completion,
     _record_tracked_route_length,
     _result_with_terminal_zero,
@@ -131,6 +133,47 @@ def test_required_topic_coverage_marks_recorder_errors_invalid(tmp_path):
 
     assert not coverage["passed"]
     assert coverage["recorder_error"] == "recorder_exit_code:1"
+
+
+@pytest.mark.parametrize(
+    "scenario_id",
+    [
+        f"{prefix}_{category}"
+        for prefix in ("v6_final_kujiale", "final_rivermark")
+        for category in ("static", "dynamic", "appearance")
+    ],
+)
+def test_final_scenarios_force_module2_planning_readiness(scenario_id):
+    assert _module2_readiness_required(scenario_id, "auto") is True
+    assert _module2_readiness_required(scenario_id, "true") is True
+    with pytest.raises(ConfigurationError, match="cannot disable"):
+        _module2_readiness_required(scenario_id, "false")
+
+
+def test_legacy_scenarios_keep_module2_readiness_default_off():
+    assert _module2_readiness_required("static", "auto") is False
+    assert _module2_readiness_required("static", "false") is False
+
+
+@pytest.mark.parametrize(
+    ("nodes", "passed", "owner_count", "forbidden"),
+    [
+        (["/ideal_localization_tf"], True, 1, []),
+        (["ideal_localization_tf", "ideal_localization_tf"], False, 2, []),
+        (["ideal_localization_tf", "amcl"], False, 1, ["amcl"]),
+        (["ideal_localization_tf", "slam_toolbox"], False, 1, ["slam_toolbox"]),
+        ([], False, 0, []),
+    ],
+)
+def test_outdoor_localization_node_ownership_is_known_owner_fail_closed(
+    nodes, passed, owner_count, forbidden
+):
+    evidence = _localization_node_ownership_evidence("outdoor", nodes)
+
+    assert evidence["passed"] is passed
+    assert evidence["required_owner_count"] == owner_count
+    assert evidence["observed_forbidden_basenames"] == forbidden
+    assert evidence["scope"] == "known_localization_nodes_not_arbitrary_tf_publishers"
 
 
 def test_m3_route_prior_requires_positive_requested_and_applied_costs():

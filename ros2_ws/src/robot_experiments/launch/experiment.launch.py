@@ -32,7 +32,7 @@ def generate_launch_description():
                 "clear_slam_localization_buffer", default_value="true"
             ),
             DeclareLaunchArgument(
-                "require_module2_planning_ready", default_value="false"
+                "require_module2_planning_ready", default_value="auto"
             ),
             DeclareLaunchArgument(
                 "module2_planning_ready_timeout_sec", default_value="30.0"
@@ -96,7 +96,7 @@ def generate_launch_description():
                         ),
                         "require_module2_planning_ready": ParameterValue(
                             LaunchConfiguration("require_module2_planning_ready"),
-                            value_type=bool,
+                            value_type=str,
                         ),
                         "module2_planning_ready_timeout_sec": ParameterValue(
                             LaunchConfiguration(
