@@ -573,23 +573,39 @@ def formal_dispatch_plan(
     return plans
 
 
-def execute_formal_campaign(manifest: FormalCampaignManifest) -> dict[str, Any]:
+def execute_formal_campaign(
+    manifest: FormalCampaignManifest, *, condition_stack_id: str
+) -> dict[str, Any]:
     if manifest.authorization != FORMAL_EXECUTION_AUTHORIZED:
         raise V6ContractError(
             "formal execution refused: manifest is NOT_AUTHORIZED"
         )
-    while True:
-        aggregate = evaluate_formal_campaign(manifest)
-        if aggregate["blockers"]:
-            raise V6ContractError(
-                "formal campaign blocked: " + ",".join(aggregate["blockers"])
-            )
-        plan = formal_dispatch_plan(manifest, aggregate)
-        if not plan:
-            return aggregate
-        # One episode at a time keeps the checkpoint and fail-stop boundary
-        # identical to the immutable per-run evidence boundary.
-        subprocess.run(plan[0]["command"], check=True)
+    condition_ids = {condition.condition_id for condition in manifest.conditions}
+    if condition_stack_id not in condition_ids:
+        raise V6ContractError(
+            f"unknown formal condition stack: {condition_stack_id}"
+        )
+    aggregate = evaluate_formal_campaign(manifest)
+    if aggregate["blockers"]:
+        raise V6ContractError(
+            "formal campaign blocked: " + ",".join(aggregate["blockers"])
+        )
+    selected = [
+        row
+        for row in formal_dispatch_plan(manifest, aggregate)
+        if row["condition_id"] == condition_stack_id
+    ]
+    if len(selected) != 1:
+        raise V6ContractError(
+            f"formal condition has no unique pending episode: {condition_stack_id}"
+        )
+    row = selected[0]
+    if row["stack_session"] != condition_stack_id:
+        raise V6ContractError("formal dispatch stack-session mismatch")
+    # The caller owns the already-running matching T1/T2 stack.  Dispatch one
+    # episode only, then return so a stack switch can never occur implicitly.
+    subprocess.run(row["command"], check=True)
+    return evaluate_formal_campaign(manifest)
 
 
 def _mapping(value: Any, path: str) -> Mapping[str, Any]:
@@ -1957,6 +1973,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pilot", action="store_true")
     parser.add_argument("--dispatch-pilot", action="store_true")
     parser.add_argument("--execute-formal", action="store_true")
+    parser.add_argument("--condition-stack-id")
     parser.add_argument("--output-jsonl")
     parser.add_argument("--readiness-timeout-sec", type=float, default=120.0)
     parser.add_argument("--reset-timeout-sec", type=float, default=120.0)
@@ -1972,9 +1989,19 @@ def cli(argv: list[str] | None = None) -> int:
                 raise V6ContractError(
                     "formal campaign manifest cannot use engineering-pilot options"
                 )
+            if args.execute_formal and not args.condition_stack_id:
+                raise V6ContractError(
+                    "--execute-formal requires --condition-stack-id"
+                )
+            if not args.execute_formal and args.condition_stack_id:
+                raise V6ContractError(
+                    "--condition-stack-id requires --execute-formal"
+                )
             campaign = load_formal_campaign_manifest(args.formal_manifest)
             aggregate = (
-                execute_formal_campaign(campaign)
+                execute_formal_campaign(
+                    campaign, condition_stack_id=args.condition_stack_id
+                )
                 if args.execute_formal
                 else evaluate_formal_campaign(campaign)
             )
@@ -1996,9 +2023,9 @@ def cli(argv: list[str] | None = None) -> int:
                 )
             )
             return 0
-        if args.execute_formal:
+        if args.execute_formal or args.condition_stack_id:
             raise V6ContractError(
-                "--execute-formal requires --formal-manifest"
+                "formal execution options require --formal-manifest"
             )
         if args.dispatch_pilot and not args.pilot:
             raise V6ContractError("--dispatch-pilot requires --pilot")

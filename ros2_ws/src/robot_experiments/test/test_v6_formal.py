@@ -22,6 +22,7 @@ from robot_experiments.v6_formal import (
     authorize_manifest,
     cli,
     evaluate_formal_campaign,
+    execute_formal_campaign,
     formal_dispatch_plan,
     load_formal_campaign_manifest,
     load_manifest,
@@ -297,10 +298,67 @@ def test_formal_execution_requires_flag_and_authorized_manifest(tmp_path, capsys
     path = _write_formal_manifest(tmp_path)
 
     assert cli(["--formal-manifest", str(path), "--execute-formal"]) == 2
+    assert "requires --condition-stack-id" in capsys.readouterr().err
+
+    assert cli([
+        "--formal-manifest",
+        str(path),
+        "--execute-formal",
+        "--condition-stack-id",
+        "indoor_static",
+    ]) == 2
     assert "manifest is NOT_AUTHORIZED" in capsys.readouterr().err
 
     assert cli(["--manifest", str(MANIFEST), "--execute-formal"]) == 2
-    assert "requires --formal-manifest" in capsys.readouterr().err
+    assert "require --formal-manifest" in capsys.readouterr().err
+
+
+def test_formal_execution_rejects_wrong_stack_without_subprocess(
+    tmp_path, monkeypatch
+):
+    campaign = load_formal_campaign_manifest(
+        _write_formal_manifest(tmp_path, authorization="AUTHORIZED")
+    )
+    calls = []
+    monkeypatch.setattr(
+        v6_formal_module.subprocess,
+        "run",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(V6ContractError, match="unknown formal condition stack"):
+        execute_formal_campaign(campaign, condition_stack_id="wrong_stack")
+
+    assert calls == []
+
+
+def test_formal_execution_dispatches_one_episode_and_returns(
+    tmp_path, monkeypatch
+):
+    campaign = load_formal_campaign_manifest(
+        _write_formal_manifest(tmp_path, authorization="AUTHORIZED")
+    )
+    calls = []
+
+    def fake_run(command, *, check):
+        calls.append((command, check))
+
+    monkeypatch.setattr(v6_formal_module.subprocess, "run", fake_run)
+
+    aggregate = execute_formal_campaign(
+        campaign, condition_stack_id="indoor_static"
+    )
+
+    assert len(calls) == 1
+    assert calls[0][1] is True
+    assert "run_indices:=1" in calls[0][0]
+    assert aggregate["present_episodes"] == 0
+
+
+def test_formal_shell_requires_and_forwards_condition_stack_id():
+    source = (REPO / "scripts" / "run_v6_formal_episode.sh").read_text()
+    assert "formal execution requires --condition-stack-id ID" in source
+    assert 'formal_execute=(--execute-formal --condition-stack-id "$3")' in source
 
 
 def test_formal_aggregate_resumes_after_valid_strict_episode(tmp_path):

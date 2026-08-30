@@ -255,7 +255,12 @@ runner. Do not restart that stack between hot reps. Actual dispatch requires
 both an `AUTHORIZED` manifest and the explicit command below:
 
 ```bash
-./scripts/run_v6_formal_episode.sh --formal --execute-formal /absolute/path/to/formal_manifest.yaml
+./scripts/run_v6_formal_episode.sh --formal --execute-formal \
+  --condition-stack-id indoor_static \
+  /absolute/path/to/formal_manifest.yaml
 ```
 
-Current authorization is `NOT_AUTHORIZED`; do not run the execution form.
+The stack id must name the condition actually running in T1/T2. One invocation
+dispatches at most that condition's next single episode and then exits; switch
+the external stack explicitly before selecting a different condition. Current
+authorization is `NOT_AUTHORIZED`; do not run the execution form.
