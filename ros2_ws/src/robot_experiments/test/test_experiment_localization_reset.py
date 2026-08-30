@@ -284,13 +284,14 @@ def test_route_guided_arms_only_after_four_legs_and_before_final_goal():
         _canonical_routes=[],
         _ground_truth_samples=[],
         _leg_results=[],
+        _completed_dynamic_obstacle_ids=set(),
         _goal_dispatch_recorded=True,
         _dynamic_guard_aborted=False,
         _wait_until=lambda predicate, _timeout: predicate(),
         _clock_seconds=lambda: 1.0,
         _pose_message=lambda specification: specification,
         _trigger_obstacle_group=lambda _goal_id: None,
-        _complete_obstacle_group=lambda _goal_id: None,
+        _complete_obstacle_group=lambda goal_id: (f"actor-{goal_id}",),
         _spin_once=lambda _timeout: None,
         _wait_for_reset_stop_gate_release=lambda: None,
     )
@@ -309,6 +310,13 @@ def test_route_guided_arms_only_after_four_legs_and_before_final_goal():
     )
     assert len(runner._route_goal_publisher.messages) == 5
     assert arm_publication_counts == [4]
+    assert runner._completed_dynamic_obstacle_ids == {
+        "actor-G1",
+        "actor-G2",
+        "actor-G3",
+        "actor-G4",
+        "actor-G5",
+    }
 
 
 def test_route_goal_complete_bool_does_not_arm_terminal_fence():
@@ -373,6 +381,7 @@ def _route_guided_gate_runner(
         _canonical_routes=[],
         _ground_truth_samples=[],
         _leg_results=[],
+        _completed_dynamic_obstacle_ids=set(),
         _goal_dispatch_recorded=False,
         _dynamic_guard_aborted=False,
         _reset_receipt={"generation": 4},
@@ -384,7 +393,7 @@ def _route_guided_gate_runner(
         _clock_seconds=lambda: 1.0,
         _pose_message=lambda value: value,
         _trigger_obstacle_group=lambda _goal_id: None,
-        _complete_obstacle_group=lambda _goal_id: None,
+        _complete_obstacle_group=lambda _goal_id: ("dynamic_box",),
         _arm_next_terminal_fence=lambda: None,
     )
 
@@ -446,6 +455,7 @@ def test_route_dispatch_waits_for_delayed_same_generation_release():
     )
     assert events == ["release", "dispatch", "publish"]
     assert runner._reset_stop_gate_status.received_at > 1.0
+    assert runner._completed_dynamic_obstacle_ids == {"dynamic_box"}
 
 
 def test_route_dispatch_waits_on_stale_generation_without_writing_or_publishing():
@@ -514,6 +524,90 @@ def test_route_dispatch_skips_gate_only_when_never_seen_and_no_publisher():
 
     assert result[0] is True
     assert events == ["dispatch", "publish"]
+    assert runner._completed_dynamic_obstacle_ids == {"dynamic_box"}
+
+
+class _ImmediateFuture:
+    def __init__(self, result) -> None:
+        self._result = result
+
+    def result(self):
+        return self._result
+
+
+class _SuccessfulGoalHandle:
+    accepted = True
+
+    def get_result_async(self):
+        return _ImmediateFuture(SimpleNamespace(
+            status=experiment_runner_module.GoalStatus.STATUS_SUCCEEDED
+        ))
+
+
+class _SuccessfulNavigateClient:
+    def wait_for_server(self, *, timeout_sec):
+        return timeout_sec > 0.0
+
+    def send_goal_async(self, _goal, *, feedback_callback):
+        assert callable(feedback_callback)
+        return _ImmediateFuture(_SuccessfulGoalHandle())
+
+
+def _successful_direct_runner(complete_obstacle_group):
+    specification = SimpleNamespace(goal_id="G2")
+    return SimpleNamespace(
+        _navigate_client=_SuccessfulNavigateClient(),
+        _service_timeout_sec=1.0,
+        _action_name="/navigate_to_pose",
+        _scenario=SimpleNamespace(
+            route=(specification,),
+            goal=specification,
+            timeout_sec=30.0,
+            leg_timeout_sec=5.0,
+        ),
+        _navigation_active=False,
+        _navigation_start_stamp_s=None,
+        _navigation_end_stamp_s=None,
+        _ground_truth_samples=[],
+        _minimum_poses_remaining=None,
+        _goal_dispatch_recorded=True,
+        _goal_message=lambda value: value,
+        _navigation_feedback_callback=lambda _feedback: None,
+        _wait_future=lambda _future, _deadline, **_kwargs: True,
+        _trigger_obstacle_group=lambda _goal_id: None,
+        _complete_obstacle_group=complete_obstacle_group,
+        _completed_dynamic_obstacle_ids=set(),
+        _leg_results=[],
+        _dynamic_guard_aborted=False,
+        _clock_seconds=lambda: 1.0,
+    )
+
+
+def test_direct_success_registers_completion_returned_actor_ids():
+    runner = _successful_direct_runner(
+        lambda _goal_id: ("dynamic_box",)
+    )
+
+    result = ExperimentRunner._navigate_direct(runner)
+
+    assert result == (
+        True,
+        False,
+        experiment_runner_module.GoalStatus.STATUS_SUCCEEDED,
+    )
+    assert runner._completed_dynamic_obstacle_ids == {"dynamic_box"}
+
+
+def test_direct_completion_failure_does_not_register_actor_ids():
+    def completion_failure(_goal_id):
+        raise RuntimeError("completion failed")
+
+    runner = _successful_direct_runner(completion_failure)
+
+    with pytest.raises(RuntimeError, match="completion failed"):
+        ExperimentRunner._navigate_direct(runner)
+
+    assert runner._completed_dynamic_obstacle_ids == set()
 
 
 def test_direct_backend_does_not_consult_reset_stop_gate():

@@ -254,6 +254,79 @@ def test_noncanonical_dynamic_completion_does_not_enter_cognitive_clearance_gate
     assert not runner._requires_dynamic_retirement_clearance({"dynamic_box"})
 
 
+def test_dynamic_manifest_requires_successful_completion_return(tmp_path):
+    runner, _manifest, _summary, _root = _static_sat_evidence_run(
+        tmp_path,
+        obstacle_position=None,
+        contact_sensor_collision=False,
+    )
+    scenario = load_scenario(
+        Path(__file__).parents[1] / "config" / "dynamic.yaml"
+    )
+    runner._scenario = replace(
+        scenario,
+        obstacle_trajectories=({"id": "crossing_box", "motion": "crossing"},),
+        success=replace(
+            scenario.success,
+            minimum_ground_truth_path_length_m=0.0,
+            minimum_reverse_distance_m=0.0,
+            maximum_reverse_distance_fraction=1.0,
+            minimum_curved_distance_fraction=0.0,
+            maximum_stopped_time_fraction=1.0,
+        ),
+    )
+    runner._active_selection = RunSelection(7301, condition_id="dynamic")
+    runner._depth_frame = {}
+    runner._scan_frame = {}
+    runner._local_costmap = object()
+    runner._obstacle_samples = [{"id": "crossing_box", "min_clearance_m": 0.2}]
+    runner._obstacle_events = [
+        {"event": "armed", "obstacle_id": "crossing_box"},
+        {"event": "motion_complete", "obstacle_id": "crossing_box"},
+        {"event": "park", "obstacle_id": "crossing_box"},
+    ]
+    runner._leg_results = [{
+        "id": "G1",
+        "nav2_status": experiment_runner_module.GoalStatus.STATUS_ABORTED,
+    }]
+
+    failed = runner._build_manifest(
+        run_index=3,
+        seed=7301,
+        nav2_succeeded=False,
+        timed_out=False,
+        nav2_status=experiment_runner_module.GoalStatus.STATUS_ABORTED,
+        final_still=True,
+        runner_error=None,
+    )
+
+    assert failed["dynamic_interaction"]["completed_ids"] == []
+    assert failed["dynamic_interaction"]["retired_ids"] == []
+    assert not failed["dynamic_interaction"]["complete"]
+    assert "dynamic_obstacle_interaction_incomplete" in failed["failure_reason"]
+
+    runner._completed_dynamic_obstacle_ids.update(("crossing_box",))
+    runner._obstacle_events.append(
+        {"event": "goal_reached_retire", "obstacle_id": "crossing_box"}
+    )
+    completed = runner._build_manifest(
+        run_index=3,
+        seed=7301,
+        nav2_succeeded=True,
+        timed_out=False,
+        nav2_status=experiment_runner_module.GoalStatus.STATUS_SUCCEEDED,
+        final_still=True,
+        runner_error=None,
+    )
+
+    assert completed["dynamic_interaction"]["completed_ids"] == ["crossing_box"]
+    assert completed["dynamic_interaction"]["retired_ids"] == ["crossing_box"]
+    assert completed["dynamic_interaction"]["complete"]
+
+    runner._clear_run_state()
+    assert runner._completed_dynamic_obstacle_ids == set()
+
+
 def test_strict_success_counts_single_goal_when_route_is_omitted():
     assert _strict_success_from_leg_count(
         "success", 1, 0, terminal_zero_confirmed=True

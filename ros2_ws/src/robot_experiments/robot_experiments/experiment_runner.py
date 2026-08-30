@@ -1149,6 +1149,7 @@ class ExperimentRunner(Node):
         self._leg_results: list[dict[str, Any]] = []
         self._obstacle_events: list[dict[str, Any]] = []
         self._obstacle_event_keys: set[str] = set()
+        self._completed_dynamic_obstacle_ids: set[str] = set()
         self._obstacle_state: dict[str, Any] = {"obstacles": [], "events": []}
         self._obstacle_state_stamp_s: float | None = None
         self._obstacle_samples: list[dict[str, Any]] = []
@@ -2863,7 +2864,8 @@ class ExperimentRunner(Node):
                 if wrapped_result.status != GoalStatus.STATUS_SUCCEEDED:
                     self._leg_results.append({"id": specification.goal_id or f"G{index + 1}", "nav2_status": int(wrapped_result.status), "accepted": True})
                     return False, False, int(wrapped_result.status)
-                self._complete_obstacle_group(specification.goal_id)
+                retired_ids = self._complete_obstacle_group(specification.goal_id)
+                self._completed_dynamic_obstacle_ids.update(retired_ids)
                 leg_gt = self._ground_truth_samples[leg_gt_start:]
                 self._leg_results.append({
                     "id": specification.goal_id or f"G{index + 1}",
@@ -3023,7 +3025,8 @@ class ExperimentRunner(Node):
                 self._leg_results.append(leg_result)
                 if not succeeded:
                     return False, False, status
-                self._complete_obstacle_group(specification.goal_id)
+                retired_ids = self._complete_obstacle_group(specification.goal_id)
+                self._completed_dynamic_obstacle_ids.update(retired_ids)
                 self._minimum_poses_remaining = len(specifications) - index - 1
             return True, False, GoalStatus.STATUS_SUCCEEDED
         finally:
@@ -3747,17 +3750,8 @@ class ExperimentRunner(Node):
             for item in self._obstacle_events
             if item.get("event") in {"trigger", "armed"} and isinstance(item.get("obstacle_id"), str)
         }
-        retired_ids = {
-            str(item.get("obstacle_id"))
-            for item in self._obstacle_events
-            if item.get("event") in {"retire", "park", "goal_reached_retire"} and isinstance(item.get("obstacle_id"), str)
-        }
-        completed_ids = {
-            str(item.get("obstacle_id"))
-            for item in self._obstacle_events
-            if item.get("event") in {"motion_complete", "retire", "park", "goal_reached_retire"}
-            and isinstance(item.get("obstacle_id"), str)
-        }
+        completed_ids = set(self._completed_dynamic_obstacle_ids)
+        retired_ids = set(self._completed_dynamic_obstacle_ids)
         clearance_by_actor: dict[str, float] = {}
         for sample in self._obstacle_samples:
             identifier = sample.get("id")
