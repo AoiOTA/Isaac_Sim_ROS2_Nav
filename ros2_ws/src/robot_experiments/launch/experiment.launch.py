@@ -49,6 +49,7 @@ def generate_launch_description():
             DeclareLaunchArgument("experiment_arm", default_value=""),
             DeclareLaunchArgument("condition_stack_id", default_value=""),
             DeclareLaunchArgument("stack_session_id", default_value=""),
+            DeclareLaunchArgument("formal_freeze_digest", default_value=""),
             DeclareLaunchArgument("dynamic_case_id", default_value=""),
             DeclareLaunchArgument("dynamic_variant_id", default_value=""),
             DeclareLaunchArgument("dynamic_seed", default_value="0"),
@@ -138,6 +139,10 @@ def generate_launch_description():
                         ),
                         "stack_session_id": ParameterValue(
                             LaunchConfiguration("stack_session_id"),
+                            value_type=str,
+                        ),
+                        "formal_freeze_digest": ParameterValue(
+                            LaunchConfiguration("formal_freeze_digest"),
                             value_type=str,
                         ),
                         "dynamic_case_id": LaunchConfiguration("dynamic_case_id"),

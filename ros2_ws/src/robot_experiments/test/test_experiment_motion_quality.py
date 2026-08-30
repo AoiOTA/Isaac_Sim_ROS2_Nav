@@ -1122,6 +1122,7 @@ def _static_sat_evidence_run(
     collision_monitor_stop: bool = False,
     condition_stack_id: str = "",
     stack_session_id: str = "",
+    formal_freeze_digest: str = "",
 ):
     scenario = load_scenario(
         Path(__file__).parents[1] / "config" / "static.yaml"
@@ -1205,6 +1206,7 @@ def _static_sat_evidence_run(
     runner._navigation_execution_backend = "navigate_to_pose"
     runner._condition_stack_id = condition_stack_id
     runner._stack_session_id = stack_session_id
+    runner._formal_freeze_digest = formal_freeze_digest
     runner._reset_receipt = {"generation": 1}
     runner._record_bag = False
     runner._fail_stop_metric_contract = None
@@ -1258,19 +1260,23 @@ def _static_sat_evidence_run(
 
 def test_run_evidence_records_condition_stack_attestation(tmp_path):
     session_id = "a" * 64
+    freeze_digest = "b" * 64
     _runner, manifest, summary, _root = _static_sat_evidence_run(
         tmp_path,
         obstacle_position=None,
         contact_sensor_collision=False,
         condition_stack_id="indoor_static",
         stack_session_id=session_id,
+        formal_freeze_digest=freeze_digest,
     )
 
     assert manifest["condition_stack_id"] == "indoor_static"
     assert manifest["stack_session_id"] == session_id
+    assert manifest["formal_freeze_digest"] == freeze_digest
     assert manifest["condition_stack_attestation"]["confirmed"] is True
     assert summary["condition_stack_id"] == "indoor_static"
     assert summary["stack_session_id"] == session_id
+    assert summary["formal_freeze_digest"] == freeze_digest
     assert summary["episode_validity"]["valid"] is True
 
 

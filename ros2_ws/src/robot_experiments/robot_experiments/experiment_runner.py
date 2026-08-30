@@ -728,6 +728,9 @@ class ExperimentRunner(Node):
         self._stack_session_id = str(
             self.declare_parameter("stack_session_id", "").value
         ).strip()
+        self._formal_freeze_digest = str(
+            self.declare_parameter("formal_freeze_digest", "").value
+        ).strip()
         if bool(self._condition_stack_id) != bool(self._stack_session_id):
             raise ConfigurationError(
                 "condition_stack_id and stack_session_id must be supplied together"
@@ -753,6 +756,20 @@ class ExperimentRunner(Node):
                 raise ConfigurationError(
                     "stack_session_id must be a lowercase SHA-256 digest"
                 )
+        if bool(self._formal_freeze_digest) != bool(self._condition_stack_id):
+            raise ConfigurationError(
+                "formal_freeze_digest requires condition stack attestation"
+            )
+        if self._formal_freeze_digest and (
+            len(self._formal_freeze_digest) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in self._formal_freeze_digest
+            )
+        ):
+            raise ConfigurationError(
+                "formal_freeze_digest must be a lowercase SHA-256 digest"
+            )
         visual_case = str(self.declare_parameter("dynamic_case_id", "").value).strip()
         visual_variant = str(self.declare_parameter("dynamic_variant_id", "").value).strip()
         visual_seed = self.declare_parameter("dynamic_seed", 0).value
@@ -1518,6 +1535,7 @@ class ExperimentRunner(Node):
             "navigation_execution_backend": self._navigation_execution_backend,
             "condition_stack_id": getattr(self, "_condition_stack_id", "") or None,
             "stack_session_id": getattr(self, "_stack_session_id", "") or None,
+            "formal_freeze_digest": getattr(self, "_formal_freeze_digest", "") or None,
             "wall_time_utc": datetime.now(timezone.utc).isoformat(),
             "wall_ns": time.time_ns(),
             "monotonic_ns": time.monotonic_ns(),
@@ -4282,6 +4300,7 @@ class ExperimentRunner(Node):
             "navigation_execution_backend": self._navigation_execution_backend,
             "condition_stack_id": getattr(self, "_condition_stack_id", "") or None,
             "stack_session_id": getattr(self, "_stack_session_id", "") or None,
+            "formal_freeze_digest": getattr(self, "_formal_freeze_digest", "") or None,
             "optimal_reference_hash": self._optimal_reference_hash,
             "dynamic_runtime_contract": dict(
                 self._dynamic_runtime_contract
@@ -4799,10 +4818,12 @@ class ExperimentRunner(Node):
         ]
         condition_stack_id = getattr(self, "_condition_stack_id", "")
         stack_session_id = getattr(self, "_stack_session_id", "")
+        formal_freeze_digest = getattr(self, "_formal_freeze_digest", "")
         condition_stack_attestation = {
             "required": bool(condition_stack_id),
             "condition_stack_id": condition_stack_id or None,
             "stack_session_id": stack_session_id or None,
+            "formal_freeze_digest": formal_freeze_digest or None,
             "confirmed": bool(condition_stack_id and stack_session_id),
         }
         manifest["condition_stack_attestation"] = condition_stack_attestation
@@ -4922,6 +4943,7 @@ class ExperimentRunner(Node):
             ],
             "condition_stack_id": condition_stack_id or None,
             "stack_session_id": stack_session_id or None,
+            "formal_freeze_digest": formal_freeze_digest or None,
             "condition_stack_attestation": condition_stack_attestation,
             "evidence": {
                 "mcap_zstd": bag_complete,

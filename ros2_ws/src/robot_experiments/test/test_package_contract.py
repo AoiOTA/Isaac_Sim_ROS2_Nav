@@ -387,7 +387,7 @@ def test_experiment_summary_requires_observed_executor_terminal_zero():
 def test_experiment_launch_forwards_condition_stack_attestation():
     runner = (PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py").read_text()
     launch = (PACKAGE_ROOT / "launch" / "experiment.launch.py").read_text()
-    for name in ("condition_stack_id", "stack_session_id"):
+    for name in ("condition_stack_id", "stack_session_id", "formal_freeze_digest"):
         assert f'DeclareLaunchArgument("{name}"' in launch
         assert f'LaunchConfiguration("{name}")' in launch
         assert f'self.declare_parameter("{name}"' in runner

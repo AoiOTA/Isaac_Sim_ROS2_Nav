@@ -44,6 +44,25 @@ FORMAL_CONDITION_IDS = (
 FORMAL_RUNS_PER_CONDITION = 20
 FORMAL_EXECUTION_AUTHORIZED = "AUTHORIZED"
 FORMAL_EXECUTION_NOT_AUTHORIZED = "NOT_AUTHORIZED"
+FORMAL_FROZEN_ASSET_KEYS = frozenset({
+    "module1_checkpoint",
+    "module2_srdr_checkpoint",
+    "module2_visual_heads_shadow_checkpoint",
+    "selected_run4_visual_heads_checkpoint",
+    "dino_checkpoint",
+    "indoor_route_prior_manifest",
+    "indoor_route_prior_m_sr",
+    "indoor_route_prior_m_dr",
+    "indoor_route_prior_transition",
+    "indoor_route_prior_valid_state_mask",
+    "rivermark_usd",
+    "rivermark_catalog",
+    "rivermark_catalog_constraints_tree",
+    "indoor_map_yaml",
+    "indoor_map_pgm",
+    "outdoor_map_yaml",
+    "outdoor_map_pgm",
+})
 NOT_QUALIFIED = "NOT_QUALIFIED"
 ENGINEERING_PILOT = "ENGINEERING_PILOT"
 GT_PREFIX = "/" + "ground_truth/"
@@ -212,7 +231,188 @@ class FormalCampaignManifest:
     path: Path
     authorization: str
     runner_entrypoint: Path
+    freeze: Mapping[str, Any]
+    freeze_digest: str
     conditions: tuple[FormalCondition, ...]
+
+
+def _file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _constraints_tree_sha256(path: Path) -> str:
+    if not path.is_dir():
+        raise V6ContractError("Rivermark catalog constraints path is not a directory")
+    rows = [
+        f"{file.relative_to(path)}\0{_file_sha256(file)}"
+        for file in sorted(item for item in path.rglob("*") if item.is_file())
+    ]
+    if not rows:
+        raise V6ContractError("Rivermark catalog constraints tree is empty")
+    return hashlib.sha256("\n".join(rows).encode()).hexdigest()
+
+
+def _validate_frozen_file(
+    value: Any, path: str, *, expected_path: Path | None = None
+) -> dict[str, str]:
+    entry = _mapping(value, path)
+    _require_exact_keys(entry, {"path", "sha256"}, path)
+    candidate = Path(str(entry.get("path", ""))).expanduser()
+    if not candidate.is_absolute():
+        raise V6ContractError(f"{path}.path must be absolute")
+    candidate = candidate.resolve()
+    if expected_path is not None and candidate != expected_path.resolve():
+        raise V6ContractError(f"{path}.path mismatch")
+    if not candidate.is_file() or not os.access(candidate, os.R_OK):
+        raise V6ContractError(f"{path}.path is not a readable file")
+    digest = str(entry.get("sha256", ""))
+    if digest != _file_sha256(candidate):
+        raise V6ContractError(f"{path}.sha256 mismatch")
+    return {"path": str(candidate), "sha256": digest}
+
+
+def _current_driver_version() -> str:
+    try:
+        return Path("/proc/driver/nvidia/version").read_text().splitlines()[0]
+    except (OSError, IndexError) as exc:
+        raise V6ContractError("NVIDIA driver version is unavailable") from exc
+
+
+def _validate_formal_freeze(
+    value: Any,
+    *,
+    conditions: tuple[FormalCondition, ...],
+    scenario_configs: Mapping[str, set[Path]],
+    runner_entrypoint: Path,
+) -> tuple[dict[str, Any], str]:
+    freeze = _mapping(value, "freeze")
+    _require_exact_keys(
+        freeze,
+        {
+            "repositories",
+            "driver_version",
+            "kernel_release",
+            "scenarios",
+            "scenario_configs",
+            "frozen_assets",
+            "runner_entrypoint",
+            "experiment_runner",
+            "v6_formal",
+        },
+        "freeze",
+    )
+    repositories = _mapping(freeze.get("repositories"), "freeze.repositories")
+    _require_exact_keys(
+        repositories, {"integration", "module2", "module3"}, "freeze.repositories"
+    )
+    normalized_repositories: dict[str, dict[str, str]] = {}
+    for name, value_entry in repositories.items():
+        entry = _mapping(value_entry, f"freeze.repositories.{name}")
+        _require_exact_keys(entry, {"path", "head"}, f"freeze.repositories.{name}")
+        repo_path = Path(str(entry.get("path", ""))).expanduser()
+        if not repo_path.is_absolute():
+            raise V6ContractError(f"freeze.repositories.{name}.path must be absolute")
+        repo_path = repo_path.resolve()
+        try:
+            actual_head = subprocess.run(
+                ["git", "-C", str(repo_path), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise V6ContractError(f"freeze repository is invalid: {name}") from exc
+        if entry.get("head") != actual_head:
+            raise V6ContractError(f"freeze repository head mismatch: {name}")
+        tracked_clean = subprocess.run(
+            ["git", "-C", str(repo_path), "diff", "--quiet", "HEAD", "--"]
+        )
+        index_clean = subprocess.run(
+            ["git", "-C", str(repo_path), "diff", "--cached", "--quiet"]
+        )
+        if tracked_clean.returncode != 0 or index_clean.returncode != 0:
+            raise V6ContractError(f"freeze repository tracked state is dirty: {name}")
+        normalized_repositories[name] = {"path": str(repo_path), "head": actual_head}
+    driver_version = str(freeze.get("driver_version", ""))
+    if driver_version != _current_driver_version():
+        raise V6ContractError("freeze driver_version mismatch")
+    kernel_release = str(freeze.get("kernel_release", ""))
+    if kernel_release != os.uname().release:
+        raise V6ContractError("freeze kernel_release mismatch")
+    condition_ids = {condition.condition_id for condition in conditions}
+    scenarios = _mapping(freeze.get("scenarios"), "freeze.scenarios")
+    _require_exact_keys(scenarios, condition_ids, "freeze.scenarios")
+    normalized_scenarios = {
+        condition.condition_id: _validate_frozen_file(
+            scenarios[condition.condition_id],
+            f"freeze.scenarios.{condition.condition_id}",
+            expected_path=condition.scenario_file,
+        )
+        for condition in conditions
+    }
+    configs = _mapping(freeze.get("scenario_configs"), "freeze.scenario_configs")
+    _require_exact_keys(configs, condition_ids, "freeze.scenario_configs")
+    normalized_configs: dict[str, list[dict[str, str]]] = {}
+    for condition_id in FORMAL_CONDITION_IDS:
+        rows = configs[condition_id]
+        if not isinstance(rows, list):
+            raise V6ContractError(f"freeze.scenario_configs.{condition_id} must be a list")
+        normalized_rows = [
+            _validate_frozen_file(
+                row, f"freeze.scenario_configs.{condition_id}[{index}]"
+            )
+            for index, row in enumerate(rows)
+        ]
+        if {Path(row["path"]) for row in normalized_rows} != scenario_configs[condition_id]:
+            raise V6ContractError(f"freeze scenario config set mismatch: {condition_id}")
+        normalized_configs[condition_id] = sorted(
+            normalized_rows, key=lambda row: row["path"]
+        )
+    asset_rows = _mapping(freeze.get("frozen_assets"), "freeze.frozen_assets")
+    _require_exact_keys(asset_rows, FORMAL_FROZEN_ASSET_KEYS, "freeze.frozen_assets")
+    normalized_assets = {}
+    for name in sorted(FORMAL_FROZEN_ASSET_KEYS):
+        if name != "rivermark_catalog_constraints_tree":
+            normalized_assets[name] = _validate_frozen_file(
+                asset_rows[name], f"freeze.frozen_assets.{name}"
+            )
+            continue
+        entry = _mapping(asset_rows[name], f"freeze.frozen_assets.{name}")
+        _require_exact_keys(entry, {"path", "sha256"}, f"freeze.frozen_assets.{name}")
+        tree_path = Path(str(entry.get("path", ""))).expanduser()
+        if not tree_path.is_absolute():
+            raise V6ContractError(f"freeze.frozen_assets.{name}.path must be absolute")
+        tree_path = tree_path.resolve()
+        digest = _constraints_tree_sha256(tree_path)
+        if entry.get("sha256") != digest:
+            raise V6ContractError(f"freeze.frozen_assets.{name}.sha256 mismatch")
+        normalized_assets[name] = {"path": str(tree_path), "sha256": digest}
+    code_root = Path(__file__).resolve().parent
+    normalized = {
+        "repositories": normalized_repositories,
+        "driver_version": driver_version,
+        "kernel_release": kernel_release,
+        "scenarios": normalized_scenarios,
+        "scenario_configs": normalized_configs,
+        "frozen_assets": normalized_assets,
+        "runner_entrypoint": _validate_frozen_file(
+            freeze.get("runner_entrypoint"),
+            "freeze.runner_entrypoint",
+            expected_path=runner_entrypoint,
+        ),
+        "experiment_runner": _validate_frozen_file(
+            freeze.get("experiment_runner"),
+            "freeze.experiment_runner",
+            expected_path=code_root / "experiment_runner.py",
+        ),
+        "v6_formal": _validate_frozen_file(
+            freeze.get("v6_formal"),
+            "freeze.v6_formal",
+            expected_path=Path(__file__).resolve(),
+        ),
+    }
+    canonical = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+    return normalized, hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def load_formal_campaign_manifest(path: str | Path) -> FormalCampaignManifest:
@@ -227,6 +427,7 @@ def load_formal_campaign_manifest(path: str | Path) -> FormalCampaignManifest:
             "execution_authorization",
             "runs_per_condition",
             "runner_entrypoint",
+            "freeze",
             "conditions",
         },
         "formal_manifest",
@@ -261,6 +462,7 @@ def load_formal_campaign_manifest(path: str | Path) -> FormalCampaignManifest:
     ):
         raise V6ContractError("formal conditions must contain exactly six rows")
     conditions: list[FormalCondition] = []
+    scenario_configs: dict[str, set[Path]] = {}
     output_directories: set[Path] = set()
     for index, value in enumerate(condition_rows):
         row = _mapping(value, f"conditions[{index}]")
@@ -292,6 +494,17 @@ def load_formal_campaign_manifest(path: str | Path) -> FormalCampaignManifest:
                 f"conditions[{index}].scenario_file is missing: {scenario_file}"
             )
         scenario = load_scenario(scenario_file)
+        scenario_configs[condition_id] = {
+            scenario.resolve_path(path)
+            for path in (
+                scenario.robot_config_file,
+                scenario.nav2_config_file,
+                scenario.dynamic_config_file,
+                scenario.appearance_config_file,
+                scenario.optimal_reference_file,
+            )
+            if path is not None
+        }
         expected_scenario_type = "static" if category == "appearance" else category
         if scenario.scenario_type != expected_scenario_type:
             raise V6ContractError(
@@ -413,11 +626,20 @@ def load_formal_campaign_manifest(path: str | Path) -> FormalCampaignManifest:
         raise V6ContractError(
             "formal conditions must use the frozen indoor/outdoor execution order"
         )
+    condition_tuple = tuple(conditions)
+    freeze, freeze_digest = _validate_formal_freeze(
+        raw.get("freeze"),
+        conditions=condition_tuple,
+        scenario_configs=scenario_configs,
+        runner_entrypoint=runner_entrypoint,
+    )
     return FormalCampaignManifest(
         path=manifest_path,
         authorization=authorization,
         runner_entrypoint=runner_entrypoint,
-        conditions=tuple(conditions),
+        freeze=freeze,
+        freeze_digest=freeze_digest,
+        conditions=condition_tuple,
     )
 
 
@@ -436,6 +658,15 @@ def _checksums_verified(run_root: Path) -> bool:
     if not entries or any(len(entry) != 2 for entry in entries):
         return False
     covered = {relative for _digest, relative in entries}
+    actual_regular_files = {
+        str(path.relative_to(run_root))
+        for path in run_root.rglob("*")
+        if path.is_file()
+        and not path.is_symlink()
+        and path.name != "checksums.sha256"
+    }
+    if covered != actual_regular_files:
+        return False
     if not {
         "run_summary.json",
         "run_manifest.json",
@@ -473,6 +704,11 @@ STACK_CONTRACT_KEYS = {
     "pgid",
     "start_ticks",
     "boot_id",
+    "integration_head",
+    "module2_head",
+    "module3_head",
+    "driver_version",
+    "kernel_release",
     "stack_session_id",
 }
 
@@ -605,6 +841,10 @@ def evaluate_formal_campaign(
                     and bool(episode_stack_session)
                     and summary_stack_session == episode_stack_session
                     and reset_identity_ok
+                    and episode.get("formal_freeze_digest")
+                    == manifest.freeze_digest
+                    and summary.get("formal_freeze_digest")
+                    == manifest.freeze_digest
                 )
                 if stack_identity_ok:
                     stack_session_ids.add(episode_stack_session)
@@ -785,6 +1025,19 @@ def execute_formal_campaign(
         condition_stack_contract,
         expected_condition_id=condition_stack_id,
     )
+    freeze_repositories = manifest.freeze["repositories"]
+    for contract_key, repository in (
+        ("integration_head", "integration"),
+        ("module2_head", "module2"),
+        ("module3_head", "module3"),
+    ):
+        if contract[contract_key] != freeze_repositories[repository]["head"]:
+            raise V6ContractError("formal condition stack repository head mismatch")
+    if (
+        contract["driver_version"] != manifest.freeze["driver_version"]
+        or contract["kernel_release"] != manifest.freeze["kernel_release"]
+    ):
+        raise V6ContractError("formal condition stack system freeze mismatch")
     expected_profile = (
         "module2_causal_obstacle_outdoor"
         if condition_stack_id.startswith("outdoor_")
@@ -804,6 +1057,7 @@ def execute_formal_campaign(
         *row["command"],
         f"condition_stack_id:={condition_stack_id}",
         f"stack_session_id:={contract['stack_session_id']}",
+        f"formal_freeze_digest:={manifest.freeze_digest}",
     ]
     # The caller owns the already-running matching T1/T2 stack.  Dispatch one
     # episode only, then return so a stack switch can never occur implicitly.
@@ -2236,6 +2490,7 @@ def cli(argv: list[str] | None = None) -> int:
                     {
                         "qualification": "FORMAL_CAMPAIGN",
                         "execution_authorization": campaign.authorization,
+                        "freeze_digest": campaign.freeze_digest,
                         "dispatch": args.execute_formal,
                         "aggregate": aggregate,
                         "resume_points": {

@@ -3176,6 +3176,21 @@ wait "$!"
         route_prior_snapshot = tmp_path / "route-prior-snapshot"
     route_prior_snapshot.mkdir(parents=True, exist_ok=True)
     (route_prior_snapshot / "manifest.json").write_text("{}\n", encoding="utf-8")
+    for repository in (project, integration, module2):
+        subprocess.run(["git", "init", "-q", str(repository)], check=True)
+        subprocess.run(
+            ["git", "-C", str(repository), "config", "user.email", "test@example.com"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repository), "config", "user.name", "Test"],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(repository), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(repository), "commit", "--allow-empty", "-q", "-m", "fixture"],
+            check=True,
+        )
     env = os.environ.copy()
     env.update({
         "PATH": f"{fake_bin}:{env['PATH']}",
@@ -3870,6 +3885,21 @@ wait "${nested_pid}"
     )
     constraints.parent.mkdir(parents=True)
     constraints.touch()
+    for repository in (project, integration, module2):
+        subprocess.run(["git", "init", "-q", str(repository)], check=True)
+        subprocess.run(
+            ["git", "-C", str(repository), "config", "user.email", "test@example.com"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repository), "config", "user.name", "Test"],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(repository), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(repository), "commit", "--allow-empty", "-q", "-m", "fixture"],
+            check=True,
+        )
     run_dir = tmp_path / "run"
     socket = tmp_path / "socket/module2.sock"
     env = os.environ.copy()

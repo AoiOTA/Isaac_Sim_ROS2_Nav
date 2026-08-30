@@ -110,7 +110,10 @@ case "${BIO_NAV_REP}" in
   rep3) BIO_NAV_RUN_INDEX=3 ;;  # seed 8603, hot reset
   *) echo "BIO_NAV_REP must be rep1, rep2, or rep3" >&2; exit 2 ;;
 esac
-test ! -e "${BIO_NAV_RUN_ROOT}/${BIO_NAV_REP}"
+if [[ -e "${BIO_NAV_RUN_ROOT}/${BIO_NAV_REP}" ]]; then
+  echo "refusing to reuse episode output: ${BIO_NAV_RUN_ROOT}/${BIO_NAV_REP}" >&2
+  exit 2
+fi
 
 ./scripts/run_experiment.sh \
   ros2_ws/src/robot_experiments/config/v6_final_kujiale_static.yaml \
@@ -243,7 +246,10 @@ The formal manifest contains exactly six ordered conditions and 20 run
 identities per condition. Repeated seeds across dynamic or appearance variants
 are valid; identity is the full run index, seed, case/variant, and appearance
 profile tuple. It also freezes the readable source-direct
-`scripts/run_experiment.sh` entrypoint. Dry-run reports immutable-evidence
+`scripts/run_experiment.sh` entrypoint, three clean repository HEADs,
+driver/kernel, six scenario/config sets, active checkpoints, RoutePrior arrays,
+Rivermark assets, maps, and formal evaluator sources. Dry-run validates that
+freeze and reports its digest, immutable-evidence
 aggregate state and the next resume point without requiring a live stack or
 starting ROS or Isaac:
 

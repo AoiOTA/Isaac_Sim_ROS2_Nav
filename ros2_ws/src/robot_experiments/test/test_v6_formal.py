@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 import robot_experiments.v6_formal as v6_formal_module
 import yaml
+from robot_experiments.scenario import load_scenario
 
 from robot_experiments.v6_formal import (
     DISPATCH_SUBSCRIPTION_TOPICS,
@@ -82,12 +83,91 @@ def _formal_raw(tmp_path: Path, *, authorization: str = "NOT_AUTHORIZED") -> dic
             })
     by_id = {row["id"]: row for row in rows}
     ordered = [by_id[name] for name in v6_formal_module.FORMAL_CONDITION_IDS]
+    def file_entry(path: Path) -> dict[str, str]:
+        path = path.resolve()
+        return {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+
+    scenario_entries = {}
+    scenario_configs = {}
+    for row in ordered:
+        scenario_path = Path(row["scenario_file"])
+        scenario_entries[row["id"]] = file_entry(scenario_path)
+        scenario = load_scenario(scenario_path)
+        config_paths = {
+            scenario.resolve_path(path)
+            for path in (
+                scenario.robot_config_file,
+                scenario.nav2_config_file,
+                scenario.dynamic_config_file,
+                scenario.appearance_config_file,
+                scenario.optimal_reference_file,
+            )
+            if path is not None
+        }
+        scenario_configs[row["id"]] = [
+            file_entry(path) for path in sorted(config_paths)
+        ]
+    repository_paths = {
+        "integration": Path(
+            "/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/"
+            "bio_nav_integration"
+        ),
+        "module2": Path(
+            "/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/"
+            "bio_nav_module2"
+        ),
+        "module3": Path(
+            "/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/"
+            "bio_nav_module3"
+        ),
+    }
+    repositories = {
+        name: {
+            "path": str(path.resolve()),
+            "head": subprocess.run(
+                ["git", "-C", str(path), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip(),
+        }
+        for name, path in repository_paths.items()
+    }
+    runner_entrypoint = REPO / "scripts" / "run_experiment.sh"
+    frozen_assets = {}
+    for name in sorted(v6_formal_module.FORMAL_FROZEN_ASSET_KEYS):
+        if name == "rivermark_catalog_constraints_tree":
+            path = tmp_path / "frozen-assets" / name
+            path.mkdir(parents=True, exist_ok=True)
+            (path / "region_02.json").write_text("{}\n", encoding="utf-8")
+            frozen_assets[name] = {
+                "path": str(path.resolve()),
+                "sha256": v6_formal_module._constraints_tree_sha256(path),
+            }
+            continue
+        path = tmp_path / "frozen-assets" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"{name}\n", encoding="utf-8")
+        frozen_assets[name] = file_entry(path)
     return {
         "schema_version": "bio_nav_v6_formal_campaign_v1",
         "intended_use": "formal_qualification",
         "execution_authorization": authorization,
         "runs_per_condition": 20,
-        "runner_entrypoint": str(REPO / "scripts" / "run_experiment.sh"),
+        "runner_entrypoint": str(runner_entrypoint),
+        "freeze": {
+            "repositories": repositories,
+            "driver_version": v6_formal_module._current_driver_version(),
+            "kernel_release": os.uname().release,
+            "scenarios": scenario_entries,
+            "scenario_configs": scenario_configs,
+            "frozen_assets": frozen_assets,
+            "runner_entrypoint": file_entry(runner_entrypoint),
+            "experiment_runner": file_entry(
+                PACKAGE / "robot_experiments" / "experiment_runner.py"
+            ),
+            "v6_formal": file_entry(PACKAGE / "robot_experiments" / "v6_formal.py"),
+        },
         "conditions": ordered,
     }
 
@@ -108,6 +188,7 @@ def _write_formal_run(
     run_index: int,
     *,
     strict_success: bool,
+    formal_freeze_digest: str,
     valid: bool = True,
     stack_session_id: str = "a" * 64,
 ) -> Path:
@@ -126,6 +207,7 @@ def _write_formal_run(
         "final_trial_metric_gate": {"passed": True},
         "condition_stack_id": condition.condition_id,
         "stack_session_id": stack_session_id,
+        "formal_freeze_digest": formal_freeze_digest,
     }
     episode = {
         "scenario_id": condition.scenario_id,
@@ -139,6 +221,7 @@ def _write_formal_run(
         "appearance": {"profile_id": identity["appearance_profile_id"]},
         "condition_stack_id": condition.condition_id,
         "stack_session_id": stack_session_id,
+        "formal_freeze_digest": formal_freeze_digest,
         "reset_receipt": {"generation": run_index},
     }
     telemetry = root / "telemetry"
@@ -187,6 +270,35 @@ def _live_stack_contract(
         "pgid": int(stat[2]),
         "start_ticks": int(stat[19]),
         "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+        "integration_head": subprocess.run(
+            [
+                "git", "-C",
+                "/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/"
+                "bio_nav_integration",
+                "rev-parse", "HEAD",
+            ],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip(),
+        "module2_head": subprocess.run(
+            [
+                "git", "-C",
+                "/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/"
+                "bio_nav_module2",
+                "rev-parse", "HEAD",
+            ],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip(),
+        "module3_head": subprocess.run(
+            [
+                "git", "-C",
+                "/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/"
+                "bio_nav_module3",
+                "rev-parse", "HEAD",
+            ],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip(),
+        "driver_version": v6_formal_module._current_driver_version(),
+        "kernel_release": os.uname().release,
     }
     payload.update(overrides)
     payload["stack_session_id"] = v6_formal_module._stack_session_id(payload)
@@ -377,6 +489,41 @@ def test_formal_manifest_requires_source_runner_and_route_prior_contract(tmp_pat
             load_formal_campaign_manifest(_write_manifest(tmp_path, raw))
 
 
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("repo_head", "repository head mismatch"),
+        ("driver", "driver_version mismatch"),
+        ("file_hash", "sha256 mismatch"),
+        ("asset_keys", "freeze.frozen_assets keys"),
+    ],
+)
+def test_formal_freeze_rejects_tuple_or_file_drift(tmp_path, mutation, message):
+    raw = _formal_raw(tmp_path)
+    if mutation == "repo_head":
+        raw["freeze"]["repositories"]["module3"]["head"] = "0" * 40
+    elif mutation == "driver":
+        raw["freeze"]["driver_version"] = "stale-driver"
+    elif mutation == "file_hash":
+        raw["freeze"]["v6_formal"]["sha256"] = "0" * 64
+    else:
+        raw["freeze"]["frozen_assets"].pop("dino_checkpoint")
+
+    with pytest.raises(V6ContractError, match=message):
+        load_formal_campaign_manifest(_write_manifest(tmp_path, raw))
+
+
+def test_formal_freeze_rejects_rivermark_constraint_tree_drift(tmp_path):
+    raw = _formal_raw(tmp_path)
+    tree = Path(
+        raw["freeze"]["frozen_assets"]["rivermark_catalog_constraints_tree"]["path"]
+    )
+    (tree / "region_02.json").write_text('{"changed": true}\n', encoding="utf-8")
+
+    with pytest.raises(V6ContractError, match="sha256 mismatch"):
+        load_formal_campaign_manifest(_write_manifest(tmp_path, raw))
+
+
 def test_formal_execution_requires_flag_and_authorized_manifest(tmp_path, capsys):
     path = _write_formal_manifest(tmp_path)
 
@@ -419,6 +566,35 @@ def test_formal_execution_rejects_wrong_stack_without_subprocess(
         )
 
     assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        ({"integration_head": "0" * 40}, "repository head mismatch"),
+        ({"driver_version": "stale-driver"}, "system freeze mismatch"),
+    ],
+)
+def test_formal_execution_rejects_stack_freeze_mismatch(
+    tmp_path, monkeypatch, override, message
+):
+    campaign = load_formal_campaign_manifest(
+        _write_formal_manifest(tmp_path, authorization="AUTHORIZED")
+    )
+    contract = _live_stack_contract(tmp_path, **override)
+    monkeypatch.setenv("ROS_DOMAIN_ID", "150")
+    monkeypatch.setattr(
+        v6_formal_module.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("subprocess must not run"),
+    )
+
+    with pytest.raises(V6ContractError, match=message):
+        execute_formal_campaign(
+            campaign,
+            condition_stack_id="indoor_static",
+            condition_stack_contract=contract,
+        )
 
 
 @pytest.mark.parametrize(
@@ -477,6 +653,7 @@ def test_formal_execution_dispatches_one_episode_and_returns(
             campaign.conditions[0],
             1,
             strict_success=True,
+            formal_freeze_digest=campaign.freeze_digest,
             stack_session_id=contract_payload["stack_session_id"],
         )
 
@@ -496,6 +673,7 @@ def test_formal_execution_dispatches_one_episode_and_returns(
         argument == f"stack_session_id:={contract_payload['stack_session_id']}"
         for argument in calls[0][0]
     )
+    assert f"formal_freeze_digest:={campaign.freeze_digest}" in calls[0][0]
     assert aggregate["present_episodes"] == 1
 
 
@@ -526,7 +704,9 @@ def test_formal_shell_requires_and_forwards_condition_stack_id():
 def test_formal_aggregate_resumes_after_valid_strict_episode(tmp_path):
     campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
     first = campaign.conditions[0]
-    _write_formal_run(first, 1, strict_success=True)
+    _write_formal_run(
+        first, 1, strict_success=True, formal_freeze_digest=campaign.freeze_digest
+    )
 
     aggregate = evaluate_formal_campaign(campaign)
     plans = formal_dispatch_plan(campaign, aggregate)
@@ -553,7 +733,13 @@ def test_formal_aggregate_stops_at_product_or_evidence_failure(
 ):
     campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
     first = campaign.conditions[0]
-    _write_formal_run(first, 1, strict_success=strict_success, valid=valid)
+    _write_formal_run(
+        first,
+        1,
+        strict_success=strict_success,
+        valid=valid,
+        formal_freeze_digest=campaign.freeze_digest,
+    )
 
     aggregate = evaluate_formal_campaign(campaign)
     first_result = aggregate["conditions"][0]
@@ -568,8 +754,16 @@ def test_formal_aggregate_stops_at_product_or_evidence_failure(
 def test_formal_aggregate_rejects_changed_stack_session(tmp_path):
     campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
     first = campaign.conditions[0]
-    _write_formal_run(first, 1, strict_success=True, stack_session_id="a" * 64)
-    _write_formal_run(first, 2, strict_success=True, stack_session_id="b" * 64)
+    _write_formal_run(
+        first, 1, strict_success=True,
+        formal_freeze_digest=campaign.freeze_digest,
+        stack_session_id="a" * 64,
+    )
+    _write_formal_run(
+        first, 2, strict_success=True,
+        formal_freeze_digest=campaign.freeze_digest,
+        stack_session_id="b" * 64,
+    )
 
     aggregate = evaluate_formal_campaign(campaign)
 
@@ -583,8 +777,12 @@ def test_formal_aggregate_requires_contiguous_reset_generation(
 ):
     campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
     first = campaign.conditions[0]
-    _write_formal_run(first, 1, strict_success=True)
-    root = _write_formal_run(first, 2, strict_success=True)
+    _write_formal_run(
+        first, 1, strict_success=True, formal_freeze_digest=campaign.freeze_digest
+    )
+    root = _write_formal_run(
+        first, 2, strict_success=True, formal_freeze_digest=campaign.freeze_digest
+    )
     manifest_path = root / "run_manifest.json"
     episode = json.loads(manifest_path.read_text())
     if generation is None:
@@ -613,10 +811,25 @@ def test_formal_checksum_requires_core_and_mcap_coverage(tmp_path):
     assert not v6_formal_module._checksums_verified(root)
 
 
+def test_formal_checksum_rejects_unlisted_regular_file(tmp_path):
+    campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
+    root = _write_formal_run(
+        campaign.conditions[0],
+        1,
+        strict_success=True,
+        formal_freeze_digest=campaign.freeze_digest,
+    )
+    (root / "unlisted.txt").write_text("not in checksum\n", encoding="utf-8")
+
+    assert not v6_formal_module._checksums_verified(root)
+
+
 def test_formal_aggregate_requires_final_metric_gate(tmp_path):
     campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
     first = campaign.conditions[0]
-    root = _write_formal_run(first, 1, strict_success=True)
+    root = _write_formal_run(
+        first, 1, strict_success=True, formal_freeze_digest=campaign.freeze_digest
+    )
     summary_path = root / "run_summary.json"
     summary = json.loads(summary_path.read_text())
     summary["final_trial_metric_gate"]["passed"] = False
@@ -628,11 +841,30 @@ def test_formal_aggregate_requires_final_metric_gate(tmp_path):
     assert aggregate["conditions"][0]["runs"][0]["status"] == "invalid_evidence"
 
 
+def test_formal_aggregate_rejects_run_freeze_digest_mismatch(tmp_path):
+    campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
+    _write_formal_run(
+        campaign.conditions[0],
+        1,
+        strict_success=True,
+        formal_freeze_digest="0" * 64,
+    )
+
+    aggregate = evaluate_formal_campaign(campaign)
+
+    assert aggregate["conditions"][0]["runs"][0]["status"] == "invalid_evidence"
+
+
 def test_unauthorized_complete_campaign_never_reports_pass(tmp_path):
     campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
     for condition in campaign.conditions:
         for run_index in range(1, 21):
-            _write_formal_run(condition, run_index, strict_success=True)
+            _write_formal_run(
+                condition,
+                run_index,
+                strict_success=True,
+                formal_freeze_digest=campaign.freeze_digest,
+            )
 
     aggregate = evaluate_formal_campaign(campaign)
 

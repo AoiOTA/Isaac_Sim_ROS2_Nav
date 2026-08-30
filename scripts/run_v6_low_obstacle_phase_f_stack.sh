@@ -130,13 +130,22 @@ write_process_identity() {
 write_stack_contract() {
   local directory="$1" condition_id="$2" scene_name="$3" condition_name="$4"
   local arm_name="$5" domain="$6" profile="$7" pid="$8" pgid="$9"
-  local start_ticks boot_id temporary
+  local start_ticks boot_id temporary integration_head module2_head module3_head
+  local driver_version kernel_release module3_root
   start_ticks="$(awk '{print $22}' "/proc/${pid}/stat")"
   boot_id="$(< /proc/sys/kernel/random/boot_id)"
+  module3_root="$(cd "${script_dir}/.." && pwd -P)"
+  integration_head="$(git -C "${integration_root}" rev-parse HEAD)"
+  module2_head="$(git -C "${module2_root}" rev-parse HEAD)"
+  module3_head="$(git -C "${module3_root}" rev-parse HEAD)"
+  driver_version="$(head -n 1 /proc/driver/nvidia/version)"
+  kernel_release="$(uname -r)"
   temporary="${directory}/.stack.contract.$$.tmp"
   python3 - "${temporary}" "${condition_id}" "${scene_name}" \
     "${condition_name}" "${arm_name}" "${domain}" "${profile}" \
-    "${pid}" "${pgid}" "${start_ticks}" "${boot_id}" <<'PY'
+    "${pid}" "${pgid}" "${start_ticks}" "${boot_id}" \
+    "${integration_head}" "${module2_head}" "${module3_head}" \
+    "${driver_version}" "${kernel_release}" <<'PY'
 import hashlib
 import json
 import os
@@ -156,6 +165,11 @@ payload = {
     "pgid": int(sys.argv[9]),
     "start_ticks": int(sys.argv[10]),
     "boot_id": sys.argv[11],
+    "integration_head": sys.argv[12],
+    "module2_head": sys.argv[13],
+    "module3_head": sys.argv[14],
+    "driver_version": sys.argv[15],
+    "kernel_release": sys.argv[16],
 }
 canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
 payload["stack_session_id"] = hashlib.sha256(canonical.encode()).hexdigest()
