@@ -163,11 +163,17 @@ run_episode() {
 }
 
 case "${component}" in
-  ros|isaac)
+  isaac)
     exec "${PHASE_B_WRAPPER}" \
       --run-root "${run_root}" \
       --domain "${domain_id}" \
-      "${component}" "$@"
+      isaac "$@" --paired-appearance-capture
+    ;;
+  ros)
+    exec "${PHASE_B_WRAPPER}" \
+      --run-root "${run_root}" \
+      --domain "${domain_id}" \
+      ros "$@"
     ;;
   manifest)
     route="$(normalize_route "${1:-}")"

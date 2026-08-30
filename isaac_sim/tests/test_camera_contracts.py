@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import os
 from pathlib import Path
 import sys
@@ -11,6 +12,7 @@ import yaml
 from isaac_sim.apps import navigation_sim
 from isaac_sim.apps.navigation_sim import (
     _apply_cli_overrides,
+    _create_paired_appearance_capture,
     _parser,
     _simulation_app_config,
     _verify_rtx_descriptor_sets,
@@ -219,10 +221,29 @@ def test_camera_cli_accepts_only_named_profiles():
 
     assert parser.allow_abbrev is False
     assert parser.parse_args([]).camera_profile is None
+    assert parser.parse_args([]).paired_appearance_capture is False
+    assert (
+        inspect.signature(run)
+        .parameters["paired_appearance_capture_enabled"]
+        .default
+        is False
+    )
     assert parser.parse_args([]).disable_dlss is False
     assert parser.parse_args([]).rtx_descriptor_sets is None
     assert parser.parse_args(["--disable-dlss"]).disable_dlss is True
     assert parser.parse_args(["--no-disable-dlss"]).disable_dlss is False
+    assert (
+        parser.parse_args(
+            ["--paired-appearance-capture"]
+        ).paired_appearance_capture
+        is True
+    )
+    assert (
+        parser.parse_args(
+            ["--no-paired-appearance-capture"]
+        ).paired_appearance_capture
+        is False
+    )
     assert parser.parse_args(
         ["--rtx-descriptor-sets", "20000"]
     ).rtx_descriptor_sets == 20000
@@ -359,6 +380,76 @@ def test_run_passes_single_gpu_launch_contract_to_simulation_app(monkeypatch):
     )
 
 
+def test_paired_appearance_capture_is_default_off_and_lazy(monkeypatch):
+    def reject_import(name, *args, **kwargs):
+        if name == "isaac_sim.src.experiment.paired_appearance":
+            raise AssertionError("paired appearance capture imported while disabled")
+        return original_import(name, *args, **kwargs)
+
+    original_import = __import__
+    monkeypatch.setattr("builtins.__import__", reject_import)
+
+    assert _create_paired_appearance_capture(
+        enabled=False,
+        sensors=SimpleNamespace(cameras=[object()]),
+        node=object(),
+        appearance_manager=object(),
+        appearance_profiles=object(),
+    ) is None
+
+
+def test_paired_appearance_capture_explicit_enable_uses_front_camera(monkeypatch):
+    captured = {}
+
+    class FakeCapture:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "isaac_sim.src.experiment.paired_appearance",
+        SimpleNamespace(PairedAppearanceCapture=FakeCapture),
+    )
+    camera = SimpleNamespace(
+        render_product=object(), width=320, height=180
+    )
+    node = object()
+    appearance_manager = object()
+    appearance_profiles = object()
+
+    result = _create_paired_appearance_capture(
+        enabled=True,
+        sensors=SimpleNamespace(cameras=[camera]),
+        node=node,
+        appearance_manager=appearance_manager,
+        appearance_profiles=appearance_profiles,
+    )
+
+    assert isinstance(result, FakeCapture)
+    assert captured == {
+        "node": node,
+        "render_product": camera.render_product,
+        "appearance_manager": appearance_manager,
+        "appearance_profiles": appearance_profiles,
+        "width": 320,
+        "height": 180,
+    }
+
+
+def test_paired_appearance_capture_enabled_without_camera_fails_closed():
+    with pytest.raises(
+        RuntimeError,
+        match="requires an enabled camera profile",
+    ):
+        _create_paired_appearance_capture(
+            enabled=True,
+            sensors=SimpleNamespace(cameras=[]),
+            node=object(),
+            appearance_manager=object(),
+            appearance_profiles=object(),
+        )
+
+
 def test_run_closes_simulation_app_when_descriptor_verification_fails(
     monkeypatch
 ):
@@ -397,9 +488,14 @@ def test_run_closes_simulation_app_when_descriptor_verification_fails(
 
 
 @pytest.mark.parametrize(
-    ("argv", "expected_localization_owner", "expected_descriptor_sets"),
     (
-        (["--disable-dlss"], "auto", None),
+        "argv",
+        "expected_localization_owner",
+        "expected_descriptor_sets",
+        "expected_paired_capture",
+    ),
+    (
+        (["--disable-dlss"], "auto", None, False),
         (
             [
                 "--disable-dlss",
@@ -407,14 +503,20 @@ def test_run_closes_simulation_app_when_descriptor_verification_fails(
                 "ideal",
                 "--rtx-descriptor-sets",
                 "20000",
+                "--paired-appearance-capture",
             ],
             "ideal",
             20000,
+            True,
         ),
     ),
 )
 def test_main_passes_runtime_contract_directly_to_run(
-    monkeypatch, argv, expected_localization_owner, expected_descriptor_sets
+    monkeypatch,
+    argv,
+    expected_localization_owner,
+    expected_descriptor_sets,
+    expected_paired_capture,
 ):
     selected_pose = SimpleNamespace(map=SimpleNamespace(calibrated=True))
     captured = {}
@@ -443,5 +545,20 @@ def test_main_passes_runtime_contract_directly_to_run(
         "run_kwargs": {
             "disable_dlss": True,
             "rtx_descriptor_sets": expected_descriptor_sets,
+            "paired_appearance_capture_enabled": expected_paired_capture,
         },
     }
+
+
+def test_targeted_teaching_wrapper_enables_paired_capture_only_for_isaac():
+    wrapper = (
+        ROOT / "scripts/run_module1_targeted_teaching_kujiale.sh"
+    ).read_text(encoding="utf-8")
+    case_body = wrapper.split('case "${component}" in', 1)[1]
+    isaac_body, remaining = case_body.split("  ros)\n", 1)
+    ros_body = remaining.split("  manifest)\n", 1)[0]
+
+    assert isaac_body.count("--paired-appearance-capture") == 1
+    assert 'isaac "$@" --paired-appearance-capture' in isaac_body
+    assert "--paired-appearance-capture" not in ros_body
+    assert wrapper.count("--paired-appearance-capture") == 1

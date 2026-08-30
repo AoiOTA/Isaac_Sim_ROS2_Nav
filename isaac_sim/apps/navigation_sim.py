@@ -405,6 +405,12 @@ def _parser() -> argparse.ArgumentParser:
         help="front Camera publication profile selected before Isaac starts",
     )
     parser.add_argument(
+        "--paired-appearance-capture",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="enable paired baseline/variant RGB capture on the front camera",
+    )
+    parser.add_argument(
         "--disable-dlss",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -759,6 +765,36 @@ def _verify_rtx_descriptor_sets(requested: int | None) -> None:
         )
 
 
+def _create_paired_appearance_capture(
+    *,
+    enabled: bool,
+    sensors: object,
+    node: object,
+    appearance_manager: object,
+    appearance_profiles: object,
+):
+    if not enabled:
+        return None
+    if not sensors.cameras:
+        raise RuntimeError(
+            "--paired-appearance-capture requires an enabled camera profile"
+        )
+
+    from isaac_sim.src.experiment.paired_appearance import (
+        PairedAppearanceCapture,
+    )
+
+    paired_camera = sensors.cameras[0]
+    return PairedAppearanceCapture(
+        node=node,
+        render_product=paired_camera.render_product,
+        appearance_manager=appearance_manager,
+        appearance_profiles=appearance_profiles,
+        width=paired_camera.width,
+        height=paired_camera.height,
+    )
+
+
 def run(
     config: ProjectConfig,
     selected_pose: object,
@@ -782,6 +818,7 @@ def run(
     imu_regime_diagnostic_config_path: Path = V6_IMU_REGIME_DIAGNOSTIC_CONFIG,
     disable_dlss: bool = False,
     rtx_descriptor_sets: int | None = None,
+    paired_appearance_capture_enabled: bool = False,
 ) -> None:
     configure_process_environment(config)
 
@@ -1016,20 +1053,13 @@ def run(
             config,
             camera_profile=camera_selection.profile.name,
         ).create_all()
-        if sensors.cameras:
-            from isaac_sim.src.experiment.paired_appearance import (
-                PairedAppearanceCapture,
-            )
-
-            paired_camera = sensors.cameras[0]
-            paired_appearance_capture = PairedAppearanceCapture(
-                node=node,
-                render_product=paired_camera.render_product,
-                appearance_manager=appearance_manager,
-                appearance_profiles=appearance_profiles,
-                width=paired_camera.width,
-                height=paired_camera.height,
-            )
+        paired_appearance_capture = _create_paired_appearance_capture(
+            enabled=paired_appearance_capture_enabled,
+            sensors=sensors,
+            node=node,
+            appearance_manager=appearance_manager,
+            appearance_profiles=appearance_profiles,
+        )
         if dynamic_scenario.coordinate_frame == "map" and not selected_pose.map.calibrated:
             raise ValueError("map-coordinate obstacles require a calibrated selected spawn pose")
         def map_to_usd(position):
@@ -3061,6 +3091,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.imu_regime_diagnostic_config.expanduser().resolve(),
         disable_dlss=args.disable_dlss,
         rtx_descriptor_sets=args.rtx_descriptor_sets,
+        paired_appearance_capture_enabled=args.paired_appearance_capture,
     )
     return 0
 
