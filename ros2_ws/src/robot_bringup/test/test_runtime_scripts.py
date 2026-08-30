@@ -719,9 +719,11 @@ die() {{ printf '%s\\n' "$*" >&2; return 1; }}
 
 def test_v6_rivermark_isaac_argv_covers_three_pilot_scenes(tmp_path):
     static, static_metadata = _v6_rivermark_argv(
-        tmp_path / 'static', 'isaac', 'static')
+        tmp_path / 'static', 'isaac', 'static',
+        '--rivermark-point-instancer-filter')
     dynamic, dynamic_metadata = _v6_rivermark_argv(
-        tmp_path / 'dynamic', 'isaac', 'dynamic')
+        tmp_path / 'dynamic', 'isaac', 'dynamic',
+        '--no-rivermark-point-instancer-filter')
     appearance, appearance_metadata = _v6_rivermark_argv(
         tmp_path / 'appearance', 'isaac', 'appearance', 'dim_cool')
 
@@ -741,6 +743,13 @@ def test_v6_rivermark_isaac_argv_covers_three_pilot_scenes(tmp_path):
         assert arguments.count('--disable-dlss') == 1
         assert '--no-disable-dlss' not in arguments
         assert metadata['GROUND_TRUTH'] == 'true'
+
+    assert static.count('--rivermark-point-instancer-filter') == 1
+    assert '--no-rivermark-point-instancer-filter' not in static
+    assert dynamic.count('--no-rivermark-point-instancer-filter') == 1
+    assert '--rivermark-point-instancer-filter' not in dynamic
+    assert not any('rivermark-point-instancer-filter' in argument
+                   for argument in appearance)
 
     for run_root in (
             tmp_path / 'static',

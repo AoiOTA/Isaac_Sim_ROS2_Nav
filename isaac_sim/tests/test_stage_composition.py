@@ -19,6 +19,10 @@ pytestmark = [
 ]
 
 from isaac_sim.src.config import load_project_config  # noqa: E402
+from isaac_sim.apps.navigation_sim import (  # noqa: E402
+    RivermarkPointInstancerInventory,
+    _apply_rivermark_point_instancer_filter,
+)
 from isaac_sim.src.experiment.dynamic_obstacles import DynamicObstacleManager  # noqa: E402
 from isaac_sim.src.experiment.scenario import load_dynamic_scenario  # noqa: E402
 from isaac_sim.src.stage.asset_validator import validate_robot_articulation  # noqa: E402
@@ -68,6 +72,101 @@ def _config():
             "ISAAC_ASSET_ROOT": "/home/lyb/isaacsim_assets/Assets/Isaac/6.0",
         },
     )
+
+
+def _define_point_instancer(
+    stage,
+    path: str,
+    prototype_kinds: tuple[str, ...],
+    instance_count: int,
+):
+    from pxr import Sdf, UsdGeom, UsdPhysics
+
+    instancer = UsdGeom.PointInstancer.Define(stage, path)
+    prototype_paths = []
+    for index, kind in enumerate(prototype_kinds):
+        prototype_path = f"{path}/Prototypes/p{index}"
+        prototype = UsdGeom.Xform.Define(stage, prototype_path)
+        prototype_paths.append(prototype.GetPath())
+        if kind == "renderable":
+            UsdGeom.Cube.Define(stage, f"{prototype_path}/cube")
+        elif kind == "physics_schema":
+            UsdPhysics.RigidBodyAPI.Apply(prototype.GetPrim())
+        elif kind == "physics_attribute":
+            prototype.GetPrim().CreateAttribute(
+                "physxTest:enabled", Sdf.ValueTypeNames.Bool
+            ).Set(True)
+        elif kind != "empty":
+            raise AssertionError(f"unsupported prototype kind: {kind}")
+    instancer.CreatePrototypesRel().SetTargets(prototype_paths)
+    instancer.CreateProtoIndicesAttr(
+        [index % len(prototype_paths) for index in range(instance_count)]
+    )
+    return instancer
+
+
+def test_rivermark_filter_deactivates_only_fully_non_renderable_instancers(
+    capsys,
+):
+    from pxr import Usd
+
+    stage = Usd.Stage.CreateInMemory()
+    invalid = _define_point_instancer(stage, "/invalid", ("empty",), 3)
+    valid = _define_point_instancer(stage, "/valid", ("renderable",), 2)
+    mixed = _define_point_instancer(
+        stage, "/mixed", ("empty", "renderable"), 4
+    )
+    root_before = stage.GetRootLayer().ExportToString()
+    expected = RivermarkPointInstancerInventory(3, 1, 3, 2)
+
+    layer, observed = _apply_rivermark_point_instancer_filter(stage, expected)
+
+    assert observed == expected
+    assert layer.anonymous is True
+    assert layer.identifier in stage.GetSessionLayer().subLayerPaths
+    assert invalid.GetPrim().IsActive() is False
+    assert valid.GetPrim().IsActive() is True
+    assert mixed.GetPrim().IsActive() is True
+    assert stage.GetRootLayer().ExportToString() == root_before
+    assert capsys.readouterr().out.strip() == (
+        "RIVERMARK_POINT_INSTANCER_FILTER inspected=3 deactivated=1 "
+        "deactivated_instances=3 kept=2"
+    )
+
+
+@pytest.mark.parametrize("physical_kind", ("physics_schema", "physics_attribute"))
+def test_rivermark_filter_physics_semantics_fail_before_any_write(physical_kind):
+    from pxr import Usd
+
+    stage = Usd.Stage.CreateInMemory()
+    invalid = _define_point_instancer(stage, "/invalid", ("empty",), 2)
+    physical = _define_point_instancer(stage, "/physical", (physical_kind,), 3)
+    session_before = tuple(stage.GetSessionLayer().subLayerPaths)
+
+    with pytest.raises(RuntimeError, match="physical semantics"):
+        _apply_rivermark_point_instancer_filter(
+            stage, RivermarkPointInstancerInventory(2, 1, 2, 1)
+        )
+
+    assert invalid.GetPrim().IsActive() is True
+    assert physical.GetPrim().IsActive() is True
+    assert tuple(stage.GetSessionLayer().subLayerPaths) == session_before
+
+
+def test_rivermark_filter_inventory_drift_fails_before_any_write():
+    from pxr import Usd
+
+    stage = Usd.Stage.CreateInMemory()
+    invalid = _define_point_instancer(stage, "/invalid", ("empty",), 2)
+    session_before = tuple(stage.GetSessionLayer().subLayerPaths)
+
+    with pytest.raises(RuntimeError, match="inventory drifted"):
+        _apply_rivermark_point_instancer_filter(
+            stage, RivermarkPointInstancerInventory(44, 36, 141548, 8)
+        )
+
+    assert invalid.GetPrim().IsActive() is True
+    assert tuple(stage.GetSessionLayer().subLayerPaths) == session_before
 
 
 def test_environment_is_sublayer_robot_is_reference_and_stage_is_not_saved():

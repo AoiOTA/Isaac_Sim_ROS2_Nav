@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import os
 from pathlib import Path
 import sys
@@ -12,6 +13,7 @@ from isaac_sim.apps import navigation_sim
 from isaac_sim.apps.navigation_sim import (
     _apply_cli_overrides,
     _parser,
+    _require_rivermark_point_instancer_filter_asset,
     _simulation_app_config,
     run,
 )
@@ -218,8 +220,15 @@ def test_camera_cli_accepts_only_named_profiles():
 
     assert parser.parse_args([]).camera_profile is None
     assert parser.parse_args([]).disable_dlss is False
+    assert parser.parse_args([]).rivermark_point_instancer_filter is False
     assert parser.parse_args(["--disable-dlss"]).disable_dlss is True
     assert parser.parse_args(["--no-disable-dlss"]).disable_dlss is False
+    assert parser.parse_args(
+        ["--rivermark-point-instancer-filter"]
+    ).rivermark_point_instancer_filter is True
+    assert parser.parse_args(
+        ["--no-rivermark-point-instancer-filter"]
+    ).rivermark_point_instancer_filter is False
     assert parser.parse_args(
         ["--headless", "--camera-profile", "standard"]
     ).camera_profile == "standard"
@@ -300,6 +309,93 @@ def test_run_passes_single_gpu_launch_contract_to_simulation_app(monkeypatch):
     assert captured == _simulation_app_config(_config(), disable_dlss=True)
 
 
+def test_rivermark_filter_requires_exact_path_and_sha256_before_kit(
+    tmp_path, monkeypatch
+):
+    source_asset = tmp_path / "rivermark.usd"
+    source_asset.write_bytes(b"frozen-rivermark")
+    config = _config()
+    config = replace(
+        config,
+        environment=replace(config.environment, source_asset=source_asset),
+    )
+    monkeypatch.setattr(
+        navigation_sim,
+        "RIVERMARK_POINT_INSTANCER_FILTER_ASSET",
+        source_asset.resolve(),
+    )
+    monkeypatch.setattr(
+        navigation_sim,
+        "RIVERMARK_POINT_INSTANCER_FILTER_SHA256",
+        navigation_sim._sha256_file(source_asset),
+    )
+
+    _require_rivermark_point_instancer_filter_asset(config, True)
+    source_asset.write_bytes(b"drifted")
+    with pytest.raises(ValueError, match="hash mismatch"):
+        _require_rivermark_point_instancer_filter_asset(config, True)
+
+    monkeypatch.setattr(
+        navigation_sim,
+        "RIVERMARK_POINT_INSTANCER_FILTER_ASSET",
+        tmp_path / "different.usd",
+    )
+    with pytest.raises(ValueError, match="requires the frozen source USD"):
+        _require_rivermark_point_instancer_filter_asset(config, True)
+
+
+def test_rivermark_filter_identity_check_precedes_simulation_app(monkeypatch):
+    events = []
+
+    class StopAfterConstruction(RuntimeError):
+        pass
+
+    class FakeSimulationApp:
+        def __init__(self, _launch):
+            events.append("simulation_app")
+            raise StopAfterConstruction
+
+    def fake_require(_config, enabled):
+        assert enabled is True
+        events.append("asset_identity")
+
+    monkeypatch.setattr(
+        navigation_sim,
+        "_require_rivermark_point_instancer_filter_asset",
+        fake_require,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "isaacsim",
+        SimpleNamespace(SimulationApp=FakeSimulationApp),
+    )
+
+    with pytest.raises(StopAfterConstruction):
+        run(
+            _config(),
+            None,
+            None,
+            None,
+            None,
+            "baseline",
+            rivermark_point_instancer_filter=True,
+        )
+
+    assert events == ["asset_identity", "simulation_app"]
+
+
+def test_rivermark_filter_runs_after_stage_load_before_composed_update():
+    source = Path(navigation_sim.__file__).read_text(encoding="utf-8")
+    stage_load = source.index("        stage.Load()")
+    filter_call = source.index(
+        "                _apply_rivermark_point_instancer_filter(stage)",
+        stage_load,
+    )
+    first_composed_update = source.index("            app.update()", filter_call)
+
+    assert stage_load < filter_call < first_composed_update
+
+
 def test_main_passes_disable_dlss_directly_to_run(monkeypatch):
     selected_pose = SimpleNamespace(map=SimpleNamespace(calibrated=True))
     captured = {}
@@ -318,4 +414,7 @@ def test_main_passes_disable_dlss_directly_to_run(monkeypatch):
     monkeypatch.setattr(navigation_sim, "run", fake_run)
 
     assert navigation_sim.main(["--disable-dlss"]) == 0
-    assert captured == {"disable_dlss": True}
+    assert captured == {
+        "disable_dlss": True,
+        "rivermark_point_instancer_filter": False,
+    }

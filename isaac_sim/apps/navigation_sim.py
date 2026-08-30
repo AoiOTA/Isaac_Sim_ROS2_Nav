@@ -18,7 +18,7 @@ from pathlib import Path
 import sys
 import time
 import traceback
-from typing import Callable, Sequence
+from typing import Callable, NamedTuple, Sequence
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -83,6 +83,29 @@ V6_IMU_REGIME_FEATURE_CONFIG = (
     PROJECT_ROOT
     / "isaac_sim/configs/experiments/v6_calibration_grid_features.yaml"
 ).resolve()
+
+RIVERMARK_POINT_INSTANCER_FILTER_ASSET = Path(
+    "/mnt/nas_home/Bio_Nav_Data/experiments/assets/"
+    "rivermark_plaza_v6_final_20260829/rivermark.usd"
+).resolve()
+RIVERMARK_POINT_INSTANCER_FILTER_SHA256 = (
+    "6ccd210233ace829002fdd4bbca98b88731a310e556ba964e2e7806aa99bf6fe"
+)
+
+
+class RivermarkPointInstancerInventory(NamedTuple):
+    inspected: int
+    deactivated: int
+    deactivated_instances: int
+    kept: int
+
+
+RIVERMARK_POINT_INSTANCER_FILTER_INVENTORY = RivermarkPointInstancerInventory(
+    inspected=44,
+    deactivated=36,
+    deactivated_instances=141548,
+    kept=8,
+)
 
 # Float conversion noise only; this is not an extra simulation-frame allowance.
 CLOCK_FLOAT_EPSILON_SECONDS = 1e-9
@@ -293,6 +316,157 @@ def effective_reset_seed(dynamic_seed: int | None, scenario_seed: int) -> int:
     return seed
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _require_rivermark_point_instancer_filter_asset(
+    config: ProjectConfig,
+    enabled: bool,
+) -> None:
+    """Bind the temporary filter to one frozen source asset before Kit starts."""
+
+    if not enabled:
+        return
+    source_asset = Path(config.environment.source_asset).resolve()
+    if source_asset != RIVERMARK_POINT_INSTANCER_FILTER_ASSET:
+        raise ValueError(
+            "Rivermark PointInstancer filter requires the frozen source USD: "
+            f"expected={RIVERMARK_POINT_INSTANCER_FILTER_ASSET}, "
+            f"actual={source_asset}"
+        )
+    actual_sha256 = _sha256_file(source_asset)
+    if actual_sha256 != RIVERMARK_POINT_INSTANCER_FILTER_SHA256:
+        raise ValueError(
+            "Rivermark PointInstancer filter source USD hash mismatch: "
+            f"expected={RIVERMARK_POINT_INSTANCER_FILTER_SHA256}, "
+            f"actual={actual_sha256}"
+        )
+
+
+def _active_prim_subtree(root_prim: object) -> tuple[object, ...]:
+    if not root_prim or not root_prim.IsValid() or not root_prim.IsActive():
+        return ()
+    active_prims = []
+    pending = [root_prim]
+    while pending:
+        prim = pending.pop()
+        if not prim.IsActive():
+            continue
+        active_prims.append(prim)
+        pending.extend(reversed(tuple(prim.GetChildren())))
+    return tuple(active_prims)
+
+
+def _prim_has_physics_semantics(prim: object) -> bool:
+    markers = ("physics", "physx", "collision", "rigidbody", "articulation")
+    schema_tokens = (str(prim.GetTypeName()), *map(str, prim.GetAppliedSchemas()))
+    if any(marker in token.lower() for token in schema_tokens for marker in markers):
+        return True
+    return any(
+        marker in str(prop.GetName()).lower()
+        for prop in prim.GetProperties()
+        for marker in markers
+    )
+
+
+def _apply_rivermark_point_instancer_filter(
+    stage: object,
+    expected_inventory: RivermarkPointInstancerInventory = (
+        RIVERMARK_POINT_INSTANCER_FILTER_INVENTORY
+    ),
+) -> tuple[object, RivermarkPointInstancerInventory]:
+    """Deactivate only the frozen asset's fully non-renderable instancers."""
+
+    from pxr import Sdf, Usd, UsdGeom
+
+    instancer_prims = tuple(
+        prim
+        for prim in stage.Traverse()
+        if prim.IsA(UsdGeom.PointInstancer)
+    )
+    candidates: list[tuple[object, int]] = []
+    unsafe_candidates: list[str] = []
+    for prim in instancer_prims:
+        instancer = UsdGeom.PointInstancer(prim)
+        prototype_roots = tuple(
+            stage.GetPrimAtPath(path)
+            for path in instancer.GetPrototypesRel().GetTargets()
+        )
+        prototype_prims = tuple(
+            descendant
+            for root in prototype_roots
+            for descendant in _active_prim_subtree(root)
+        )
+        if any(descendant.IsA(UsdGeom.Gprim) for descendant in prototype_prims):
+            continue
+        candidate_prims = _active_prim_subtree(prim) + prototype_prims
+        if any(_prim_has_physics_semantics(candidate) for candidate in candidate_prims):
+            unsafe_candidates.append(str(prim.GetPath()))
+            continue
+        proto_indices = instancer.GetProtoIndicesAttr().Get()
+        candidates.append((prim, 0 if proto_indices is None else len(proto_indices)))
+
+    if unsafe_candidates:
+        raise RuntimeError(
+            "Rivermark PointInstancer filter refused renderless instancers "
+            "with physical semantics: " + ", ".join(unsafe_candidates)
+        )
+
+    observed = RivermarkPointInstancerInventory(
+        inspected=len(instancer_prims),
+        deactivated=len(candidates),
+        deactivated_instances=sum(count for _, count in candidates),
+        kept=len(instancer_prims) - len(candidates),
+    )
+    if observed != expected_inventory:
+        raise RuntimeError(
+            "Rivermark PointInstancer inventory drifted before filtering: "
+            f"expected={expected_inventory}, observed={observed}"
+        )
+
+    filter_layer = Sdf.Layer.CreateAnonymous(
+        "rivermark_point_instancer_filter.usda"
+    )
+    session_layer = stage.GetSessionLayer()
+    filter_layer_attached = False
+    try:
+        with Sdf.ChangeBlock():
+            session_layer.subLayerPaths.insert(0, filter_layer.identifier)
+            filter_layer_attached = True
+        with Usd.EditContext(stage, filter_layer):
+            with Sdf.ChangeBlock():
+                for prim, _ in candidates:
+                    if not stage.OverridePrim(prim.GetPath()).SetActive(False):
+                        raise RuntimeError(
+                            "failed to author Rivermark PointInstancer "
+                            f"deactivation at {prim.GetPath()}"
+                        )
+    except Exception:
+        if filter_layer_attached:
+            with Sdf.ChangeBlock():
+                session_layer.subLayerPaths = [
+                    path
+                    for path in session_layer.subLayerPaths
+                    if path != filter_layer.identifier
+                ]
+                filter_layer.Clear()
+        raise
+
+    print(
+        "RIVERMARK_POINT_INSTANCER_FILTER "
+        f"inspected={observed.inspected} "
+        f"deactivated={observed.deactivated} "
+        f"deactivated_instances={observed.deactivated_instances} "
+        f"kept={observed.kept}"
+    )
+    return filter_layer, observed
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run the Isaac Sim + ROS 2 Jackal navigation simulation"
@@ -395,6 +569,15 @@ def _parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=False,
         help="disable DLSS anti-aliasing before Kit starts",
+    )
+    parser.add_argument(
+        "--rivermark-point-instancer-filter",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "temporarily deactivate fully non-renderable PointInstancers in "
+            "the exact frozen Rivermark source USD"
+        ),
     )
     parser.add_argument(
         "--environment-usd",
@@ -736,7 +919,12 @@ def run(
     imu_regime_phase_trace_path: Path | None = None,
     imu_regime_diagnostic_config_path: Path = V6_IMU_REGIME_DIAGNOSTIC_CONFIG,
     disable_dlss: bool = False,
+    rivermark_point_instancer_filter: bool = False,
 ) -> None:
+    _require_rivermark_point_instancer_filter_asset(
+        config,
+        rivermark_point_instancer_filter,
+    )
     configure_process_environment(config)
 
     from isaacsim import SimulationApp
@@ -768,6 +956,7 @@ def run(
     r2c1_observer_thread = None
     rclpy_started = False
     failed = False
+    rivermark_point_instancer_filter_layer = None
     try:
         _enable_extensions(app, config.extensions)
 
@@ -787,6 +976,10 @@ def run(
         # transient unresolved reference cannot make the canonical camera
         # frames appear missing on a restart.
         stage.Load()
+        if rivermark_point_instancer_filter:
+            rivermark_point_instancer_filter_layer, _ = (
+                _apply_rivermark_point_instancer_filter(stage)
+            )
         probe_end_timecode = None
         if (
             odom_phase_trace_path is not None
@@ -3001,6 +3194,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         args.imu_regime_diagnostic_config.expanduser().resolve(),
         disable_dlss=args.disable_dlss,
+        rivermark_point_instancer_filter=(
+            args.rivermark_point_instancer_filter
+        ),
     )
     return 0
 
