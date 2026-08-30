@@ -6,7 +6,9 @@ import json
 import os
 from pathlib import Path
 import shutil
+import socket
 import subprocess
+import tempfile
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +16,7 @@ import robot_experiments.v6_formal as v6_formal_module
 import robot_experiments.experiment_runner as experiment_runner_module
 import yaml
 from robot_experiments.scenario import load_scenario
+from robot_experiments.report import write_run_report
 
 from robot_experiments.v6_formal import (
     DISPATCH_SUBSCRIPTION_TOPICS,
@@ -448,10 +451,25 @@ def _write_formal_run(
     robot_hash, nav2_hash, runtime_hashes = (
         v6_formal_module._expected_scenario_runtime_hashes(condition)
     )
+    scenario = load_scenario(condition.scenario_file)
     episode.update({
+        "map_version": scenario.map_version,
+        "posegraph_version": scenario.posegraph_version,
         "robot_config_hash": robot_hash,
         "nav2_config_hash": nav2_hash,
         "scenario_runtime_hashes": runtime_hashes,
+        "dynamic_runtime_contract": {
+            "verified": True,
+            "config_sha256": runtime_hashes["dynamic_config"],
+        },
+        "spawn_pose_name": scenario.spawn_pose_name,
+        "usd_start_pose": {},
+        "map_start_pose": {},
+        "goal_pose": {},
+        "obstacle_trajectories": [],
+        "physics_dt": scenario.physics_dt,
+        "rtf": scenario.rtf,
+        "failure_reason": "" if strict_success else "fixture_product_failure",
         "provenance": {
             "git_head": MODULE3_HEAD,
             "git_dirty": True,
@@ -911,6 +929,11 @@ def _write_production_pilot_root(tmp_path: Path, monkeypatch):
             summary_path.write_text(json.dumps(summary), encoding="utf-8")
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             _refresh_checksums(destination)
+            stem = (
+                f"{scenario_id}-run-{rep:04d}-seed-{manifest['random_seed']}-"
+                f"20260831T120000.{rep:06d}Z"
+            )
+            write_run_report(manifest, destination.parents[1], stem)
     return pilot_root
 
 
@@ -1271,6 +1294,100 @@ def test_indoor_pilot_aggregate_rejects_unknown_rep_sibling(
 ):
     pilot_root = _write_indoor_production_pilot_root(tmp_path, monkeypatch)
     (pilot_root / "indoor_static" / "rep1" / "stale_old_campaign").mkdir()
+
+    with pytest.raises(V6ContractError, match="rep topology mismatch"):
+        v6_formal_module.aggregate_indoor_pilot(
+            pilot_root=pilot_root,
+            output_manifest=tmp_path / "nas" / "manifest.json",
+            output_aggregate=tmp_path / "nas" / "aggregate.json",
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "unknown_file",
+        "single_file",
+        "different_stem",
+        "multiple_pairs",
+        "symlink",
+        "socket",
+        "invalid_stem",
+        "json_projection",
+        "json_noncanonical",
+        "csv_tamper",
+    ],
+)
+def test_indoor_pilot_aggregate_rejects_invalid_official_sidecars(
+    tmp_path, monkeypatch, mutation
+):
+    pilot_root = _write_indoor_production_pilot_root(tmp_path, monkeypatch)
+    rep_root = pilot_root / "indoor_static" / "rep1"
+    json_path = next(rep_root.glob("*.json"))
+    csv_path = next(rep_root.glob("*.csv"))
+    owned_socket = None
+    owned_socket_directory = None
+    if mutation == "unknown_file":
+        (rep_root / "unknown.txt").write_text("stale\n", encoding="utf-8")
+    elif mutation == "single_file":
+        csv_path.unlink()
+    elif mutation == "different_stem":
+        csv_path.rename(rep_root / f"{csv_path.stem}-different.csv")
+    elif mutation == "multiple_pairs":
+        shutil.copy2(json_path, rep_root / f"{json_path.stem}-copy.json")
+        shutil.copy2(csv_path, rep_root / f"{csv_path.stem}-copy.csv")
+    elif mutation == "symlink":
+        target = tmp_path / "sidecar.json"
+        target.write_bytes(json_path.read_bytes())
+        json_path.unlink()
+        json_path.symlink_to(target)
+    elif mutation == "socket":
+        csv_path.unlink()
+        owned_socket_directory = Path(
+            tempfile.mkdtemp(prefix="bnsock-", dir="/tmp")
+        )
+        short_socket_path = owned_socket_directory / "s"
+        owned_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        owned_socket.bind(str(short_socket_path))
+        os.link(short_socket_path, csv_path)
+    elif mutation == "invalid_stem":
+        prefix = "v6_final_kujiale_static-run-0001-seed-8601-invalid"
+        json_path.rename(rep_root / f"{prefix}.json")
+        csv_path.rename(rep_root / f"{prefix}.csv")
+    elif mutation == "json_projection":
+        payload = json.loads(json_path.read_text())
+        payload["random_seed"] += 1
+        json_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    elif mutation == "json_noncanonical":
+        json_path.write_text(json_path.read_text().rstrip() + "  \n", encoding="utf-8")
+    else:
+        csv_path.write_text(csv_path.read_text() + "tamper\n", encoding="utf-8")
+    try:
+        with pytest.raises(V6ContractError):
+            v6_formal_module.aggregate_indoor_pilot(
+                pilot_root=pilot_root,
+                output_manifest=tmp_path / "nas" / "manifest.json",
+                output_aggregate=tmp_path / "nas" / "aggregate.json",
+            )
+    finally:
+        if owned_socket is not None:
+            owned_socket.close()
+        if owned_socket_directory is not None:
+            (owned_socket_directory / "s").unlink(missing_ok=True)
+            owned_socket_directory.rmdir()
+
+
+def test_indoor_pilot_aggregate_rejects_extra_run_directory(
+    tmp_path, monkeypatch
+):
+    pilot_root = _write_indoor_production_pilot_root(tmp_path, monkeypatch)
+    scenario_root = (
+        pilot_root / "indoor_static" / "rep1" / "v6_final_kujiale_static"
+    )
+    (scenario_root / "run-9999-seed-9999").mkdir()
 
     with pytest.raises(V6ContractError, match="rep topology mismatch"):
         v6_formal_module.aggregate_indoor_pilot(

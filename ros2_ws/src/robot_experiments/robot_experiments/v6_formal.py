@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
+import csv
 from dataclasses import dataclass, field, replace
 import hashlib
+import io
 import json
 import math
 import os
 from pathlib import Path
+import re
 import shlex
 import statistics
 import subprocess
@@ -30,6 +33,12 @@ from robot_experiments.reset_receipt import (
     parse_reset_receipt,
 )
 from robot_experiments.configuration import ConfigurationError
+from robot_experiments.report import (
+    REPRODUCIBILITY_FIELDS,
+    ReportValidationError,
+    _csv_value,
+    validate_manifest,
+)
 from robot_experiments.scenario import load_scenario
 
 
@@ -2203,6 +2212,104 @@ def _publish_no_clobber_json_pair(
             temporary.unlink(missing_ok=True)
 
 
+def _validate_indoor_pilot_sidecars(
+    *,
+    rep_root: Path,
+    scenario_directory: Path,
+    condition: FormalCondition,
+    rep: int,
+    expected_seed: int,
+    final_manifest_path: Path,
+) -> None:
+    entries = list(rep_root.iterdir())
+    if scenario_directory.is_symlink() or not scenario_directory.is_dir():
+        raise V6ContractError("indoor Pilot scenario directory is not a real directory")
+    sidecars = [path for path in entries if path != scenario_directory]
+    if len(sidecars) != 2 or any(
+        path.is_symlink() or not path.is_file() for path in sidecars
+    ):
+        raise V6ContractError(
+            "indoor Pilot rep must contain exactly one regular JSON/CSV sidecar pair"
+        )
+    by_suffix = {path.suffix: path for path in sidecars}
+    if set(by_suffix) != {".json", ".csv"}:
+        raise V6ContractError("indoor Pilot sidecars must be one JSON and one CSV")
+    json_path = by_suffix[".json"]
+    csv_path = by_suffix[".csv"]
+    if json_path.stem != csv_path.stem:
+        raise V6ContractError("indoor Pilot sidecar stems differ")
+    expected_prefix = (
+        f"{condition.scenario_id}-run-{rep:04d}-seed-{expected_seed}-"
+    )
+    timestamp_pattern = r"[0-9]{8}T[0-9]{6}\.[0-9]{6}Z"
+    if re.fullmatch(
+        re.escape(expected_prefix) + timestamp_pattern, json_path.stem
+    ) is None:
+        raise V6ContractError("indoor Pilot sidecar stem identity is invalid")
+    try:
+        sidecar_manifest = json.loads(json_path.read_text(encoding="utf-8"))
+        final_manifest = json.loads(final_manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(sidecar_manifest, Mapping) or not isinstance(
+            final_manifest, Mapping
+        ):
+            raise V6ContractError("indoor Pilot sidecar/final manifest must be mappings")
+        validate_manifest(sidecar_manifest)
+    except (OSError, json.JSONDecodeError, ReportValidationError) as exc:
+        raise V6ContractError(f"indoor Pilot JSON sidecar is invalid: {exc}") from exc
+    canonical_json = (
+        json.dumps(
+            sidecar_manifest,
+            indent=2,
+            sort_keys=True,
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+    if json_path.read_bytes() != canonical_json:
+        raise V6ContractError("indoor Pilot JSON sidecar encoding is not canonical")
+    if any(
+        key not in final_manifest or final_manifest[key] != value
+        for key, value in sidecar_manifest.items()
+    ):
+        raise V6ContractError(
+            "indoor Pilot sidecar differs from checksummed final manifest projection"
+        )
+    identity_projection = {
+        "scenario_id": condition.scenario_id,
+        "run_index": rep,
+        "random_seed": expected_seed,
+    }
+    if any(sidecar_manifest.get(key) != value for key, value in identity_projection.items()):
+        raise V6ContractError("indoor Pilot sidecar run identity mismatch")
+    for key in (
+        "condition_id",
+        "dynamic_selection",
+        "appearance",
+        "condition_stack_id",
+        "stack_session_id",
+        "provenance",
+        "robot_config_hash",
+        "nav2_config_hash",
+        "scenario_runtime_hashes",
+    ):
+        if sidecar_manifest.get(key) != final_manifest.get(key):
+            raise V6ContractError(
+                f"indoor Pilot sidecar final-manifest mismatch: {key}"
+            )
+    fieldnames = list(REPRODUCIBILITY_FIELDS)
+    fieldnames.extend(sorted(set(sidecar_manifest) - set(fieldnames)))
+    stream = io.StringIO(newline="")
+    writer = csv.DictWriter(stream, fieldnames=fieldnames, extrasaction="raise")
+    writer.writeheader()
+    writer.writerow(
+        {key: _csv_value(sidecar_manifest[key]) for key in fieldnames}
+    )
+    if csv_path.read_bytes() != stream.getvalue().encode("utf-8"):
+        raise V6ContractError(
+            "indoor Pilot CSV sidecar is not the deterministic report.py serialization"
+        )
+
+
 def aggregate_sufficient_pilot(
     *, pilot_root: str | Path, output_manifest: str | Path, output_aggregate: str | Path
 ) -> dict[str, Any]:
@@ -2349,11 +2456,12 @@ def aggregate_indoor_pilot(
             rep_root = condition_root / f"rep{rep}"
             scenario_root = rep_root / condition.scenario_id
             if (
-                {path.name for path in rep_root.iterdir()}
-                != {condition.scenario_id}
+                len(list(rep_root.iterdir())) != 3
+                or scenario_root.is_symlink()
                 or not scenario_root.is_dir()
                 or {path.name for path in scenario_root.iterdir()}
                 != {run_root.name}
+                or run_root.is_symlink()
                 or not run_root.is_dir()
             ):
                 raise V6ContractError(
@@ -2362,6 +2470,14 @@ def aggregate_indoor_pilot(
             summary_path = run_root / "run_summary.json"
             manifest_path = run_root / "run_manifest.json"
             stack_contract_path = run_root / "stack_contract.json"
+            _validate_indoor_pilot_sidecars(
+                rep_root=rep_root,
+                scenario_directory=scenario_root,
+                condition=condition,
+                rep=rep,
+                expected_seed=int(identity["seed"]),
+                final_manifest_path=manifest_path,
+            )
             _contract, tuple_digest = _load_stack_contract_snapshot(
                 stack_contract_path,
                 expected_condition_id=condition.condition_id,
