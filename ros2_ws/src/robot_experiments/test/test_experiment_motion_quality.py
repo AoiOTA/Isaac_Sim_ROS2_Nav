@@ -1,10 +1,14 @@
+from dataclasses import replace
 import hashlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from nav2_msgs.msg import CollisionMonitorState
 
 import robot_experiments.experiment_runner as experiment_runner_module
+from robot_experiments.attempt31_rivermark_qualification import _rate_group
 from robot_experiments.experiment_runner import (
     _edge_prior_statistics,
     _parse_obstacle_completion,
@@ -18,7 +22,7 @@ from robot_experiments.experiment_runner import (
     _reset_dynamic_selection,
 )
 from robot_experiments.configuration import ConfigurationError
-from robot_experiments.scenario import RunSelection
+from robot_experiments.scenario import RunSelection, load_scenario
 
 
 def test_tracked_route_length_replaces_untrimmed_canonical_edge_sum():
@@ -780,6 +784,273 @@ def test_terminal_zero_failure_is_retried_when_successful_resume_is_required(tmp
     assert runner._completed_resume_manifest(root, 2, selection) == manifest
     runner._require_successful_resume = True
     assert runner._completed_resume_manifest(root, 2, selection) is None
+
+
+def _static_sat_evidence_run(
+    tmp_path: Path,
+    *,
+    obstacle_position: tuple[float, float] | None,
+    contact_sensor_collision: bool,
+    nav2_succeeded: bool = True,
+    collision_monitor_stop: bool = False,
+):
+    scenario = load_scenario(
+        Path(__file__).parents[1] / "config" / "static.yaml"
+    )
+    scenario = replace(
+        scenario,
+        obstacles={
+            "layout_id": "sat_diagnostic_fixture",
+            "static": [{"id": "low_box"}],
+            "trajectories": [],
+        },
+        success=replace(
+            scenario.success,
+            minimum_ground_truth_path_length_m=0.0,
+            minimum_reverse_distance_m=0.0,
+            maximum_reverse_distance_fraction=1.0,
+            minimum_curved_distance_fraction=0.0,
+            maximum_stopped_time_fraction=1.0,
+        ),
+    )
+    runner = object.__new__(ExperimentRunner)
+    runner._clear_run_state()
+    runner._scenario = scenario
+    runner._active_selection = RunSelection(7301, condition_id="static")
+    runner._spawn_pose = SimpleNamespace(
+        name="mapping_start",
+        usd=SimpleNamespace(as_dict=lambda: {}),
+        map=SimpleNamespace(as_dict=lambda: {}),
+    )
+    runner._ground_truth_samples = [
+        OdometrySample(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0)
+    ]
+    runner._odom_samples = [
+        OdometrySample(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0)
+    ]
+    runner._leg_results = [{
+        "id": "G1",
+        "nav2_status": experiment_runner_module.GoalStatus.STATUS_SUCCEEDED,
+    }]
+    runner._robot_footprint = (
+        (0.255, 0.210),
+        (0.255, -0.210),
+        (-0.230, -0.210),
+        (-0.230, 0.210),
+    )
+    if obstacle_position is not None:
+        runner._obstacle_state = {
+            "obstacles": [{
+                "id": "low_box",
+                "position": [*obstacle_position, 0.08],
+                "position_frame": "map",
+                "size": [0.30, 0.30, 0.16],
+                "retired": False,
+            }],
+            "events": [],
+        }
+    runner._collision_seen = False
+    runner._collision_callback(SimpleNamespace(data=contact_sensor_collision))
+    runner._collision_monitor_active = True
+    runner._localization_seen = True
+    runner._tf_ever_available = True
+    runner._terminal_zero_confirmed = True
+    runner._terminal_zero_reason = "terminal_zero_confirmed"
+    runner._navigation_start_stamp_s = 0.5
+    runner._navigation_end_stamp_s = 1.5
+    runner._dynamic_runtime_contract = {"verified": True}
+    runner._appearance_runtime_contract = {"verified": True}
+    runner._appearance_state = None
+    runner._appearance_config_hash = None
+    runner._optimal_reference = None
+    runner._optimal_reference_hash = None
+    runner._navigation_graph = None
+    runner._minimum_safety_scan_range_m = None
+    runner._provenance = {}
+    runner._robot_config_hash = "robot"
+    runner._nav2_config_hash = "nav2"
+    runner._nav2_profile = "stable"
+    runner._clear_slam_localization_buffer = True
+    runner._reset_map_base_translation_tolerance_m = 0.05
+    runner._experiment_arm = ""
+    runner._navigation_execution_backend = "navigate_to_pose"
+    runner._reset_receipt = {}
+    runner._record_bag = False
+    runner._fail_stop_metric_contract = None
+    if collision_monitor_stop:
+        runner._collision_lock_timeout_sec = 0.0
+        runner._lookup_fresh_map_to_odom = lambda: None
+        runner._collision_lock_callback(
+            SimpleNamespace(action_type=CollisionMonitorState.STOP)
+        )
+        runner._update_health()
+
+    nav2_status = (
+        experiment_runner_module.GoalStatus.STATUS_SUCCEEDED
+        if nav2_succeeded
+        else experiment_runner_module.GoalStatus.STATUS_ABORTED
+    )
+    manifest = runner._build_manifest(
+        run_index=2,
+        seed=7301,
+        nav2_succeeded=nav2_succeeded,
+        timed_out=False,
+        nav2_status=nav2_status,
+        final_still=True,
+        runner_error=None,
+    )
+    manifest["dynamic_selection"] = {"case_id": None, "variant_id": None}
+
+    root = tmp_path / "run-0002-seed-7301"
+    root.mkdir()
+    (root / "TRIAL_DISPATCHED.json").write_text("{}\n", encoding="utf-8")
+
+    def write_files(names):
+        for name in names:
+            (root / name).write_text("fixture\n", encoding="utf-8")
+        return True
+
+    runner._write_depth_snapshot = lambda _root: write_files(
+        ("depth_frame.pgm", "depth_frame.json")
+    )
+    runner._write_costmap_snapshot = lambda _root, name, _grid: write_files(
+        (f"{name}.pgm", f"{name}.json")
+    )
+    runner._write_scan_snapshot = lambda _root, stem, _frame: write_files(
+        (f"{stem}.csv", f"{stem}.json")
+    )
+    summary = runner._write_run_evidence(
+        manifest, 7301, 2, root, bag_complete=False
+    )
+    return runner, manifest, summary, root
+
+
+def test_sat_overlap_is_diagnostic_when_contact_sensor_is_clear(tmp_path):
+    runner, manifest, summary, _root = _static_sat_evidence_run(
+        tmp_path,
+        obstacle_position=(1.25, 0.0),
+        contact_sensor_collision=False,
+    )
+
+    geometric = manifest["static_geometric_contact"]
+    assert geometric["observed"]
+    assert geometric["maximum_sat_overlap_m"] > 0.001
+    assert geometric["exceeds_acceptance_overlap"]
+    assert geometric["diagnostic_only"]
+    assert not runner._collision_detected
+    assert manifest["result"] == "success"
+    assert manifest["failure_reason"] == ""
+    assert summary["strict_success"]
+    assert summary["physical_collision_free"]
+    assert not summary["isaac_contact_sensor_collision_detected"]
+
+
+def test_contact_sensor_collision_fails_even_when_sat_overlap_is_zero(tmp_path):
+    runner, manifest, summary, _root = _static_sat_evidence_run(
+        tmp_path,
+        obstacle_position=(5.0, 0.0),
+        contact_sensor_collision=True,
+    )
+
+    geometric = manifest["static_geometric_contact"]
+    assert geometric["observed"]
+    assert geometric["maximum_sat_overlap_m"] == 0.0
+    assert runner._isaac_contact_sensor_collision_detected
+    assert manifest["result"] == "failure"
+    assert manifest["failure_reason"] == "collision_detected"
+    assert not summary["strict_success"]
+    assert not summary["physical_collision_free"]
+    assert summary["isaac_contact_sensor_collision_detected"]
+
+
+def test_collision_monitor_stop_is_navigation_failure_not_physical_collision(
+    tmp_path,
+):
+    runner, manifest, summary, _root = _static_sat_evidence_run(
+        tmp_path,
+        obstacle_position=(5.0, 0.0),
+        contact_sensor_collision=False,
+        nav2_succeeded=False,
+        collision_monitor_stop=True,
+    )
+
+    assert runner._collision_monitor_locked
+    assert manifest["result"] == "failure"
+    assert "nav2_action_failed" in manifest["failure_reason"]
+    assert "collision_monitor_locked" in manifest["failure_reason"]
+    assert "collision_detected" not in manifest["failure_reason"]
+    assert not summary["strict_success"]
+    assert summary["physical_collision_free"]
+    assert not summary["isaac_contact_sensor_collision_detected"]
+
+
+@pytest.mark.parametrize(
+    ("obstacle_position", "warning_expected"),
+    [
+        (None, False),
+        ((1.25, 0.0), True),
+    ],
+)
+def test_sat_diagnostic_presence_does_not_change_complete_resume_eligibility(
+    tmp_path, obstacle_position, warning_expected
+):
+    runner, manifest, summary, root = _static_sat_evidence_run(
+        tmp_path,
+        obstacle_position=obstacle_position,
+        contact_sensor_collision=False,
+    )
+    geometric = manifest["static_geometric_contact"]
+    assert geometric["observed"] is warning_expected
+    assert bool(manifest["warning_reason"]) is warning_expected
+    assert summary["warning_reason"] == manifest["warning_reason"]
+    assert summary["data_complete"]
+    assert summary["checksums_verified"]
+    assert summary["strict_success"]
+    assert summary["physical_collision_free"]
+    selection = SimpleNamespace(
+        seed=7301,
+        condition_id="static",
+        appearance_profile_id=None,
+        case_id=None,
+        variant_id=None,
+    )
+    runner._require_successful_resume = True
+
+    assert runner._completed_resume_manifest(root, 2, selection) == manifest
+
+
+def test_sat_diagnostics_do_not_change_collision_rate_statistics():
+    records = []
+    for seed in range(20):
+        summary = {
+            "strict_success": True,
+            "physical_collision_free": True,
+            "data_complete": True,
+            "checksums_verified": True,
+            "path_deviation_percent": 0.0,
+            "legs": [{"id": f"G{index}"} for index in range(1, 6)],
+        }
+        if seed % 2:
+            summary["static_geometric_contact"] = {
+                "observed": True,
+                "contact_detected": True,
+                "maximum_sat_overlap_m": 0.12,
+                "diagnostic_only": True,
+            }
+        records.append({"summary": summary, "manifest": {}})
+
+    result = _rate_group(
+        records,
+        name="static",
+        required_rate_percent=95.0,
+        require_path_deviation=True,
+    )
+
+    assert result["strict_successes"] == 20
+    assert result["collision_free_runs"] == 20
+    assert result["collision_free_rate_percent"] == 100.0
+    assert result["complete_evidence_runs"] == 20
+    assert result["passed"]
 
 
 def test_checksum_finalization_updates_summary_and_covers_final_bytes(tmp_path):
