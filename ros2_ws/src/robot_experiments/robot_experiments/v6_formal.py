@@ -1303,13 +1303,15 @@ def _publish_no_clobber_json_pair(
                 stream.flush()
                 os.fsync(stream.fileno())
             temporary_paths.append(Path(name))
+        # The second (aggregate) link is the commit marker.  Consumers must
+        # ignore a manifest unless the matching aggregate exists.
         for temporary, output in zip(temporary_paths, (first_path, second_path)):
             os.link(temporary, output)
             published.append(output)
-    except FileExistsError as exc:
+    except OSError as exc:
         for output in published:
             output.unlink(missing_ok=True)
-        raise V6ContractError("Pilot aggregate output already exists") from exc
+        raise V6ContractError("Pilot aggregate pair publish failed") from exc
     finally:
         for temporary in temporary_paths:
             temporary.unlink(missing_ok=True)

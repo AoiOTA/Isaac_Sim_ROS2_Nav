@@ -1,5 +1,6 @@
 from collections import deque
 from dataclasses import replace
+import errno
 import hashlib
 import json
 import os
@@ -1054,6 +1055,45 @@ def test_sufficient_pilot_aggregate_rejects_missing_exact_run_path(
 
     assert not manifest_output.exists()
     assert not aggregate_output.exists()
+
+
+def test_pilot_pair_publish_rolls_back_second_link_oserror_and_retries(
+    tmp_path, monkeypatch
+):
+    manifest_output = tmp_path / "pilot-manifest.json"
+    aggregate_output = tmp_path / "pilot-aggregate.json"
+    real_link = v6_formal_module.os.link
+    calls = 0
+
+    def fail_second_link(source, target):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError(errno.EIO, "injected second-link failure")
+        return real_link(source, target)
+
+    monkeypatch.setattr(v6_formal_module.os, "link", fail_second_link)
+
+    with pytest.raises(V6ContractError, match="pair publish failed"):
+        v6_formal_module._publish_no_clobber_json_pair(
+            manifest_output,
+            {"kind": "manifest"},
+            aggregate_output,
+            {"kind": "aggregate"},
+        )
+
+    assert not manifest_output.exists()
+    assert not aggregate_output.exists()
+
+    monkeypatch.setattr(v6_formal_module.os, "link", real_link)
+    v6_formal_module._publish_no_clobber_json_pair(
+        manifest_output,
+        {"kind": "manifest"},
+        aggregate_output,
+        {"kind": "aggregate"},
+    )
+    assert json.loads(manifest_output.read_text()) == {"kind": "manifest"}
+    assert json.loads(aggregate_output.read_text()) == {"kind": "aggregate"}
 
 
 @pytest.mark.parametrize(
