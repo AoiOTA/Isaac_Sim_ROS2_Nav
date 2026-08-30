@@ -736,6 +736,7 @@ def test_v6_rivermark_isaac_argv_covers_three_pilot_scenes(tmp_path):
         assert 'mixed' in arguments
         assert '--structure-tf-source' in arguments
         assert 'isaac' in arguments
+        assert arguments[arguments.index('--localization-owner') + 1] == 'ideal'
         assert '--camera-profile' in arguments
         assert 'rgbd_navigation' in arguments
         assert arguments.count('--disable-dlss') == 1
@@ -785,7 +786,9 @@ def test_v6_rivermark_isaac_argv_covers_three_pilot_scenes(tmp_path):
         f'import_assets::asset_root={static_root / "explicit assets"}',
     ]
 
-    for override in ('--disable-dlss', '--no-disable-dlss'):
+    for override in (
+            '--disable-dlss', '--no-disable-dlss',
+            '--localization-owner', '--localization-owner=amcl'):
         rejected = subprocess.run(
             [str(static_root / 'scripts' / RUN_V6_RIVERMARK.name),
              'isaac', 'static', override],

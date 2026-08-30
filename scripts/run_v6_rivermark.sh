@@ -74,6 +74,7 @@ if [[ "${entrypoint}" == "isaac" ]]; then
       --environment-usd|--environment-usd=*|--spawn-poses-file|--spawn-poses-file=*|\
       --spawn-pose|--spawn-pose=*|--mode|--mode=*|\
       --structure-tf-source|--structure-tf-source=*|\
+      --localization-owner|--localization-owner=*|\
       --camera-profile|--camera-profile=*|\
       --disable-dlss|--disable-dlss=*|\
       --no-disable-dlss|--no-disable-dlss=*|\
@@ -109,6 +110,7 @@ if [[ "${entrypoint}" == "isaac" ]]; then
     --navigation-mode localization \
     --mode mixed \
     --structure-tf-source isaac \
+    --localization-owner ideal \
     --camera-profile rgbd_navigation \
     --disable-dlss \
     --dynamic-obstacle-config "${obstacle_config}" \

@@ -7,6 +7,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from isaac_sim.apps import navigation_sim
 from isaac_sim.graphs.control_graph import control_graph_spec
 from isaac_sim.graphs import odometry_graph
 from isaac_sim.graphs.odometry_graph import ideal_odometry_graph_spec
@@ -315,6 +316,30 @@ def test_tf_ownership_requires_exactly_one_publisher():
         expected_tf_owners("estimated", localization_owner="ideal")
     with pytest.raises(TfOwnershipError, match="mixed odometry requires"):
         expected_tf_owners("mixed", "rsp")
+
+
+def test_navigation_validation_forwards_strict_localization_owner(monkeypatch):
+    parser = navigation_sim._parser()
+    assert parser.parse_args([]).localization_owner == "auto"
+    assert parser.parse_args(
+        ["--localization-owner", "ideal"]
+    ).localization_owner == "ideal"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--localization-owner", "slam_toolbox"])
+
+    calls = []
+    monkeypatch.setattr(
+        navigation_sim,
+        "expected_tf_owners",
+        lambda odometry_mode, structure_tf_source, localization_owner: calls.append(
+            (odometry_mode, structure_tf_source, localization_owner)
+        ),
+    )
+    navigation_sim.validate_configuration(
+        _config("mixed"),
+        localization_owner="ideal",
+    )
+    assert calls == [("mixed", "isaac", "ideal")]
 
 
 def test_mixed_builds_the_compute_odometry_graph(monkeypatch):

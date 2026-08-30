@@ -319,6 +319,12 @@ def _parser() -> argparse.ArgumentParser:
         help="override simulation.structure_tf_source",
     )
     parser.add_argument(
+        "--localization-owner",
+        choices=("auto", "amcl", "ideal"),
+        default="auto",
+        help="map-to-odom localization owner used by the TF contract",
+    )
+    parser.add_argument(
         "--headless",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -593,6 +599,7 @@ def _apply_cli_overrides(args: argparse.Namespace) -> None:
 def validate_configuration(
     config: ProjectConfig,
     camera_profile: str | None = None,
+    localization_owner: str = "auto",
 ) -> tuple[object, object, object]:
     """Validate configuration without importing USD/Kit modules."""
 
@@ -632,6 +639,7 @@ def validate_configuration(
     expected_tf_owners(
         config.simulation.odometry_mode,
         config.simulation.structure_tf_source,
+        localization_owner,
     )
     dynamic_scenario = load_dynamic_scenario(config.files.dynamic_obstacles)
     return selected_pose, dynamic_scenario, camera_selection
@@ -2904,7 +2912,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     configure_process_environment(config)
     selected_pose, dynamic_scenario, camera_selection = validate_configuration(
-        config, args.camera_profile
+        config,
+        args.camera_profile,
+        localization_owner=args.localization_owner,
     )
     if args.dynamic_obstacles is not None:
         dynamic_scenario = replace(
