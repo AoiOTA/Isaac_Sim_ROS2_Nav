@@ -139,6 +139,30 @@ def test_edge_prior_admission_rejects_invalid_configured_ceiling(
         edge_prior_admission_max_age_s(ttl, configured_ceiling_s)
 
 
+@pytest.mark.parametrize(
+    ('ttl', 'ceiling_s', 'expected_s'),
+    (
+        (SimpleNamespace(sec=0, nanosec=1), 2.0, 1.0e-9),
+        (
+            SimpleNamespace(sec=0, nanosec=999_999_999),
+            2.0,
+            0.999_999_999,
+        ),
+        (
+            SimpleNamespace(sec=2**31 - 1, nanosec=999_999_999),
+            2.0,
+            2.0,
+        ),
+    ),
+)
+def test_edge_prior_admission_parses_legal_duration_boundaries(
+    ttl, ceiling_s, expected_s,
+) -> None:
+    assert edge_prior_admission_max_age_s(
+        ttl, ceiling_s
+    ) == pytest.approx(expected_s)
+
+
 def test_accepted_prior_survives_refresh_timeout_and_route_ttl() -> None:
     replans = []
     warnings = []
@@ -499,6 +523,20 @@ def test_message_ttl_is_capped_by_configured_ceiling() -> None:
 
     assert coordinator.latest_priors == {}
     assert coordinator.prepared == [{}]
+
+
+def test_prior_age_equal_to_effective_ttl_is_admitted() -> None:
+    coordinator = _prior_wait_coordinator(mode='gvg', timeout_s=0.5)
+    coordinator._now_ns = 1_250_000_000
+
+    coordinator._on_priors(_edge_prior_message(
+        request_id=9,
+        stamp_ns=1_000_000_000,
+        ttl_s=0.25,
+    ))
+
+    assert coordinator.latest_priors == {7: (1.0, 0.8)}
+    assert coordinator.prepared == [{7: (1.0, 0.8)}]
 
 
 def test_expired_refresh_retains_prior_for_same_route_identity() -> None:
