@@ -1,6 +1,6 @@
 # Module3 current runtime handoff
 
-Date: 2026-08-29
+Date: 2026-08-30
 
 The authoritative cross-repository handoff is Integration
 `docs/CURRENT_STATE.md` on branch `v6-compute-amcl-dual-odom`. This file records
@@ -12,7 +12,7 @@ only the Module3 boundary needed to avoid launching a stale runtime.
   `/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3`
 - branch: `v6-compute-amcl-dual-odom`
 - reviewed runtime commit:
-  `c3f7fb3d0cd6eb6ec8cd8f0cdb453baa49fa5e6f`
+  `7ad02f894aee3034295d324040bb64c27f4148a8`
 
 This documentation commit descends that runtime implementation. Before any
 run, verify local HEAD, upstream, and the remote branch agree and tracked files
@@ -47,16 +47,31 @@ low-obstacle profile does not use the raw RGB-D voxel writer.
 - d211 proved T2 cannot start first because its startup reset needs the ROS
   wheel/EKF reset services;
 - d210 and d208 failed before READY with Isaac/RTX GPU faults;
-- the DLSS-disabled candidate is reviewed and pushed but has not been run;
+- the DLSS-disabled candidate is reviewed, pushed, and startup-enforced
+  (`5004ee5`) but has not been run live;
+- indoor d214 canonical stability pilot passed 3/3 on the route_guided chain
+  (0.11-0.13 m final error, zero recoveries); two earlier d214 reps dispatched
+  with the wrong `navigate_to_pose` backend are operator error, not evidence;
+  the d212 batch (12 static reps) had two genuine product failures (rep04
+  edge-28 low-geometry stall, rep11 G4 doorway MPPI patience abort);
 - sufficient Pilot: `0/43`;
 - formal campaign: `0/120`;
 - the previous indoor static20 stress run is excluded from both counts.
 
 ## Resume point
 
-Do not launch a Pilot first. On a fresh domain/root/socket, start T1 then T2
-with the current wrappers and do not start T3. The startup-only discriminator
-must prove:
+Run the formal indoor 3x20 first (static, dynamic, appearance; seeds
+8601-8620), one fresh cold stack per condition, fresh domain/root/socket,
+headless Isaac, per-rep dispatch with the canonical runner arguments
+(`run_indices:=N resume:=false clear_slam_localization_buffer:=false
+reset_map_base_translation_tolerance_m:=0.1
+navigation_execution_backend:=route_guided`). G4 doorway stalls are a known
+sporadic mode on marginal geometry; log and continue, do not hot-fix
+mid-campaign.
+
+Only after the indoor campaign, run the Rivermark startup-only discriminator:
+on a fresh domain/root/socket, start T1 then T2 with the current wrappers and
+do not start T3. The startup-only discriminator must prove:
 
 - no DLSS internal-upscale warning;
 - no GPU page fault, Xid 109, or device lost;
