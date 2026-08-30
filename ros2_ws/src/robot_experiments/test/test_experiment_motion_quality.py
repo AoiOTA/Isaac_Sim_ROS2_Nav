@@ -1404,6 +1404,23 @@ def test_stack_episode_sequence_failure_does_not_consume_receipt(tmp_path):
     assert json.loads(sequence_path.read_text()) == initial
 
 
+def test_attested_episode_snapshots_stack_contract_into_evidence_root(tmp_path):
+    contract = tmp_path / "runtime" / "stack.contract.json"
+    contract.parent.mkdir()
+    contract.write_text('{"schema":"bio_nav.v6_stack_contract.v1"}\n', encoding="utf-8")
+    runner = object.__new__(ExperimentRunner)
+    runner._output_directory = tmp_path / "evidence"
+    runner._scenario = load_scenario(
+        Path(__file__).parents[1] / "config" / "static.yaml"
+    )
+    runner._condition_stack_contract_path = contract
+    runner._record_bag = False
+
+    root = runner._begin_run_evidence(1, 7301)
+
+    assert (root / "stack_contract.json").read_bytes() == contract.read_bytes()
+
+
 def test_sat_overlap_is_diagnostic_when_contact_sensor_is_clear(tmp_path):
     runner, manifest, summary, _root = _static_sat_evidence_run(
         tmp_path,

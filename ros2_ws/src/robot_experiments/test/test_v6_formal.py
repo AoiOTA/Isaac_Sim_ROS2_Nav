@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 from types import SimpleNamespace
 
@@ -568,6 +569,8 @@ def _write_sufficient_pilot_inputs(
             )
             manifest_path = root / "run_manifest.json"
             summary_path = root / "run_summary.json"
+            stack_snapshot_path = root / "stack_contract.json"
+            shutil.copy2(contract_path, stack_snapshot_path)
             episode = json.loads(manifest_path.read_text())
             summary = json.loads(summary_path.read_text())
             scenario = load_scenario(condition.scenario_file)
@@ -621,6 +624,8 @@ def _write_sufficient_pilot_inputs(
                 "stack_episode_receipt": stack_episode_receipt,
                 "confirmed": True,
             }
+            if "stack_contract.json" not in summary["evidence"]["required_files"]:
+                summary["evidence"]["required_files"].append("stack_contract.json")
             manifest_path.write_text(json.dumps(episode), encoding="utf-8")
             summary_path.write_text(json.dumps(summary), encoding="utf-8")
             _refresh_checksums(root)
@@ -629,7 +634,7 @@ def _write_sufficient_pilot_inputs(
                 "boundary": "cold" if rep == 1 else "hot_reset",
                 "summary_path": str(summary_path),
                 "manifest_path": str(manifest_path),
-                "stack_contract_path": str(contract_path),
+                "stack_contract_path": str(stack_snapshot_path),
                 "stack_tuple_digest": stack_tuple_digest,
             })
         aggregate_rows.append({
@@ -665,6 +670,113 @@ def _write_authorized_formal_manifest(tmp_path: Path) -> Path:
     raw["execution_authorization"] = "AUTHORIZED"
     output.write_text(json.dumps(raw), encoding="utf-8")
     return output
+
+
+def _write_production_pilot_root(tmp_path: Path, monkeypatch):
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    _pilot_manifest, aggregate_path, _reference = _write_sufficient_pilot_inputs(
+        source_root
+    )
+    aggregate = json.loads(aggregate_path.read_text())
+    nas_root = tmp_path / "nas"
+    pilot_root = nas_root / "sufficient-pilot"
+    pilot_root.mkdir(parents=True)
+    module3_root = Path(
+        "/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/"
+        "bio_nav_module3"
+    )
+    asset_root = tmp_path / "runtime-assets"
+    for relative in (
+        "weights/module1_mamba_metric_sensor_warm_v8.pt",
+        "weights/module2_srdr_v310_seed20260822.pt",
+        "weights/module2_srdr_v310_kujiale_0026_visual_heads_shadow_v1.pt",
+        "weights/kujiale_0026_visual_heads_run4_v310.pt",
+        "third_party/dinov2/weights/dinov2_vits14_pretrain.pth",
+    ):
+        path = asset_root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(relative, encoding="utf-8")
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    for name in ("manifest.json", "m_sr.npy", "m_dr.npy", "transition.npy", "valid_state_mask.npy"):
+        (snapshot / name).write_text(name, encoding="utf-8")
+    catalog = tmp_path / "catalog"
+    (catalog / "constraints").mkdir(parents=True)
+    (catalog / "catalog.json").write_text("{}\n", encoding="utf-8")
+    (catalog / "constraints/region_02.json").write_text("{}\n", encoding="utf-8")
+    rivermark_usd = tmp_path / "rivermark.usd"
+    rivermark_usd.write_text("usd", encoding="utf-8")
+    monkeypatch.setenv(
+        "BIO_NAV_INTEGRATION_ROOT",
+        "/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration",
+    )
+    monkeypatch.setenv(
+        "BIO_NAV_MODULE2_ROOT",
+        "/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module2",
+    )
+    monkeypatch.setenv("BIO_NAV_MODULE3_ROOT", str(module3_root))
+    monkeypatch.setattr(
+        v6_formal_module,
+        "__file__",
+        str(
+            module3_root
+            / "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py"
+        ),
+    )
+    monkeypatch.setenv("BIO_NAV_MODULE2_ASSET_ROOT", str(asset_root))
+    monkeypatch.setenv("BIO_NAV_ROUTE_PRIOR_SNAPSHOT", str(snapshot))
+    monkeypatch.setenv("BIO_NAV_ROUTE_PRIOR_CATALOG", str(catalog))
+    monkeypatch.setenv("RIVERMARK_USD", str(rivermark_usd))
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", nas_root)
+    map_hashes = {
+        "indoor": {
+            hashlib.sha256(
+                (module3_root / "data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml").read_bytes()
+            ).hexdigest(),
+            hashlib.sha256(
+                (module3_root / "data/maps/occupancy/v6_kujiale_isaacgen_v1.pgm").read_bytes()
+            ).hexdigest(),
+        },
+        "outdoor": {
+            hashlib.sha256(
+                (module3_root / "data/rivermark_demo/rivermark_selected.yaml").read_bytes()
+            ).hexdigest(),
+            hashlib.sha256(
+                (module3_root / "data/rivermark_demo/rivermark_selected.pgm").read_bytes()
+            ).hexdigest(),
+        },
+    }
+    for condition in aggregate["conditions"]:
+        scenario_id = load_scenario(
+            module3_root
+            / "ros2_ws/src/robot_experiments/config"
+            / v6_formal_module.PILOT_SCENARIO_FILENAMES[condition["id"]]
+        ).scenario_id
+        for episode_row in condition["episodes"]:
+            rep = episode_row["rep"]
+            source_run = Path(episode_row["summary_path"]).parent
+            destination = (
+                pilot_root / condition["id"] / f"rep{rep}" / scenario_id / source_run.name
+            )
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(source_run, destination)
+            contract_source = Path(episode_row["stack_contract_path"])
+            shutil.copy2(contract_source, destination / "stack_contract.json")
+            summary_path = destination / "run_summary.json"
+            manifest_path = destination / "run_manifest.json"
+            summary = json.loads(summary_path.read_text())
+            manifest = json.loads(manifest_path.read_text())
+            if "stack_contract.json" not in summary["evidence"]["required_files"]:
+                summary["evidence"]["required_files"].append("stack_contract.json")
+            manifest["provenance"]["map_and_posegraph_hashes"] = {
+                f"map-{index}": digest
+                for index, digest in enumerate(sorted(map_hashes[condition["scene"]]))
+            }
+            summary_path.write_text(json.dumps(summary), encoding="utf-8")
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            _refresh_checksums(destination)
+    return pilot_root
 
 
 def ready_facts() -> ReadinessFacts:
@@ -864,6 +976,84 @@ def test_sufficient_pilot_freezer_writes_not_authorized_formal_manifest(
     assert frozen.pilot_freeze_provenance["pilot_manifest"]["path"] == str(
         pilot_manifest
     )
+
+
+def test_sufficient_pilot_aggregate_generator_publishes_18_verified_runs(
+    tmp_path, monkeypatch
+):
+    pilot_root = _write_production_pilot_root(tmp_path, monkeypatch)
+    manifest_output = tmp_path / "nas" / "pilot-manifest.json"
+    aggregate_output = tmp_path / "nas" / "pilot-aggregate.json"
+
+    result = v6_formal_module.aggregate_sufficient_pilot(
+        pilot_root=pilot_root,
+        output_manifest=manifest_output,
+        output_aggregate=aggregate_output,
+    )
+
+    assert result["qualification"] == "SUFFICIENT_PILOT_READY"
+    assert result["strict_successes"] == 18
+    assert result["dispatch"] is False
+    aggregate = json.loads(aggregate_output.read_text())
+    assert [row["id"] for row in aggregate["conditions"]] == list(
+        v6_formal_module.FORMAL_CONDITION_IDS
+    )
+    assert all(len(row["episodes"]) == 3 for row in aggregate["conditions"])
+    assert all(
+        Path(episode["stack_contract_path"]).name == "stack_contract.json"
+        for row in aggregate["conditions"]
+        for episode in row["episodes"]
+    )
+    assert result["pilot_manifest"]["sha256"] == hashlib.sha256(
+        manifest_output.read_bytes()
+    ).hexdigest()
+    frozen = freeze_formal_manifest_from_pilot(
+        pilot_manifest_path=manifest_output,
+        pilot_aggregate_path=aggregate_output,
+        output_manifest_path=tmp_path / "nas" / "formal.json",
+        formal_output_root=tmp_path / "nas" / "formal-root",
+    )
+    assert frozen.authorization == "NOT_AUTHORIZED"
+    assert frozen.pilot_freeze_provenance is not None
+
+
+def test_sufficient_pilot_aggregate_cli_never_dispatches(
+    tmp_path, monkeypatch, capsys
+):
+    pilot_root = _write_production_pilot_root(tmp_path, monkeypatch)
+    manifest_output = tmp_path / "nas" / "cli-pilot-manifest.json"
+    aggregate_output = tmp_path / "nas" / "cli-pilot-aggregate.json"
+
+    assert cli([
+        "--aggregate-pilot-root", str(pilot_root),
+        "--output-pilot-manifest", str(manifest_output),
+        "--output-pilot-aggregate", str(aggregate_output),
+    ]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["qualification"] == "SUFFICIENT_PILOT_READY"
+    assert payload["strict_successes"] == 18
+    assert payload["dispatch"] is False
+
+
+def test_sufficient_pilot_aggregate_rejects_missing_exact_run_path(
+    tmp_path, monkeypatch
+):
+    pilot_root = _write_production_pilot_root(tmp_path, monkeypatch)
+    missing = next((pilot_root / "indoor_static" / "rep2").rglob("run_summary.json"))
+    missing.unlink()
+    manifest_output = tmp_path / "nas" / "missing-manifest.json"
+    aggregate_output = tmp_path / "nas" / "missing-aggregate.json"
+
+    with pytest.raises(V6ContractError):
+        v6_formal_module.aggregate_sufficient_pilot(
+            pilot_root=pilot_root,
+            output_manifest=manifest_output,
+            output_aggregate=aggregate_output,
+        )
+
+    assert not manifest_output.exists()
+    assert not aggregate_output.exists()
 
 
 @pytest.mark.parametrize(
@@ -1377,6 +1567,8 @@ def test_formal_execution_requires_exactly_one_new_strict_target(
 
 def test_formal_shell_requires_and_forwards_condition_stack_id():
     source = (REPO / "scripts" / "run_v6_formal_episode.sh").read_text()
+    assert "--aggregate-pilot PILOT_ROOT OUT_MANIFEST OUT_AGGREGATE" in source
+    assert '--aggregate-pilot-root "$1"' in source
     assert "--freeze-pilot PILOT_MANIFEST PILOT_AGGREGATE" in source
     assert '--pilot-aggregate "$2"' in source
     assert '--output-manifest "$3"' in source

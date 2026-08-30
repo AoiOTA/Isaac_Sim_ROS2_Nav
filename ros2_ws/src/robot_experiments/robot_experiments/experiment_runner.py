@@ -595,6 +595,8 @@ def validate_recorded_run_evidence(
             "appearance_rgb_before_goal.ppm",
             "appearance_rgb_before_goal.json",
         }
+    if summary.get("condition_stack_attestation", {}).get("required") is True:
+        mandatory_files.add("stack_contract.json")
     required_files = summary.get("evidence", {}).get("required_files", [])
     declared_mandatory = mandatory_files - {
         "run_summary.json",
@@ -5030,6 +5032,17 @@ class ExperimentRunner(Node):
         self._active_evidence_root = root
         self._bag_process = None
         self._bag_recorder_error = None
+        if self._condition_stack_contract_path is not None:
+            try:
+                contract_bytes = self._condition_stack_contract_path.read_bytes()
+                with (root / "stack_contract.json").open("xb") as stream:
+                    stream.write(contract_bytes)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            except OSError as exc:
+                raise ConfigurationError(
+                    "failed to snapshot condition stack contract"
+                ) from exc
         self._appearance_rgb_snapshot_complete = (
             self._write_appearance_rgb_snapshot(root)
             if self._scenario.appearance_config_file is not None
@@ -5293,6 +5306,8 @@ class ExperimentRunner(Node):
                 "appearance_rgb_before_goal.ppm",
                 "appearance_rgb_before_goal.json",
             }
+        if getattr(self, "_condition_stack_contract_path", None) is not None:
+            required_files.add("stack_contract.json")
         data_complete = (
             (bag_complete or not self._record_bag)
             and required_topic_coverage["passed"]

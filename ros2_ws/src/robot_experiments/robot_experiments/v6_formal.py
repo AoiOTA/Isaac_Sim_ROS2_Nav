@@ -37,6 +37,14 @@ FORMAL_CAMPAIGN_SCHEMA_VERSION = "bio_nav_v6_formal_campaign_v1"
 SUFFICIENT_PILOT_MANIFEST_SCHEMA = "bio_nav_v6_sufficient_pilot_manifest_v1"
 SUFFICIENT_PILOT_AGGREGATE_SCHEMA = "bio_nav_v6_sufficient_pilot_aggregate_v1"
 FORMAL_NAS_ROOT = Path("/mnt/nas_home")
+PILOT_SCENARIO_FILENAMES = {
+    "indoor_static": "v6_final_kujiale_static.yaml",
+    "outdoor_static": "final_rivermark_static.yaml",
+    "outdoor_dynamic": "final_rivermark_dynamic.yaml",
+    "outdoor_appearance": "final_rivermark_appearance.yaml",
+    "indoor_dynamic": "v6_final_kujiale_dynamic.yaml",
+    "indoor_appearance": "v6_final_kujiale_appearance.yaml",
+}
 FORMAL_CONDITION_IDS = (
     "indoor_static",
     "outdoor_static",
@@ -1103,6 +1111,299 @@ def _revalidate_pilot_freeze_provenance(
             freeze=freeze,
             freeze_digest=freeze_digest,
         )
+
+
+def _frozen_file_entry(path: Path) -> dict[str, str]:
+    path = path.expanduser().resolve()
+    if not path.is_file():
+        raise V6ContractError(f"required Pilot freeze file is missing: {path}")
+    return {"path": str(path), "sha256": _file_sha256(path)}
+
+
+def _repository_freeze_entry(path: Path) -> dict[str, str]:
+    path = path.expanduser().resolve()
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise V6ContractError(f"Pilot repository is invalid: {path}") from exc
+    return {"path": str(path), "head": head}
+
+
+def _build_sufficient_pilot_manifest(
+    pilot_root: Path,
+) -> tuple[dict[str, Any], tuple[FormalCondition, ...], str, Mapping[str, Any]]:
+    module3_root = Path(
+        os.environ.get("BIO_NAV_MODULE3_ROOT", str(Path(__file__).resolve().parents[4]))
+    ).expanduser().resolve()
+    integration_root = Path(os.environ.get("BIO_NAV_INTEGRATION_ROOT", "")).expanduser()
+    module2_root = Path(
+        os.environ.get("BIO_NAV_MODULE2_ROOT")
+        or os.environ.get("BIO_NAV_MODULE2_V310_ROOT", "")
+    ).expanduser()
+    asset_root = Path(os.environ.get("BIO_NAV_MODULE2_ASSET_ROOT", "")).expanduser()
+    snapshot_root = Path(os.environ.get("BIO_NAV_ROUTE_PRIOR_SNAPSHOT", "")).expanduser()
+    catalog_root = Path(os.environ.get("BIO_NAV_ROUTE_PRIOR_CATALOG", "")).expanduser()
+    rivermark_usd = Path(os.environ.get("RIVERMARK_USD", "")).expanduser()
+    for name, path in (
+        ("Integration", integration_root),
+        ("Module2", module2_root),
+        ("Module3", module3_root),
+        ("Module2 asset", asset_root),
+        ("RoutePrior snapshot", snapshot_root),
+        ("Rivermark catalog", catalog_root),
+    ):
+        if not path.is_absolute() or not path.exists():
+            raise V6ContractError(f"{name} root is missing or not absolute")
+    config_root = module3_root / "ros2_ws" / "src" / "robot_experiments" / "config"
+    runner_entrypoint = module3_root / "scripts" / "run_experiment.sh"
+    condition_rows = []
+    scenario_entries = {}
+    scenario_config_entries = {}
+    for condition_id in FORMAL_CONDITION_IDS:
+        scene, category = condition_id.split("_", 1)
+        scenario_path = config_root / PILOT_SCENARIO_FILENAMES[condition_id]
+        scenario = load_scenario(scenario_path)
+        condition_rows.append({
+            "id": condition_id,
+            "scene": scene,
+            "category": category,
+            "scenario_file": str(scenario_path),
+            "runner_arguments": [
+                "nav2_profile:=v6_low_obstacle_isolation",
+                "navigation_execution_backend:=route_guided",
+                "require_module2_planning_ready:=true",
+            ],
+        })
+        scenario_entries[condition_id] = _frozen_file_entry(scenario_path)
+        configs = {
+            scenario.resolve_path(path)
+            for path in (
+                scenario.robot_config_file,
+                scenario.nav2_config_file,
+                scenario.dynamic_config_file,
+                scenario.appearance_config_file,
+                scenario.optimal_reference_file,
+            )
+            if path is not None
+        }
+        scenario_config_entries[condition_id] = [
+            _frozen_file_entry(path) for path in sorted(configs)
+        ]
+    frozen_assets = {
+        "module1_checkpoint": _frozen_file_entry(
+            asset_root / "weights/module1_mamba_metric_sensor_warm_v8.pt"
+        ),
+        "module2_srdr_checkpoint": _frozen_file_entry(
+            asset_root / "weights/module2_srdr_v310_seed20260822.pt"
+        ),
+        "module2_visual_heads_shadow_checkpoint": _frozen_file_entry(
+            asset_root / "weights/module2_srdr_v310_kujiale_0026_visual_heads_shadow_v1.pt"
+        ),
+        "selected_run4_visual_heads_checkpoint": _frozen_file_entry(
+            asset_root / "weights/kujiale_0026_visual_heads_run4_v310.pt"
+        ),
+        "dino_checkpoint": _frozen_file_entry(
+            asset_root / "third_party/dinov2/weights/dinov2_vits14_pretrain.pth"
+        ),
+        "indoor_route_prior_manifest": _frozen_file_entry(snapshot_root / "manifest.json"),
+        "indoor_route_prior_m_sr": _frozen_file_entry(snapshot_root / "m_sr.npy"),
+        "indoor_route_prior_m_dr": _frozen_file_entry(snapshot_root / "m_dr.npy"),
+        "indoor_route_prior_transition": _frozen_file_entry(snapshot_root / "transition.npy"),
+        "indoor_route_prior_valid_state_mask": _frozen_file_entry(snapshot_root / "valid_state_mask.npy"),
+        "rivermark_usd": _frozen_file_entry(rivermark_usd),
+        "rivermark_catalog": _frozen_file_entry(catalog_root / "catalog.json"),
+        "rivermark_catalog_constraints_tree": {
+            "path": str((catalog_root / "constraints").resolve()),
+            "sha256": _constraints_tree_sha256(catalog_root / "constraints"),
+        },
+        "indoor_map_yaml": _frozen_file_entry(
+            module3_root / "data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml"
+        ),
+        "indoor_map_pgm": _frozen_file_entry(
+            module3_root / "data/maps/occupancy/v6_kujiale_isaacgen_v1.pgm"
+        ),
+        "outdoor_map_yaml": _frozen_file_entry(
+            module3_root / "data/rivermark_demo/rivermark_selected.yaml"
+        ),
+        "outdoor_map_pgm": _frozen_file_entry(
+            module3_root / "data/rivermark_demo/rivermark_selected.pgm"
+        ),
+    }
+    pilot_manifest = {
+        "schema_version": SUFFICIENT_PILOT_MANIFEST_SCHEMA,
+        "intended_use": "sufficient_pilot",
+        "runner_entrypoint": str(runner_entrypoint),
+        "freeze": {
+            "repositories": {
+                "integration": _repository_freeze_entry(integration_root),
+                "module2": _repository_freeze_entry(module2_root),
+                "module3": _repository_freeze_entry(module3_root),
+            },
+            "driver_version": _current_driver_version(),
+            "kernel_release": os.uname().release,
+            "scenarios": scenario_entries,
+            "scenario_configs": scenario_config_entries,
+            "frozen_assets": frozen_assets,
+            "runner_entrypoint": _frozen_file_entry(runner_entrypoint),
+            "experiment_runner": _frozen_file_entry(
+                module3_root / "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py"
+            ),
+            "v6_formal": _frozen_file_entry(
+                module3_root / "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py"
+            ),
+        },
+        "conditions": condition_rows,
+    }
+    validation_formal = {
+        "schema_version": FORMAL_CAMPAIGN_SCHEMA_VERSION,
+        "intended_use": "formal_qualification",
+        "execution_authorization": FORMAL_EXECUTION_NOT_AUTHORIZED,
+        "runs_per_condition": 20,
+        "runner_entrypoint": str(runner_entrypoint),
+        "freeze": pilot_manifest["freeze"],
+        "conditions": [
+            {**row, "output_directory": str(pilot_root / ".formal-validation" / row["id"])}
+            for row in condition_rows
+        ],
+    }
+    temporary_fd, temporary_name = tempfile.mkstemp(
+        prefix=".pilot-freeze-validation.", suffix=".json", dir=pilot_root
+    )
+    os.close(temporary_fd)
+    temporary = Path(temporary_name)
+    try:
+        temporary.write_text(json.dumps(validation_formal), encoding="utf-8")
+        formal = load_formal_campaign_manifest(temporary)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return pilot_manifest, formal.conditions, formal.freeze_digest, formal.freeze
+
+
+def _publish_no_clobber_json_pair(
+    first_path: Path,
+    first_payload: Mapping[str, Any],
+    second_path: Path,
+    second_payload: Mapping[str, Any],
+) -> None:
+    temporary_paths = []
+    published = []
+    try:
+        for output, payload in ((first_path, first_payload), (second_path, second_payload)):
+            fd, name = tempfile.mkstemp(
+                prefix=f".{output.name}.", suffix=".tmp", dir=output.parent
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(payload, stream, indent=2, sort_keys=True)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary_paths.append(Path(name))
+        for temporary, output in zip(temporary_paths, (first_path, second_path)):
+            os.link(temporary, output)
+            published.append(output)
+    except FileExistsError as exc:
+        for output in published:
+            output.unlink(missing_ok=True)
+        raise V6ContractError("Pilot aggregate output already exists") from exc
+    finally:
+        for temporary in temporary_paths:
+            temporary.unlink(missing_ok=True)
+
+
+def aggregate_sufficient_pilot(
+    *, pilot_root: str | Path, output_manifest: str | Path, output_aggregate: str | Path
+) -> dict[str, Any]:
+    root = Path(pilot_root).expanduser()
+    manifest_output = Path(output_manifest).expanduser()
+    aggregate_output = Path(output_aggregate).expanduser()
+    if not all(path.is_absolute() for path in (root, manifest_output, aggregate_output)):
+        raise V6ContractError("Pilot aggregate paths must be absolute")
+    root = root.resolve()
+    manifest_output = manifest_output.resolve()
+    aggregate_output = aggregate_output.resolve()
+    if not root.is_dir() or manifest_output.exists() or aggregate_output.exists():
+        raise V6ContractError("Pilot root must exist and outputs must be new")
+    for path in (root, manifest_output.parent, aggregate_output.parent):
+        try:
+            path.relative_to(FORMAL_NAS_ROOT.resolve())
+        except ValueError as exc:
+            raise V6ContractError("Pilot aggregate paths must be under the NAS root") from exc
+        _validate_nas_mount(path)
+    pilot_manifest, conditions, freeze_digest, freeze = (
+        _build_sufficient_pilot_manifest(root)
+    )
+    aggregate_rows = []
+    strict_successes = 0
+    for condition in conditions:
+        episodes = []
+        for rep in range(1, 4):
+            identity = condition.episode_identities[rep - 1]
+            run_root = (
+                root
+                / condition.condition_id
+                / f"rep{rep}"
+                / condition.scenario_id
+                / f"run-{rep:04d}-seed-{identity['seed']}"
+            )
+            summary_path = run_root / "run_summary.json"
+            manifest_path = run_root / "run_manifest.json"
+            stack_contract_path = run_root / "stack_contract.json"
+            contract, tuple_digest = _load_stack_contract_snapshot(
+                stack_contract_path,
+                expected_condition_id=condition.condition_id,
+                freeze=freeze,
+            )
+            _validate_sufficient_pilot_episode(
+                condition=condition,
+                rep=rep,
+                summary_path=summary_path,
+                manifest_path=manifest_path,
+                stack_contract_path=stack_contract_path,
+                expected_stack_tuple_digest=tuple_digest,
+                freeze=freeze,
+                freeze_digest=freeze_digest,
+            )
+            strict_successes += 1
+            episodes.append({
+                "rep": rep,
+                "boundary": "cold" if rep == 1 else "hot_reset",
+                "summary_path": str(summary_path),
+                "manifest_path": str(manifest_path),
+                "stack_contract_path": str(stack_contract_path),
+                "stack_tuple_digest": tuple_digest,
+            })
+        aggregate_rows.append({
+            "id": condition.condition_id,
+            "scene": condition.scene,
+            "category": condition.category,
+            "episodes": episodes,
+        })
+    if strict_successes != 18:
+        raise V6ContractError("sufficient Pilot did not produce 18 strict successes")
+    aggregate = {
+        "schema_version": SUFFICIENT_PILOT_AGGREGATE_SCHEMA,
+        "pilot_manifest": str(manifest_output),
+        "conditions": aggregate_rows,
+    }
+    _publish_no_clobber_json_pair(
+        manifest_output, pilot_manifest, aggregate_output, aggregate
+    )
+    return {
+        "qualification": "SUFFICIENT_PILOT_READY",
+        "strict_successes": 18,
+        "pilot_manifest": {
+            "path": str(manifest_output), "sha256": _file_sha256(manifest_output)
+        },
+        "pilot_aggregate": {
+            "path": str(aggregate_output), "sha256": _file_sha256(aggregate_output)
+        },
+        "dispatch": False,
+    }
 
 
 def _checksums_verified(run_root: Path) -> bool:
@@ -3036,6 +3337,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pilot-aggregate")
     parser.add_argument("--output-manifest")
     parser.add_argument("--formal-output-root")
+    manifest_group.add_argument("--aggregate-pilot-root")
+    parser.add_argument("--output-pilot-manifest")
+    parser.add_argument("--output-pilot-aggregate")
     parser.add_argument("--episode-index", type=int, default=0)
     parser.add_argument("--pilot", action="store_true")
     parser.add_argument("--dispatch-pilot", action="store_true")
@@ -3052,6 +3356,20 @@ def build_parser() -> argparse.ArgumentParser:
 def cli(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.aggregate_pilot_root:
+            if not args.output_pilot_manifest or not args.output_pilot_aggregate:
+                raise V6ContractError(
+                    "Pilot aggregate mode requires both output paths"
+                )
+            if args.pilot or args.dispatch_pilot or args.execute_formal:
+                raise V6ContractError("Pilot aggregate mode cannot dispatch")
+            result = aggregate_sufficient_pilot(
+                pilot_root=args.aggregate_pilot_root,
+                output_manifest=args.output_pilot_manifest,
+                output_aggregate=args.output_pilot_aggregate,
+            )
+            print(json.dumps(result, sort_keys=True))
+            return 0
         if args.pilot_manifest:
             if (
                 not args.pilot_aggregate
@@ -3125,7 +3443,13 @@ def cli(argv: list[str] | None = None) -> int:
                 )
             )
             return 0
-        if args.pilot_aggregate or args.output_manifest or args.formal_output_root:
+        if (
+            args.pilot_aggregate
+            or args.output_manifest
+            or args.formal_output_root
+            or args.output_pilot_manifest
+            or args.output_pilot_aggregate
+        ):
             raise V6ContractError("Pilot freezer options require --pilot-manifest")
         if (
             args.execute_formal

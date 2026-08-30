@@ -4,18 +4,31 @@ set -Eeuo pipefail
 usage() {
   echo "usage: $0 --pilot [--dispatch-pilot] MANIFEST [runner arguments...]" >&2
   echo "       $0 --freeze-pilot PILOT_MANIFEST PILOT_AGGREGATE OUTPUT_MANIFEST FORMAL_OUTPUT_ROOT" >&2
+  echo "       $0 --aggregate-pilot PILOT_ROOT OUT_MANIFEST OUT_AGGREGATE" >&2
   echo "       $0 --formal MANIFEST" >&2
   echo "       $0 --formal --execute-formal --condition-stack-id ID" >&2
   echo "          --condition-stack-contract PATH MANIFEST" >&2
 }
 
 mode="${1:-}"
-if [[ "$mode" != "--pilot" && "$mode" != "--formal" && "$mode" != "--freeze-pilot" ]]; then
+if [[ "$mode" != "--pilot" && "$mode" != "--formal" \
+    && "$mode" != "--freeze-pilot" && "$mode" != "--aggregate-pilot" ]]; then
   usage
   echo "STOP: mode is required; formal dispatch is disabled by default" >&2
   exit 2
 fi
 shift
+
+if [[ "$mode" == "--aggregate-pilot" ]]; then
+  [[ -n "${1:-}" && -n "${2:-}" && -n "${3:-}" && $# -eq 3 ]] || {
+    usage
+    exit 2
+  }
+  exec ros2 run robot_experiments v6_formal_episode \
+    --aggregate-pilot-root "$1" \
+    --output-pilot-manifest "$2" \
+    --output-pilot-aggregate "$3"
+fi
 
 if [[ "$mode" == "--freeze-pilot" ]]; then
   [[ -n "${1:-}" && -n "${2:-}" && -n "${3:-}" && -n "${4:-}" && $# -eq 4 ]] || {
