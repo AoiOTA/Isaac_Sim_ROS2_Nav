@@ -3694,6 +3694,7 @@ def test_phase_f_stack_writes_live_deterministic_condition_contract(tmp_path):
             "schema": "bio_nav.v6_stack_episode_sequence.v1",
             "stack_session_id": payload["stack_session_id"],
             "last_sequence": 0,
+            "startup_reset_generation_baseline": 1,
         }
     finally:
         _stop_fake_phase_f_stack(fake)

@@ -157,7 +157,7 @@ def test_mcap_inventory_rejects_placeholder_and_requires_metadata_schema(tmp_pat
 
     magic = experiment_runner_module.MCAP_MAGIC
     mcap.write_bytes(magic + b"payload" + magic)
-    assert _mcap_inventory_evidence(root)["passed"]
+    assert not _mcap_inventory_evidence(root)["passed"]
 
 
 @pytest.mark.parametrize(
@@ -1319,6 +1319,7 @@ def test_stack_local_episode_sequence_claims_fresh_cold_then_hot_receipts(tmp_pa
         "schema": "bio_nav.v6_stack_episode_sequence.v1",
         "stack_session_id": "a" * 64,
         "last_sequence": 0,
+        "startup_reset_generation_baseline": 1,
     }), encoding="utf-8")
     runner = object.__new__(ExperimentRunner)
     runner._stack_session_id = "a" * 64
@@ -1328,13 +1329,45 @@ def test_stack_local_episode_sequence_claims_fresh_cold_then_hot_receipts(tmp_pa
         "t2_selector_sha256": "b" * 64,
     }
 
-    receipts = [runner._claim_stack_episode_sequence() for _ in range(3)]
+    receipts = [
+        runner._claim_stack_episode_sequence(
+            pre_reset_generation=rep,
+            reset_generation=rep + 1,
+        )
+        for rep in range(1, 4)
+    ]
 
     assert [receipt["sequence"] for receipt in receipts] == [1, 2, 3]
-    assert all(receipt["baseline"] == 0 for receipt in receipts)
+    assert all(receipt["baseline"] == 1 for receipt in receipts)
     assert all(receipt["stack_session_id"] == "a" * 64 for receipt in receipts)
     state = json.loads(sequence_path.read_text())
     assert state["last_sequence"] == 3
+
+
+def test_stack_episode_sequence_failure_does_not_consume_receipt(tmp_path):
+    sequence_path = tmp_path / "episode.sequence.json"
+    initial = {
+        "schema": "bio_nav.v6_stack_episode_sequence.v1",
+        "stack_session_id": "a" * 64,
+        "last_sequence": 0,
+        "startup_reset_generation_baseline": 1,
+    }
+    sequence_path.write_text(json.dumps(initial), encoding="utf-8")
+    runner = object.__new__(ExperimentRunner)
+    runner._stack_session_id = "a" * 64
+    runner._condition_stack_contract = {
+        "episode_sequence_path": str(sequence_path),
+        "t2_selector_path": "/selector",
+        "t2_selector_sha256": "b" * 64,
+    }
+
+    with pytest.raises(ConfigurationError, match="fresh-start sequence"):
+        runner._claim_stack_episode_sequence(
+            pre_reset_generation=2,
+            reset_generation=3,
+        )
+
+    assert json.loads(sequence_path.read_text()) == initial
 
 
 def test_sat_overlap_is_diagnostic_when_contact_sensor_is_clear(tmp_path):

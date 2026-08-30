@@ -139,6 +139,15 @@ write_stack_contract() {
   integration_head="$(git -C "${integration_root}" rev-parse HEAD)"
   module2_head="$(git -C "${module2_root}" rev-parse HEAD)"
   module3_head="$(git -C "${module3_root}" rev-parse HEAD)"
+  git -C "${integration_root}" diff --quiet HEAD -- \
+    && git -C "${integration_root}" diff --cached --quiet \
+    || { echo "Integration tracked state is dirty" >&2; return 1; }
+  git -C "${module2_root}" diff --quiet HEAD -- \
+    && git -C "${module2_root}" diff --cached --quiet \
+    || { echo "Module2 tracked state is dirty" >&2; return 1; }
+  git -C "${module3_root}" diff --quiet HEAD -- \
+    && git -C "${module3_root}" diff --cached --quiet \
+    || { echo "Module3 tracked state is dirty" >&2; return 1; }
   driver_version="$(head -n 1 /proc/driver/nvidia/version)"
   kernel_release="$(uname -r)"
   t2_selector="${module3_root}/scripts/run_v6_kujiale_low_obstacles.sh"
@@ -175,6 +184,9 @@ payload = {
     "integration_head": sys.argv[12],
     "module2_head": sys.argv[13],
     "module3_head": sys.argv[14],
+    "integration_dirty": False,
+    "module2_dirty": False,
+    "module3_dirty": False,
     "driver_version": sys.argv[15],
     "kernel_release": sys.argv[16],
     "t2_selector_path": sys.argv[17],
@@ -191,6 +203,7 @@ sequence_tmp.write_text(json.dumps({
     "schema": "bio_nav.v6_stack_episode_sequence.v1",
     "stack_session_id": payload["stack_session_id"],
     "last_sequence": 0,
+    "startup_reset_generation_baseline": 1,
 }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 os.replace(sequence_tmp, sequence)
 PY

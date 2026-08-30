@@ -284,9 +284,12 @@ def _current_driver_version() -> str:
 
 
 def _validate_nas_mount(path: Path) -> dict[str, str]:
+    probe = path.resolve()
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
     try:
         output = subprocess.run(
-            ["findmnt", "-T", str(path), "-n", "-o", "TARGET,FSTYPE,SOURCE"],
+            ["findmnt", "-T", str(probe), "-n", "-o", "TARGET,FSTYPE,SOURCE"],
             check=True,
             capture_output=True,
             text=True,
@@ -684,6 +687,10 @@ def load_formal_campaign_manifest(path: str | Path) -> FormalCampaignManifest:
             freeze=freeze,
             freeze_digest=freeze_digest,
         )
+    elif authorization == FORMAL_EXECUTION_AUTHORIZED:
+        raise V6ContractError(
+            "AUTHORIZED formal manifest requires complete Pilot freeze provenance"
+        )
     return FormalCampaignManifest(
         path=manifest_path,
         authorization=authorization,
@@ -766,13 +773,16 @@ def _validate_sufficient_pilot_episode(
     ):
         raise V6ContractError("Pilot episode frozen tuple/session mismatch")
     sequence_receipt = episode.get("stack_episode_receipt", {})
+    summary_sequence_receipt = summary.get("condition_stack_attestation", {}).get(
+        "stack_episode_receipt"
+    )
     if not (
         isinstance(sequence_receipt, Mapping)
-        and summary.get("stack_episode_receipt") == sequence_receipt
+        and summary_sequence_receipt == sequence_receipt
         and sequence_receipt.get("schema")
         == "bio_nav.v6_stack_episode_receipt.v1"
         and sequence_receipt.get("sequence") == rep
-        and sequence_receipt.get("baseline") == 0
+        and sequence_receipt.get("baseline") == 1
         and sequence_receipt.get("stack_session_id")
         == stack_contract["stack_session_id"]
         and sequence_receipt.get("t2_selector_path")
@@ -997,8 +1007,10 @@ def freeze_formal_manifest_from_pilot(
                     raise V6ContractError("Pilot condition stack session changed")
                 generations.append(generation)
                 evidence_index.append(indexed)
-            if generations != list(range(generations[0], generations[0] + 3)):
-                raise V6ContractError("Pilot reset generations are not contiguous")
+            if generations != [2, 3, 4]:
+                raise V6ContractError(
+                    "Pilot reset generations do not match fresh T2 baseline"
+                )
         candidate["pilot_freeze_provenance"] = {
             "schema": "bio_nav.v6_pilot_freeze_provenance.v1",
             "pilot_manifest": {
@@ -1156,6 +1168,9 @@ STACK_CONTRACT_KEYS = {
     "integration_head",
     "module2_head",
     "module3_head",
+    "integration_dirty",
+    "module2_dirty",
+    "module3_dirty",
     "driver_version",
     "kernel_release",
     "t2_selector_path",
@@ -1181,6 +1196,9 @@ STACK_TUPLE_KEYS = (
     "integration_head",
     "module2_head",
     "module3_head",
+    "integration_dirty",
+    "module2_dirty",
+    "module3_dirty",
     "driver_version",
     "kernel_release",
     "t2_selector_path",
@@ -1239,6 +1257,9 @@ def _load_stack_contract_snapshot(
         payload.get("integration_head") == repositories["integration"]["head"]
         and payload.get("module2_head") == repositories["module2"]["head"]
         and payload.get("module3_head") == repositories["module3"]["head"]
+        and payload.get("integration_dirty") is False
+        and payload.get("module2_dirty") is False
+        and payload.get("module3_dirty") is False
         and payload.get("driver_version") == freeze["driver_version"]
         and payload.get("kernel_release") == freeze["kernel_release"]
     ):
@@ -1540,6 +1561,10 @@ def execute_formal_campaign(
     if manifest.authorization != FORMAL_EXECUTION_AUTHORIZED:
         raise V6ContractError(
             "formal execution refused: manifest is NOT_AUTHORIZED"
+        )
+    if manifest.pilot_freeze_provenance is None:
+        raise V6ContractError(
+            "formal execution requires complete Pilot freeze provenance"
         )
     condition_ids = {condition.condition_id for condition in manifest.conditions}
     if condition_stack_id not in condition_ids:

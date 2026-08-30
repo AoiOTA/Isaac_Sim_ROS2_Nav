@@ -165,6 +165,20 @@ SCENE_FORBIDDEN_RECORDED_TOPICS = {
     "indoor": (),
     "outdoor": ("/amcl_pose",),
 }
+RECORDED_TOPIC_TYPES = {
+    "/clock": "rosgraph_msgs/msg/Clock",
+    "/ground_truth/odom": "nav_msgs/msg/Odometry",
+    "/odom": "nav_msgs/msg/Odometry",
+    "/bio_nav/module1/odom": "nav_msgs/msg/Odometry",
+    "/tf": "tf2_msgs/msg/TFMessage",
+    "/cmd_vel_sim": "geometry_msgs/msg/Twist",
+    "/simulation/collision": "std_msgs/msg/Bool",
+    "/simulation/reset_stop_gate/status": "std_msgs/msg/String",
+    "/bio_nav/navigation_graph": "bio_nav_interfaces/msg/NavigationGraph",
+    "/bio_nav/canonical_route": "bio_nav_interfaces/msg/CanonicalRoute",
+    "/bio_nav/route_progress": "bio_nav_interfaces/msg/RouteProgress",
+    "/amcl_pose": "geometry_msgs/msg/PoseWithCovarianceStamped",
+}
 FINAL_V6_SCENARIO_IDS = frozenset(
     f"{prefix}_{category}"
     for prefix in ("v6_final_kujiale", "final_rivermark")
@@ -335,12 +349,99 @@ def _mcap_inventory_evidence(root: Path) -> dict[str, Any]:
         if size <= 2 * len(MCAP_MAGIC) or prefix != MCAP_MAGIC or suffix != MCAP_MAGIC:
             return {"passed": False, "error": "mcap_structure_invalid"}
         files.append({"path": str(candidate), "size": size})
+    try:
+        import rosbag2_py
+        from rclpy.serialization import deserialize_message
+        from rosidl_runtime_py.utilities import get_message
+
+        reader = rosbag2_py.SequentialReader()
+        reader.open(
+            rosbag2_py.StorageOptions(
+                uri=str(root / "telemetry"), storage_id="mcap"
+            ),
+            rosbag2_py.ConverterOptions("", ""),
+        )
+        topic_types = {
+            item.name: item.type for item in reader.get_all_topics_and_types()
+        }
+        actual_counts: dict[str, int] = {}
+        collision_true = 0
+        route_complete_true = 0
+        terminal_started = False
+        terminal_zero = 0
+        terminal_nonzero = 0
+        positive_requested = 0
+        positive_applied = 0
+        semantic_types = {
+            "/simulation/collision": "std_msgs/msg/Bool",
+            "/bio_nav/route_goal_complete": "std_msgs/msg/Bool",
+            "/cmd_vel_sim": "geometry_msgs/msg/Twist",
+            "/bio_nav/route_edge_costs": "bio_nav_interfaces/msg/RouteEdgeCostArray",
+        }
+        for topic, expected_type in semantic_types.items():
+            if topic_types.get(topic) != expected_type:
+                raise RuntimeError(f"topic_type:{topic}:{topic_types.get(topic)}")
+        message_classes = {
+            topic: get_message(type_name)
+            for topic, type_name in semantic_types.items()
+        }
+        while reader.has_next():
+            topic, data, _timestamp = reader.read_next()
+            actual_counts[topic] = actual_counts.get(topic, 0) + 1
+            if topic not in message_classes:
+                continue
+            message = deserialize_message(data, message_classes[topic])
+            if topic == "/simulation/collision":
+                collision_true += int(bool(message.data))
+            elif topic == "/bio_nav/route_goal_complete":
+                if bool(message.data):
+                    route_complete_true += 1
+                    terminal_started = True
+                    terminal_zero = 0
+                    terminal_nonzero = 0
+            elif topic == "/cmd_vel_sim" and terminal_started:
+                is_zero = (
+                    abs(float(message.linear.x)) <= COMMAND_ZERO_TOLERANCE
+                    and abs(float(message.angular.z)) <= COMMAND_ZERO_TOLERANCE
+                )
+                terminal_zero += int(is_zero)
+                terminal_nonzero += int(not is_zero)
+            elif topic == "/bio_nav/route_edge_costs":
+                positive_requested += sum(
+                    float(item.requested_module2_delta_m) > 0.0
+                    for item in message.costs
+                )
+                positive_applied += sum(
+                    float(item.applied_module2_delta_m) > 0.0
+                    for item in message.costs
+                )
+    except Exception as exc:
+        return {"passed": False, "error": f"mcap_reader_failed:{type(exc).__name__}:{exc}"}
+    reported_counts = {
+        row["topic_metadata"]["name"]: int(row["message_count"])
+        for row in information.get("topics_with_message_count", [])
+        if isinstance(row, Mapping)
+        and isinstance(row.get("topic_metadata"), Mapping)
+        and isinstance(row["topic_metadata"].get("name"), str)
+    }
+    if actual_counts != reported_counts or sum(actual_counts.values()) != message_count:
+        return {"passed": False, "error": "mcap_record_count_mismatch"}
     return {
         "passed": True,
         "metadata_path": str(metadata_path),
         "storage_identifier": storage_identifier,
         "message_count": message_count,
         "files": files,
+        "topic_types": topic_types,
+        "topic_counts": actual_counts,
+        "semantic": {
+            "collision_true_count": collision_true,
+            "route_complete_true_count": route_complete_true,
+            "terminal_zero_count": terminal_zero,
+            "terminal_nonzero_count": terminal_nonzero,
+            "positive_requested_count": positive_requested,
+            "positive_applied_count": positive_applied,
+        },
     }
 
 
@@ -375,6 +476,36 @@ def validate_recorded_run_evidence(
         if not isinstance(stored_coverage, Mapping) or stored_coverage.get(key) != coverage.get(key):
             reasons.append("required_topic_coverage_mismatch")
             break
+    if inventory.get("passed"):
+        actual_counts = inventory["topic_counts"]
+        if any(
+            actual_counts.get(topic, 0) != coverage["message_counts"].get(topic, 0)
+            for topic in coverage["required_topics"]
+        ) or any(
+            actual_counts.get(topic, 0) != coverage["forbidden_message_counts"].get(topic, 0)
+            for topic in coverage["forbidden_topics"]
+        ):
+            reasons.append("required_topic_actual_count_mismatch")
+        if any(
+            inventory["topic_types"].get(topic) != RECORDED_TOPIC_TYPES[topic]
+            for topic in coverage["required_topics"]
+        ):
+            reasons.append("required_topic_schema_mismatch")
+        semantic = inventory["semantic"]
+        if semantic["collision_true_count"] != 0:
+            reasons.append("recorded_contact_detected")
+        if semantic["route_complete_true_count"] < 1:
+            reasons.append("recorded_navigation_completion_missing")
+        if (
+            semantic["terminal_zero_count"] < 2
+            or semantic["terminal_nonzero_count"] != 0
+        ):
+            reasons.append("recorded_terminal_zero_failed")
+        if (
+            semantic["positive_requested_count"] < 1
+            or semantic["positive_applied_count"] < 1
+        ):
+            reasons.append("recorded_route_prior_application_missing")
     route_prior = _route_prior_application_evidence(
         list(manifest.get("route_edge_costs", [])), required=route_prior_required
     )
@@ -487,6 +618,18 @@ def validate_recorded_run_evidence(
         reasons.append("strict_acceptance_failed")
     if summary.get("final_trial_metric_gate", {}).get("passed") is not True:
         reasons.append("final_metric_gate_failed")
+    try:
+        primary_metric = json.loads(
+            (root / "FINAL_TRIAL_METRICS.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        primary_metric = {}
+    if (
+        not isinstance(primary_metric, Mapping)
+        or primary_metric.get("passed") is not True
+        or summary.get("final_trial_metric_gate") != primary_metric
+    ):
+        reasons.append("primary_metric_artifact_mismatch")
     if reasons:
         raise ConfigurationError("recorded run evidence invalid: " + ";".join(dict.fromkeys(reasons)))
     return {
@@ -5417,7 +5560,9 @@ class ExperimentRunner(Node):
         root.rename(target)
         return target
 
-    def _claim_stack_episode_sequence(self) -> dict[str, Any]:
+    def _claim_stack_episode_sequence(
+        self, *, pre_reset_generation: int, reset_generation: int
+    ) -> dict[str, Any]:
         if not self._condition_stack_contract:
             return {}
         sequence_path = Path(
@@ -5433,9 +5578,18 @@ class ExperimentRunner(Node):
                     or isinstance(state.get("last_sequence"), bool)
                     or not isinstance(state.get("last_sequence"), int)
                     or state["last_sequence"] < 0
+                    or state.get("startup_reset_generation_baseline") != 1
                 ):
                     raise ConfigurationError("stack episode sequence state is invalid")
                 sequence = state["last_sequence"] + 1
+                baseline = state["startup_reset_generation_baseline"]
+                if (
+                    pre_reset_generation != baseline + state["last_sequence"]
+                    or reset_generation != baseline + sequence
+                ):
+                    raise ConfigurationError(
+                        "stack reset generation differs from fresh-start sequence"
+                    )
                 state["last_sequence"] = sequence
                 stream.seek(0)
                 stream.truncate()
@@ -5448,7 +5602,7 @@ class ExperimentRunner(Node):
         return {
             "schema": "bio_nav.v6_stack_episode_receipt.v1",
             "sequence": sequence,
-            "baseline": 0,
+            "baseline": baseline,
             "stack_session_id": self._stack_session_id,
             "sequence_path": str(sequence_path),
             "t2_selector_path": self._condition_stack_contract.get("t2_selector_path"),
@@ -5526,8 +5680,8 @@ class ExperimentRunner(Node):
             bag_complete = False
             run_summary: dict[str, Any] | None = None
             try:
-                self._active_stack_episode_receipt = (
-                    self._claim_stack_episode_sequence()
+                pre_reset_generation = int(
+                    getattr(self._reset_stop_gate_status, "generation", -1)
                 )
                 reset_case_id, reset_variant_id = _reset_dynamic_selection(
                     self._scenario.scenario_type, selection
@@ -5548,6 +5702,14 @@ class ExperimentRunner(Node):
                 if self._record_evidence:
                     root = self._begin_run_evidence(run_index, seed)
                     self._lifecycle_event("evidence_started")
+                    self._active_stack_episode_receipt = (
+                        self._claim_stack_episode_sequence(
+                            pre_reset_generation=pre_reset_generation,
+                            reset_generation=int(
+                                self._reset_receipt["generation"]
+                            ),
+                        )
+                    )
                 self._start_terminal_zero_observation()
                 nav2_succeeded, timed_out, nav2_status = self._navigate()
                 if (

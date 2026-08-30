@@ -50,6 +50,7 @@ LEGACY_MANIFESTS = tuple(
     for world in ("kujiale", "rivermark")
     for category in ("static", "dynamic", "appearance")
 )
+REAL_NAS_GUARD = v6_formal_module._validate_nas_mount
 
 
 @pytest.fixture(autouse=True)
@@ -59,6 +60,14 @@ def _stub_formal_nas_mount(monkeypatch):
         "_validate_nas_mount",
         lambda path: {"target": str(path), "filesystem": "test", "source": "test"},
     )
+
+
+def test_formal_nas_guard_resolves_nearest_existing_mount_parent():
+    evidence = REAL_NAS_GUARD(
+        Path("/mnt/nas_home/.codex-nonexistent/formal-output")
+    )
+    assert evidence["target"] == "/mnt/nas_home"
+    assert evidence["filesystem"].lower() == "cifs"
 
 
 def _raw() -> dict:
@@ -202,6 +211,7 @@ def _write_formal_run(
     formal_freeze_digest: str,
     valid: bool = True,
     stack_session_id: str = "a" * 64,
+    collision_detected: bool = False,
 ) -> Path:
     identity = condition.episode_identities[run_index - 1]
     seed = identity["seed"]
@@ -212,29 +222,79 @@ def _write_formal_run(
     )
     root.mkdir(parents=True)
     telemetry = root / "telemetry"
-    telemetry.mkdir()
     required_topics = (
         *experiment_runner_module.COMMON_REQUIRED_RECORDED_TOPICS,
         *experiment_runner_module.ROUTE_GUIDED_REQUIRED_RECORDED_TOPICS,
         *experiment_runner_module.SCENE_REQUIRED_RECORDED_TOPICS[condition.scene],
     )
-    topic_counts = {topic: 1 for topic in required_topics}
-    metadata = {
-        "rosbag2_bagfile_information": {
-            "storage_identifier": "mcap",
-            "relative_file_paths": ["telemetry_0.mcap"],
-            "message_count": sum(topic_counts.values()),
-            "topics_with_message_count": [
-                {"topic_metadata": {"name": topic}, "message_count": count}
-                for topic, count in topic_counts.items()
-            ],
-        }
-    }
-    (telemetry / "metadata.yaml").write_text(
-        yaml.safe_dump(metadata), encoding="utf-8"
+    import rosbag2_py
+    from bio_nav_interfaces.msg import (
+        CanonicalRoute, NavigationGraph, RouteEdgeCost, RouteEdgeCostArray,
+        RouteProgress,
     )
-    magic = experiment_runner_module.MCAP_MAGIC
-    (telemetry / "telemetry_0.mcap").write_bytes(magic + b"payload" + magic)
+    from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
+    from nav_msgs.msg import Odometry
+    from rclpy.serialization import serialize_message
+    from rosgraph_msgs.msg import Clock
+    from std_msgs.msg import Bool, String
+    from tf2_msgs.msg import TFMessage
+
+    message_factories = {
+        "/clock": Clock,
+        "/ground_truth/odom": Odometry,
+        "/odom": Odometry,
+        "/bio_nav/module1/odom": Odometry,
+        "/tf": TFMessage,
+        "/simulation/collision": Bool,
+        "/simulation/reset_stop_gate/status": String,
+        "/bio_nav/navigation_graph": NavigationGraph,
+        "/bio_nav/canonical_route": CanonicalRoute,
+        "/bio_nav/route_progress": RouteProgress,
+        "/amcl_pose": PoseWithCovarianceStamped,
+    }
+    messages = {topic: message_factories[topic]() for topic in required_topics if topic != "/cmd_vel_sim"}
+    messages["/simulation/collision"] = Bool(data=collision_detected)
+    route_cost_message = RouteEdgeCostArray()
+    route_cost = RouteEdgeCost()
+    route_cost.requested_module2_delta_m = 0.5
+    route_cost.applied_module2_delta_m = 0.5
+    route_cost_message.costs = [route_cost]
+    messages["/bio_nav/route_edge_costs"] = route_cost_message
+    messages["/bio_nav/route_goal_complete"] = Bool(data=True)
+    writer = rosbag2_py.SequentialWriter()
+    writer.open(
+        rosbag2_py.StorageOptions(uri=str(telemetry), storage_id="mcap"),
+        rosbag2_py.ConverterOptions("", ""),
+    )
+    for topic, message in messages.items():
+        type_name = (
+            "bio_nav_interfaces/msg/RouteEdgeCostArray"
+            if topic == "/bio_nav/route_edge_costs"
+            else "std_msgs/msg/Bool"
+            if topic == "/bio_nav/route_goal_complete"
+            else experiment_runner_module.RECORDED_TOPIC_TYPES[topic]
+        )
+        writer.create_topic(rosbag2_py.TopicMetadata(
+            id=0,
+            name=topic,
+            type=type_name,
+            serialization_format="cdr",
+            offered_qos_profiles=[],
+        ))
+    writer.create_topic(rosbag2_py.TopicMetadata(
+        id=0,
+        name="/cmd_vel_sim",
+        type="geometry_msgs/msg/Twist",
+        serialization_format="cdr",
+        offered_qos_profiles=[],
+    ))
+    stamp = 1
+    for topic, message in messages.items():
+        writer.write(topic, serialize_message(message), stamp)
+        stamp += 1
+    writer.write("/cmd_vel_sim", serialize_message(Twist()), stamp)
+    writer.write("/cmd_vel_sim", serialize_message(Twist()), stamp + 1)
+    del writer
     coverage = experiment_runner_module._mcap_required_topic_coverage(
         telemetry / "metadata.yaml",
         scene=condition.scene,
@@ -424,6 +484,9 @@ def _live_stack_contract(
             ],
             check=True, capture_output=True, text=True,
         ).stdout.strip(),
+        "integration_dirty": False,
+        "module2_dirty": False,
+        "module3_dirty": False,
         "driver_version": v6_formal_module._current_driver_version(),
         "kernel_release": os.uname().release,
         "t2_selector_path": str(t2_selector.resolve()),
@@ -437,7 +500,9 @@ def _live_stack_contract(
     return path
 
 
-def _write_sufficient_pilot_inputs(tmp_path: Path):
+def _write_sufficient_pilot_inputs(
+    tmp_path: Path, *, first_collision: bool = False
+):
     (tmp_path / "nas").mkdir(exist_ok=True)
     raw = _formal_raw(tmp_path)
     reference_path = tmp_path / "reference-formal.json"
@@ -477,6 +542,11 @@ def _write_sufficient_pilot_inputs(tmp_path: Path):
                 strict_success=True,
                 formal_freeze_digest=reference.freeze_digest,
                 stack_session_id=contract["stack_session_id"],
+                collision_detected=bool(
+                    first_collision
+                    and condition.condition_id == "indoor_static"
+                    and rep == 1
+                ),
             )
             manifest_path = root / "run_manifest.json"
             summary_path = root / "run_summary.json"
@@ -513,17 +583,26 @@ def _write_sufficient_pilot_inputs(tmp_path: Path):
                     for name in map_keys
                 },
             }
+            episode["reset_receipt"] = {"generation": rep + 1}
+            summary["reset_receipt"] = {"generation": rep + 1}
             stack_episode_receipt = {
                 "schema": "bio_nav.v6_stack_episode_receipt.v1",
                 "sequence": rep,
-                "baseline": 0,
+                "baseline": 1,
                 "stack_session_id": contract["stack_session_id"],
                 "sequence_path": contract["episode_sequence_path"],
                 "t2_selector_path": contract["t2_selector_path"],
                 "t2_selector_sha256": contract["t2_selector_sha256"],
             }
             episode["stack_episode_receipt"] = stack_episode_receipt
-            summary["stack_episode_receipt"] = stack_episode_receipt
+            summary["condition_stack_attestation"] = {
+                "required": True,
+                "condition_stack_id": condition.condition_id,
+                "stack_session_id": contract["stack_session_id"],
+                "formal_freeze_digest": reference.freeze_digest,
+                "stack_episode_receipt": stack_episode_receipt,
+                "confirmed": True,
+            }
             manifest_path.write_text(json.dumps(episode), encoding="utf-8")
             summary_path.write_text(json.dumps(summary), encoding="utf-8")
             _refresh_checksums(root)
@@ -548,6 +627,26 @@ def _write_sufficient_pilot_inputs(tmp_path: Path):
         "conditions": aggregate_rows,
     }), encoding="utf-8")
     return pilot_manifest_path, aggregate_path, reference
+
+
+def _write_authorized_formal_manifest(tmp_path: Path) -> Path:
+    pilot_manifest, aggregate, _reference = _write_sufficient_pilot_inputs(tmp_path)
+    output = tmp_path / "authorized-formal.json"
+    original_nas_root = v6_formal_module.FORMAL_NAS_ROOT
+    v6_formal_module.FORMAL_NAS_ROOT = tmp_path / "nas"
+    try:
+        freeze_formal_manifest_from_pilot(
+            pilot_manifest_path=pilot_manifest,
+            pilot_aggregate_path=aggregate,
+            output_manifest_path=output,
+            formal_output_root=tmp_path / "nas" / "authorized-formal-root",
+        )
+    finally:
+        v6_formal_module.FORMAL_NAS_ROOT = original_nas_root
+    raw = json.loads(output.read_text())
+    raw["execution_authorization"] = "AUTHORIZED"
+    output.write_text(json.dumps(raw), encoding="utf-8")
+    return output
 
 
 def ready_facts() -> ReadinessFacts:
@@ -757,6 +856,8 @@ def test_sufficient_pilot_freezer_writes_not_authorized_formal_manifest(
         ("runtime_hashes", "source/config provenance mismatch"),
         ("session", "frozen tuple/session mismatch"),
         ("sequence", "stack episode sequence/T2 receipt mismatch"),
+        ("counts", "primary evidence failed"),
+        ("collision", "primary evidence failed"),
         ("boundary", "cold/hot episode order mismatch"),
         ("order", "condition order/identity mismatch"),
     ],
@@ -765,7 +866,7 @@ def test_sufficient_pilot_freezer_fails_closed_and_writes_nothing(
     tmp_path, monkeypatch, fault, message
 ):
     pilot_manifest, aggregate_path, _reference = _write_sufficient_pilot_inputs(
-        tmp_path
+        tmp_path, first_collision=(fault == "collision")
     )
     aggregate = json.loads(aggregate_path.read_text())
     first_episode = aggregate["conditions"][0]["episodes"][0]
@@ -793,13 +894,23 @@ def test_sufficient_pilot_freezer_fails_closed_and_writes_nothing(
             summary["stack_session_id"] = "b" * 64
         else:
             episode["stack_episode_receipt"]["sequence"] = 2
-            summary["stack_episode_receipt"]["sequence"] = 2
+            summary["condition_stack_attestation"]["stack_episode_receipt"][
+                "sequence"
+            ] = 2
         manifest_path.write_text(json.dumps(episode), encoding="utf-8")
         summary_path.write_text(json.dumps(summary), encoding="utf-8")
         _refresh_checksums(manifest_path.parent)
     elif fault == "boundary":
         first_episode["boundary"] = "hot_reset"
         aggregate_path.write_text(json.dumps(aggregate), encoding="utf-8")
+    elif fault == "counts":
+        metadata_path = Path(first_episode["summary_path"]).parent / "telemetry" / "metadata.yaml"
+        metadata = yaml.safe_load(metadata_path.read_text())
+        metadata["rosbag2_bagfile_information"]["message_count"] += 1
+        metadata_path.write_text(yaml.safe_dump(metadata), encoding="utf-8")
+        _refresh_checksums(metadata_path.parents[1])
+    elif fault == "collision":
+        pass
     else:
         aggregate["conditions"][0], aggregate["conditions"][1] = (
             aggregate["conditions"][1], aggregate["conditions"][0]
@@ -1020,11 +1131,18 @@ def test_formal_execution_requires_flag_and_authorized_manifest(tmp_path, capsys
     assert "require --formal-manifest" in capsys.readouterr().err
 
 
+def test_authorized_manifest_without_pilot_provenance_is_rejected(tmp_path):
+    path = _write_formal_manifest(tmp_path, authorization="AUTHORIZED")
+
+    with pytest.raises(V6ContractError, match="requires complete Pilot"):
+        load_formal_campaign_manifest(path)
+
+
 def test_formal_execution_rejects_wrong_stack_without_subprocess(
     tmp_path, monkeypatch
 ):
     campaign = load_formal_campaign_manifest(
-        _write_formal_manifest(tmp_path, authorization="AUTHORIZED")
+        _write_authorized_formal_manifest(tmp_path)
     )
     calls = []
     monkeypatch.setattr(
@@ -1054,7 +1172,7 @@ def test_formal_execution_rejects_stack_freeze_mismatch(
     tmp_path, monkeypatch, override, message
 ):
     campaign = load_formal_campaign_manifest(
-        _write_formal_manifest(tmp_path, authorization="AUTHORIZED")
+        _write_authorized_formal_manifest(tmp_path)
     )
     contract = _live_stack_contract(tmp_path, **override)
     monkeypatch.setenv("ROS_DOMAIN_ID", "150")
@@ -1115,7 +1233,7 @@ def test_formal_execution_dispatches_one_episode_and_returns(
     tmp_path, monkeypatch
 ):
     campaign = load_formal_campaign_manifest(
-        _write_formal_manifest(tmp_path, authorization="AUTHORIZED")
+        _write_authorized_formal_manifest(tmp_path)
     )
     contract = _live_stack_contract(tmp_path)
     monkeypatch.setenv("ROS_DOMAIN_ID", "150")
@@ -1157,7 +1275,7 @@ def test_formal_execution_rejects_live_session_change_before_subprocess(
     tmp_path, monkeypatch
 ):
     campaign = load_formal_campaign_manifest(
-        _write_formal_manifest(tmp_path, authorization="AUTHORIZED")
+        _write_authorized_formal_manifest(tmp_path)
     )
     _write_formal_run(
         campaign.conditions[0],
@@ -1189,7 +1307,7 @@ def test_formal_execution_raises_when_post_dispatch_aggregate_blocks(
     tmp_path, monkeypatch
 ):
     campaign = load_formal_campaign_manifest(
-        _write_formal_manifest(tmp_path, authorization="AUTHORIZED")
+        _write_authorized_formal_manifest(tmp_path)
     )
     contract = _live_stack_contract(tmp_path)
     contract_payload = json.loads(contract.read_text())
@@ -1222,7 +1340,7 @@ def test_formal_execution_requires_exactly_one_new_strict_target(
     tmp_path, monkeypatch
 ):
     campaign = load_formal_campaign_manifest(
-        _write_formal_manifest(tmp_path, authorization="AUTHORIZED")
+        _write_authorized_formal_manifest(tmp_path)
     )
     contract = _live_stack_contract(tmp_path)
     monkeypatch.setenv("ROS_DOMAIN_ID", "150")
