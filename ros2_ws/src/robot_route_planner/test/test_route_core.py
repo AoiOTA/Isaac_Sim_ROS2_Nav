@@ -20,6 +20,7 @@ from robot_route_planner.ros_node import (
     EdgePriorGeneration,
     RouteCoordinator,
     TerminalFenceToken,
+    edge_prior_admission_max_age_s,
     edge_prior_is_usable,
     footprint_is_free,
     navigation_result_succeeded,
@@ -110,6 +111,32 @@ def test_edge_prior_requires_fresh_health_model_and_finite_bounds() -> None:
         usable, detail = edge_prior_is_usable(**candidate)
         assert usable is False
         assert reason in detail
+
+
+@pytest.mark.parametrize(
+    'ttl',
+    (
+        SimpleNamespace(sec=0, nanosec=0),
+        SimpleNamespace(sec=-1, nanosec=0),
+        SimpleNamespace(sec=0, nanosec=-1),
+        SimpleNamespace(sec=0, nanosec=1_000_000_000),
+    ),
+)
+def test_edge_prior_admission_rejects_invalid_message_duration(ttl) -> None:
+    with pytest.raises(ValueError, match='message prior TTL is invalid'):
+        edge_prior_admission_max_age_s(ttl, 2.0)
+
+
+@pytest.mark.parametrize(
+    'configured_ceiling_s',
+    (float('nan'), float('inf'), 0.0, -0.1),
+)
+def test_edge_prior_admission_rejects_invalid_configured_ceiling(
+    configured_ceiling_s,
+) -> None:
+    ttl = SimpleNamespace(sec=1, nanosec=0)
+    with pytest.raises(ValueError, match='configured prior TTL ceiling is invalid'):
+        edge_prior_admission_max_age_s(ttl, configured_ceiling_s)
 
 
 def test_accepted_prior_survives_refresh_timeout_and_route_ttl() -> None:
