@@ -101,6 +101,7 @@ void CognitiveObstacleLayer::onInitialize()
   declare("consumer_id", std::string(""));
   declare("obstacle_topic", obstacle_topic_);
   declare("maximum_age_s", maximum_age_s_);
+  declare("track_ttl_s", track_ttl_s_);
   declare("maximum_ood_probability", maximum_ood_probability_);
   declare("maximum_soft_cost", maximum_soft_cost_);
   declare("collision_min_height_m", collision_min_height_m_);
@@ -120,6 +121,7 @@ void CognitiveObstacleLayer::onInitialize()
     node->get_fully_qualified_name(), name_, consumer_id_override);
   node->get_parameter(name_ + ".obstacle_topic", obstacle_topic_);
   node->get_parameter(name_ + ".maximum_age_s", maximum_age_s_);
+  node->get_parameter(name_ + ".track_ttl_s", track_ttl_s_);
   node->get_parameter(
     name_ + ".maximum_ood_probability", maximum_ood_probability_);
   node->get_parameter(name_ + ".maximum_soft_cost", maximum_soft_cost_);
@@ -154,6 +156,7 @@ void CognitiveObstacleLayer::onInitialize()
   identity_bound_ = identity_parameters_configured_;
   maximum_soft_cost_ = std::clamp(maximum_soft_cost_, 1, 80);
   if (!std::isfinite(maximum_age_s_) || maximum_age_s_ <= 0.0 ||
+    !std::isfinite(track_ttl_s_) || track_ttl_s_ <= 0.0 ||
     !unit(maximum_ood_probability_))
   {
     throw std::runtime_error("CognitiveObstacleLayer age/OOD gates are invalid");
@@ -456,6 +459,7 @@ uint64_t CognitiveObstacleLayer::observeStaticTrack(
     ++state.rehit_count;
     state.last_source_sequence = message.sequence;
     state.last_validation_stamp_ns = validation_ns;
+    state.last_refresh_ns = clock_->now().nanoseconds();
     state.map_x = map_x;
     state.map_y = map_y;
     if (!state.promoted) {
@@ -475,6 +479,7 @@ uint64_t CognitiveObstacleLayer::observeStaticTrack(
 std::vector<CognitiveObstacleLayer::AppliedObstacle>
 CognitiveObstacleLayer::promotedStaticObstacles()
 {
+  pruneStaticTracks();
   std::vector<AppliedObstacle> obstacles;
   for (const auto & [key, state] : static_tracks_) {
     (void)key;
@@ -490,9 +495,28 @@ CognitiveObstacleLayer::promotedStaticObstacles()
 
 bool CognitiveObstacleLayer::hasPromotedStaticObstacle()
 {
+  pruneStaticTracks();
   return std::any_of(
     static_tracks_.begin(), static_tracks_.end(),
     [](const auto & entry) {return entry.second.promoted;});
+}
+
+void CognitiveObstacleLayer::pruneStaticTracks()
+{
+  const int64_t now_ns = clock_->now().nanoseconds();
+  const int64_t cutoff_ns =
+    now_ns - static_cast<int64_t>(track_ttl_s_ * 1.0e9);
+  for (auto it = static_tracks_.begin(); it != static_tracks_.end();) {
+    if (it->second.last_refresh_ns < cutoff_ns) {
+      RCLCPP_WARN_THROTTLE(
+        logger_, *clock_, 5000,
+        "CognitiveObstacleLayer static track '%s' expired after %.1f s without refresh",
+        it->first.track_id.c_str(), track_ttl_s_);
+      it = static_tracks_.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 void CognitiveObstacleLayer::clearStaticTracks()

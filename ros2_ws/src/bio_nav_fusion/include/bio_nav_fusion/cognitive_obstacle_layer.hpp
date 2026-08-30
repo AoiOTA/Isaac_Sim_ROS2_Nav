@@ -125,6 +125,7 @@ private:
     uint64_t rehit_count{0};
     uint64_t last_source_sequence{0};
     int64_t last_validation_stamp_ns{0};
+    int64_t last_refresh_ns{0};
     bool promoted{false};
   };
 
@@ -147,6 +148,8 @@ private:
     double map_x, double map_y);
   std::vector<AppliedObstacle> promotedStaticObstacles();
   bool hasPromotedStaticObstacle();
+  // Caller must hold mutex_. Uses clock_ (sim time aware) as the TTL horizon.
+  void pruneStaticTracks();
   void clearStaticTracks();
   static std::string applicationReason(
     uint32_t active_cells, uint32_t raised_cells);
@@ -171,6 +174,7 @@ private:
   std::string consumer_id_;
   std::string obstacle_topic_{"/bio_nav/module2/cognitive_obstacles"};
   double maximum_age_s_{0.5};
+  double track_ttl_s_{5.0};
   double maximum_ood_probability_{0.2};
   int maximum_soft_cost_{80};
   double collision_min_height_m_{0.02};

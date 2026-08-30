@@ -235,6 +235,20 @@ public:
       [](const auto & entry) {return entry.second.promoted;}));
   }
 
+  static void setClock(
+    CognitiveObstacleLayer & layer, const rclcpp::Clock::SharedPtr & clock)
+  {
+    layer.clock_ = clock;
+  }
+
+  static void ageStaticTracks(CognitiveObstacleLayer & layer, int64_t age_ns)
+  {
+    std::lock_guard<std::mutex> lock(layer.mutex_);
+    for (auto & entry : layer.static_tracks_) {
+      entry.second.last_refresh_ns -= age_ns;
+    }
+  }
+
   static void offer(
     CognitiveObstacleLayer & layer,
     const bio_nav_interfaces::msg::CognitiveObstacleArray & message)
@@ -1504,6 +1518,7 @@ TEST(CognitiveObstacleLayer, rejected_or_soft_candidates_never_create_a_lethal_l
   expect_no_track(staticRevalidatedObstacleFixture(), false);
 
   Layer soft_layer;
+  Peer::setClock(soft_layer, clock);
   auto soft = staticRevalidatedObstacleFixture();
   soft.obstacles[0].count = 1U;
   soft.obstacles[0].confidence = 0.5;
@@ -1517,6 +1532,255 @@ TEST(CognitiveObstacleLayer, rejected_or_soft_candidates_never_create_a_lethal_l
       nav2_costmap_2d::LETHAL_OBSTACLE);
   }
   EXPECT_EQ(Peer::promotedStaticTrackCount(soft_layer), 0U);
+}
+
+TEST(CognitiveObstacleLayer, static_track_ttl_expires_silenced_track_and_frees_cells)
+{
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  auto clock = std::make_shared<rclcpp::Clock>(RCL_SYSTEM_TIME);
+  tf2_ros::Buffer tf_buffer(clock);
+  nav2_costmap_2d::LayeredCostmap layered_costmap("map", true, false);
+  layered_costmap.resizeMap(80U, 80U, 0.05, -2.0, -2.0);
+  auto * master = layered_costmap.getCostmap();
+  CognitiveObstacleLayerHarness layer;
+  layer.bind(layered_costmap, tf_buffer, clock);
+  layer.resizeMap(80U, 80U, 0.05, -2.0, -2.0);
+
+  const int64_t now_ns = clock->now().nanoseconds();
+  const int64_t source_ns = now_ns - 1000000000LL;
+  auto message = staticRevalidatedObstacleFixture();
+  retimeStatic(message, source_ns, now_ns - 30000000LL);
+  geometry_msgs::msg::TransformStamped transform;
+  transform.header.frame_id = "map";
+  transform.header.stamp = message.validation_stamp;
+  transform.child_frame_id = "base_link";
+  transform.transform.rotation.w = 1.0;
+  ASSERT_TRUE(tf_buffer.setTransform(transform, "static_ttl_test"));
+
+  const auto apply = [&](const bio_nav_interfaces::msg::CognitiveObstacleArray & current) {
+      master->resetMap(0U, 0U, 80U, 80U);
+      Peer::configureActive(layer, current);
+      layer.updateCosts(*master, 0, 0, 80, 80);
+      unsigned int mx = 0U;
+      unsigned int my = 0U;
+      EXPECT_TRUE(layer.worldToMap(1.0, 0.0, mx, my));
+      return layer.getCost(mx, my);
+    };
+
+  // One hard static report promotes the track and latches the cell.
+  EXPECT_EQ(apply(message), nav2_costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_EQ(Peer::promotedStaticTrackCount(layer), 1U);
+
+  // Module2 stops reporting the obstacle; within the TTL the latch holds.
+  auto empty = message;
+  retimeStatic(empty, source_ns, now_ns - 20000000LL);
+  empty.sequence = 8U;
+  empty.obstacles.clear();
+  EXPECT_EQ(apply(empty), nav2_costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_EQ(Peer::staticTrackCount(layer), 1U);
+
+  // After the TTL horizon the ghost track is dropped and stops writing cells.
+  Peer::ageStaticTracks(layer, 6000000000LL);
+  auto later_empty = message;
+  retimeStatic(later_empty, source_ns, now_ns - 10000000LL);
+  later_empty.sequence = 9U;
+  later_empty.obstacles.clear();
+  EXPECT_EQ(apply(later_empty), nav2_costmap_2d::FREE_SPACE);
+  EXPECT_EQ(Peer::staticTrackCount(layer), 0U);
+  EXPECT_EQ(Peer::promotedStaticTrackCount(layer), 0U);
+  unsigned int mx = 0U;
+  unsigned int my = 0U;
+  ASSERT_TRUE(layer.worldToMap(1.0, 0.0, mx, my));
+  EXPECT_EQ(master->getCost(mx, my), nav2_costmap_2d::FREE_SPACE);
+}
+
+TEST(CognitiveObstacleLayer, static_track_ttl_survives_while_reports_continue)
+{
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  auto clock = std::make_shared<rclcpp::Clock>(RCL_SYSTEM_TIME);
+  tf2_ros::Buffer tf_buffer(clock);
+  nav2_costmap_2d::LayeredCostmap layered_costmap("map", true, false);
+  layered_costmap.resizeMap(80U, 80U, 0.05, -2.0, -2.0);
+  auto * master = layered_costmap.getCostmap();
+  CognitiveObstacleLayerHarness layer;
+  layer.bind(layered_costmap, tf_buffer, clock);
+  layer.resizeMap(80U, 80U, 0.05, -2.0, -2.0);
+
+  const int64_t now_ns = clock->now().nanoseconds();
+  const int64_t source_ns = now_ns - 1000000000LL;
+  const auto add_identity_transform = [&](const builtin_interfaces::msg::Time & stamp) {
+      geometry_msgs::msg::TransformStamped transform;
+      transform.header.frame_id = "map";
+      transform.header.stamp = stamp;
+      transform.child_frame_id = "base_link";
+      transform.transform.rotation.w = 1.0;
+      ASSERT_TRUE(tf_buffer.setTransform(transform, "static_ttl_test"));
+    };
+  const auto apply = [&](const bio_nav_interfaces::msg::CognitiveObstacleArray & current) {
+      master->resetMap(0U, 0U, 80U, 80U);
+      Peer::configureActive(layer, current);
+      layer.updateCosts(*master, 0, 0, 80, 80);
+      unsigned int mx = 0U;
+      unsigned int my = 0U;
+      EXPECT_TRUE(layer.worldToMap(1.0, 0.0, mx, my));
+      return layer.getCost(mx, my);
+    };
+  const auto emptyAfter = [&](const bio_nav_interfaces::msg::CognitiveObstacleArray & base,
+      uint64_t sequence, int64_t validation_ns) {
+      auto empty = base;
+      retimeStatic(empty, source_ns, validation_ns);
+      empty.sequence = sequence;
+      empty.obstacles.clear();
+      return empty;
+    };
+
+  auto message = staticRevalidatedObstacleFixture();
+  retimeStatic(message, source_ns, now_ns - 30000000LL);
+  add_identity_transform(message.validation_stamp);
+  EXPECT_EQ(apply(message), nav2_costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_EQ(Peer::promotedStaticTrackCount(layer), 1U);
+
+  // Silence for 4 s (< 5 s TTL): the latch still holds.
+  Peer::ageStaticTracks(layer, 4000000000LL);
+  EXPECT_EQ(
+    apply(emptyAfter(message, 8U, now_ns - 20000000LL)),
+    nav2_costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_EQ(Peer::staticTrackCount(layer), 1U);
+
+  // A fresh independent report refreshes the track and restarts the horizon.
+  auto refresh = message;
+  refresh.sequence = 9U;
+  retimeStatic(refresh, source_ns, now_ns - 15000000LL);
+  add_identity_transform(refresh.validation_stamp);
+  EXPECT_EQ(apply(refresh), nav2_costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_EQ(Peer::staticTrackCount(layer), 1U);
+
+  // 4 s after the refresh the track survives; 6 s after, it is gone.
+  Peer::ageStaticTracks(layer, 4000000000LL);
+  EXPECT_EQ(
+    apply(emptyAfter(message, 10U, now_ns - 10000000LL)),
+    nav2_costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_EQ(Peer::staticTrackCount(layer), 1U);
+  Peer::ageStaticTracks(layer, 2000000000LL);
+  EXPECT_EQ(
+    apply(emptyAfter(message, 11U, now_ns - 5000000LL)),
+    nav2_costmap_2d::FREE_SPACE);
+  EXPECT_EQ(Peer::staticTrackCount(layer), 0U);
+}
+
+TEST(CognitiveObstacleLayer, unpromoted_static_track_expires_with_ttl)
+{
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  auto clock = std::make_shared<rclcpp::Clock>(RCL_SYSTEM_TIME);
+  tf2_ros::Buffer tf_buffer(clock);
+  nav2_costmap_2d::LayeredCostmap layered_costmap("map", true, false);
+  layered_costmap.resizeMap(80U, 80U, 0.05, -2.0, -2.0);
+  auto * master = layered_costmap.getCostmap();
+  CognitiveObstacleLayerHarness layer;
+  layer.bind(layered_costmap, tf_buffer, clock);
+  layer.resizeMap(80U, 80U, 0.05, -2.0, -2.0);
+
+  const int64_t now_ns = clock->now().nanoseconds();
+  const int64_t source_ns = now_ns - 1000000000LL;
+  auto message = staticRevalidatedObstacleFixture();
+  message.obstacles[0].count = 1U;
+  message.obstacles[0].confidence = 0.5;
+  retimeStatic(message, source_ns, now_ns - 30000000LL);
+  geometry_msgs::msg::TransformStamped transform;
+  transform.header.frame_id = "map";
+  transform.header.stamp = message.validation_stamp;
+  transform.child_frame_id = "base_link";
+  transform.transform.rotation.w = 1.0;
+  ASSERT_TRUE(tf_buffer.setTransform(transform, "static_ttl_test"));
+
+  // A soft candidate creates a track but never promotes.
+  Peer::configureActive(layer, message);
+  layer.updateCosts(*master, 0, 0, 80, 80);
+  EXPECT_EQ(Peer::staticTrackCount(layer), 1U);
+  EXPECT_EQ(Peer::promotedStaticTrackCount(layer), 0U);
+
+  // The rehit state must not live forever without promotion either.
+  Peer::ageStaticTracks(layer, 6000000000LL);
+  auto empty = message;
+  retimeStatic(empty, source_ns, now_ns - 10000000LL);
+  empty.sequence = 8U;
+  empty.obstacles.clear();
+  Peer::configureActive(layer, empty);
+  master->resetMap(0U, 0U, 80U, 80U);
+  layer.updateCosts(*master, 0, 0, 80, 80);
+  EXPECT_EQ(Peer::staticTrackCount(layer), 0U);
+  unsigned int mx = 0U;
+  unsigned int my = 0U;
+  ASSERT_TRUE(layer.worldToMap(1.0, 0.0, mx, my));
+  EXPECT_EQ(layer.getCost(mx, my), nav2_costmap_2d::FREE_SPACE);
+}
+
+TEST(CognitiveObstacleLayer, update_bounds_stops_touching_after_static_track_ttl)
+{
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  auto clock = std::make_shared<rclcpp::Clock>(RCL_SYSTEM_TIME);
+  tf2_ros::Buffer tf_buffer(clock);
+  nav2_costmap_2d::LayeredCostmap layered_costmap("map", true, false);
+  layered_costmap.resizeMap(80U, 80U, 0.05, -2.0, -2.0);
+  auto * master = layered_costmap.getCostmap();
+  CognitiveObstacleLayerHarness layer;
+  layer.bind(layered_costmap, tf_buffer, clock);
+  layer.resizeMap(80U, 80U, 0.05, -2.0, -2.0);
+
+  const int64_t now_ns = clock->now().nanoseconds();
+  const int64_t source_ns = now_ns - 1000000000LL;
+  auto message = staticRevalidatedObstacleFixture();
+  retimeStatic(message, source_ns, now_ns - 30000000LL);
+  geometry_msgs::msg::TransformStamped transform;
+  transform.header.frame_id = "map";
+  transform.header.stamp = message.validation_stamp;
+  transform.child_frame_id = "base_link";
+  transform.transform.rotation.w = 1.0;
+  ASSERT_TRUE(tf_buffer.setTransform(transform, "static_ttl_test"));
+  Peer::configureActive(layer, message);
+  layer.updateCosts(*master, 0, 0, 80, 80);
+  ASSERT_EQ(Peer::promotedStaticTrackCount(layer), 1U);
+
+  // A stale offer makes updateCosts drop latest_, leaving the live track as
+  // the only reason updateBounds expands the rolling window.
+  auto stale = message;
+  retimeStatic(stale, source_ns - 9000000000LL, now_ns - 10000000000LL);
+  stale.obstacles.clear();
+  Peer::configureActive(layer, stale);
+  layer.updateCosts(*master, 0, 0, 80, 80);
+
+  double min_x = -1.0;
+  double min_y = -1.0;
+  double max_x = 1.0;
+  double max_y = 1.0;
+  layer.updateBounds(0.0, 0.0, 0.0, &min_x, &min_y, &max_x, &max_y);
+  EXPECT_DOUBLE_EQ(min_x, -1000.0);
+  EXPECT_DOUBLE_EQ(max_x, 1000.0);
+  EXPECT_EQ(Peer::staticTrackCount(layer), 1U);
+
+  // Once the track outlives the TTL, updateBounds prunes it and no longer
+  // touches the window for it.
+  Peer::ageStaticTracks(layer, 6000000000LL);
+  min_x = -1.0;
+  min_y = -1.0;
+  max_x = 1.0;
+  max_y = 1.0;
+  layer.updateBounds(0.0, 0.0, 0.0, &min_x, &min_y, &max_x, &max_y);
+  EXPECT_DOUBLE_EQ(min_x, -1.0);
+  EXPECT_DOUBLE_EQ(max_x, 1.0);
+  EXPECT_EQ(Peer::staticTrackCount(layer), 0U);
 }
 
 TEST(CognitiveRiskCritic, nearer_and_more_directionally_deviant_cost_more)
