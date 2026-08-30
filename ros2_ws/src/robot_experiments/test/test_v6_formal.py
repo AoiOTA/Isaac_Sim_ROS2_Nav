@@ -1,4 +1,5 @@
 from collections import deque
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,6 +21,9 @@ from robot_experiments.v6_formal import (
     V6FormalNode,
     authorize_manifest,
     cli,
+    evaluate_formal_campaign,
+    formal_dispatch_plan,
+    load_formal_campaign_manifest,
     load_manifest,
 )
 
@@ -30,7 +34,11 @@ CONFIG = PACKAGE / "config"
 MANIFEST = CONFIG / "v6_r3_phase2_kujiale_baseline.yaml"
 PHASE_B_MANIFEST = CONFIG / "v6_r5_phase_b_kujiale_exact_baseline.yaml"
 LEGACY_MANIFESTS = tuple(
-    CONFIG / f"v6_final_{world}_{category}.yaml"
+    CONFIG / (
+        f"v6_final_{world}_{category}.yaml"
+        if world == "kujiale"
+        else f"final_{world}_{category}.yaml"
+    )
     for world in ("kujiale", "rivermark")
     for category in ("static", "dynamic", "appearance")
 )
@@ -44,6 +52,88 @@ def _write_manifest(tmp_path: Path, raw: dict) -> Path:
     path = tmp_path / "manifest.yaml"
     path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
     return path
+
+
+def _formal_raw(tmp_path: Path, *, authorization: str = "NOT_AUTHORIZED") -> dict:
+    rows = []
+    for scene, world in (("indoor", "kujiale"), ("outdoor", "rivermark")):
+        for category in ("static", "dynamic", "appearance"):
+            scenario = (
+                CONFIG / f"v6_final_{world}_{category}.yaml"
+                if world == "kujiale"
+                else CONFIG / f"final_{world}_{category}.yaml"
+            )
+            rows.append({
+                "id": f"{scene}_{category}",
+                "scene": scene,
+                "category": category,
+                "scenario_file": str(scenario),
+                "output_directory": str(tmp_path / f"{scene}-{category}"),
+                "runner_arguments": [
+                    "nav2_profile:=v6_low_obstacle_isolation",
+                    "navigation_execution_backend:=route_guided",
+                    "require_module2_planning_ready:=true",
+                ],
+            })
+    by_id = {row["id"]: row for row in rows}
+    ordered = [by_id[name] for name in v6_formal_module.FORMAL_CONDITION_IDS]
+    return {
+        "schema_version": "bio_nav_v6_formal_campaign_v1",
+        "intended_use": "formal_qualification",
+        "execution_authorization": authorization,
+        "runs_per_condition": 20,
+        "conditions": ordered,
+    }
+
+
+def _write_formal_manifest(
+    tmp_path: Path, *, authorization: str = "NOT_AUTHORIZED"
+) -> Path:
+    path = tmp_path / "formal.yaml"
+    path.write_text(
+        yaml.safe_dump(_formal_raw(tmp_path, authorization=authorization)),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _write_formal_run(
+    condition, run_index: int, *, strict_success: bool, valid: bool = True
+) -> Path:
+    identity = condition.episode_identities[run_index - 1]
+    seed = identity["seed"]
+    root = (
+        condition.output_directory
+        / condition.scenario_id
+        / f"run-{run_index:04d}-seed-{seed}"
+    )
+    root.mkdir(parents=True)
+    summary = {
+        "strict_success": strict_success,
+        "checksums_verified": True,
+        "episode_validity": {"valid": valid},
+    }
+    episode = {
+        "scenario_id": condition.scenario_id,
+        "run_index": run_index,
+        "random_seed": seed,
+        "condition_id": identity["condition_id"],
+        "dynamic_selection": {
+            "case_id": identity["dynamic_case_id"],
+            "variant_id": identity["dynamic_variant_id"],
+        },
+        "appearance": {"profile_id": identity["appearance_profile_id"]},
+    }
+    (root / "run_summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    (root / "run_manifest.json").write_text(json.dumps(episode), encoding="utf-8")
+    entries = [
+        f"{hashlib.sha256(item.read_bytes()).hexdigest()}  {item.name}"
+        for item in sorted(root.iterdir())
+    ]
+    (root / "checksums.sha256").write_text(
+        "\n".join(entries) + "\n", encoding="utf-8"
+    )
+    return root
 
 
 def ready_facts() -> ReadinessFacts:
@@ -158,6 +248,101 @@ def test_r3_phase2_is_pilot_only(capsys):
 
     assert cli(["--manifest", str(MANIFEST)]) == 2
     assert "engineering pilot only" in capsys.readouterr().err
+
+
+def test_formal_manifest_dry_run_freezes_six_conditions_and_120_runs(
+    tmp_path, capsys
+):
+    path = _write_formal_manifest(tmp_path)
+
+    assert cli(["--formal-manifest", str(path)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["execution_authorization"] == "NOT_AUTHORIZED"
+    assert payload["dispatch"] is False
+    assert payload["aggregate"]["expected_episodes"] == 120
+    assert payload["aggregate"]["present_episodes"] == 0
+    assert payload["aggregate"]["strict_successes"] == 0
+    assert [
+        row["id"] for row in payload["aggregate"]["conditions"]
+    ] == list(v6_formal_module.FORMAL_CONDITION_IDS)
+    assert set(payload["resume_points"].values()) == {1}
+    assert len(payload["dispatch_plan"]) == 6
+    assert all("run_indices:=1" in row["command"] for row in payload["dispatch_plan"])
+    assert all(
+        row["stack_boundary"] == "cold"
+        and row["requires_existing_condition_stack"] is True
+        for row in payload["dispatch_plan"]
+    )
+
+    campaign = load_formal_campaign_manifest(path)
+    dynamic = next(
+        condition
+        for condition in campaign.conditions
+        if condition.condition_id == "indoor_dynamic"
+    )
+    assert len(dynamic.episode_identities) == 20
+    assert len({row["seed"] for row in dynamic.episode_identities}) == 4
+    assert len({
+        (
+            row["seed"],
+            row["dynamic_case_id"],
+            row["dynamic_variant_id"],
+        )
+        for row in dynamic.episode_identities
+    }) == 20
+
+
+def test_formal_execution_requires_flag_and_authorized_manifest(tmp_path, capsys):
+    path = _write_formal_manifest(tmp_path)
+
+    assert cli(["--formal-manifest", str(path), "--execute-formal"]) == 2
+    assert "manifest is NOT_AUTHORIZED" in capsys.readouterr().err
+
+    assert cli(["--manifest", str(MANIFEST), "--execute-formal"]) == 2
+    assert "requires --formal-manifest" in capsys.readouterr().err
+
+
+def test_formal_aggregate_resumes_after_valid_strict_episode(tmp_path):
+    campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
+    first = campaign.conditions[0]
+    _write_formal_run(first, 1, strict_success=True)
+
+    aggregate = evaluate_formal_campaign(campaign)
+    plans = formal_dispatch_plan(campaign, aggregate)
+
+    first_result = aggregate["conditions"][0]
+    assert first_result["strict_successes"] == 1
+    assert first_result["valid_episodes"] == 1
+    assert first_result["next_run_index"] == 2
+    assert plans[0]["condition_id"] == first.condition_id
+    assert plans[0]["run_index"] == 2
+    assert plans[0]["stack_boundary"] == "hot_reset"
+    assert plans[0]["stack_session"] == first.condition_id
+
+
+@pytest.mark.parametrize(
+    ("strict_success", "valid", "expected_status"),
+    [
+        (False, True, "product_failure"),
+        (False, False, "invalid_evidence"),
+    ],
+)
+def test_formal_aggregate_stops_at_product_or_evidence_failure(
+    tmp_path, strict_success, valid, expected_status
+):
+    campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
+    first = campaign.conditions[0]
+    _write_formal_run(first, 1, strict_success=strict_success, valid=valid)
+
+    aggregate = evaluate_formal_campaign(campaign)
+    first_result = aggregate["conditions"][0]
+
+    assert first_result["runs"][0]["status"] == expected_status
+    assert first_result["next_run_index"] is None
+    assert aggregate["blockers"] == [
+        f"{first.condition_id}:run-1:{expected_status}"
+    ]
 
 
 def test_runtime_contract_rejects_nonbaseline_navigation_features(tmp_path):

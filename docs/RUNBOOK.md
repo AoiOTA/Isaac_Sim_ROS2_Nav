@@ -100,6 +100,35 @@ Terminal T2, after the ROS reset services exist:
 
 Indoor keeps mixed Compute Odometry plus AMCL.
 
+Terminal T3, after T1 and T2 are READY, is the only indoor episode command:
+
+```bash
+export BIO_NAV_REP=rep1  # then rep2 and rep3, without restarting T1 or T2
+test "${BIO_NAV_REP}" = rep1 || test "${BIO_NAV_REP}" = rep2 || test "${BIO_NAV_REP}" = rep3
+test ! -e "${BIO_NAV_RUN_ROOT}/${BIO_NAV_REP}"
+
+./scripts/run_experiment.sh \
+  ros2_ws/src/robot_experiments/config/v6_final_kujiale_static.yaml \
+  "${BIO_NAV_RUN_ROOT}/${BIO_NAV_REP}" \
+  nav2_profile:=v6_low_obstacle_isolation \
+  nav2_config_file:="${BIO_NAV_MODULE3_ROOT}/ros2_ws/src/robot_navigation/config/nav2_v6_low_obstacle_isolation.yaml" \
+  navigation_execution_backend:=route_guided \
+  require_module2_planning_ready:=true \
+  module2_planning_ready_timeout_sec:=120.0 \
+  record_evidence:=true \
+  record_bag:=true \
+  clear_slam_localization_buffer:=false \
+  reset_map_base_translation_tolerance_m:=0.15 \
+  run_indices:=1 \
+  resume:=false
+```
+
+`rep1` qualifies the cold-start boundary. Inspect its `episode_validity`, topic
+coverage, RoutePrior requested/applied counts, ContactSensor result,
+terminal-zero, and checksums before continuing. `rep2` and `rep3` are hot
+resets on that same T1/T2 stack; changing the stack turns them into new cold
+runs and invalidates the three-repetition sequence.
+
 ## 5. Outdoor Rivermark startup reference — BLOCKED
 
 **BLOCKED: do not execute this section.** The tested PointInstancer candidate
@@ -202,3 +231,26 @@ apps, and owned locks are gone. Never use global `pkill`.
 
 Preserve NAS logs and bags for any failure or invalid attempt. Record invalid
 operator/startup runs separately and do not count them as Pilot episodes.
+
+## 9. Formal manifest dry-run — NOT AUTHORIZED / 0 of 120
+
+The formal manifest contains exactly six ordered conditions and 20 run
+identities per condition. Repeated seeds across dynamic or appearance variants
+are valid; identity is the full run index, seed, case/variant, and appearance
+profile tuple. Dry-run also reports immutable-evidence aggregate state and the
+next resume point without starting ROS or Isaac:
+
+```bash
+./scripts/run_v6_formal_episode.sh --formal /absolute/path/to/formal_manifest.yaml
+```
+
+Each dispatch-plan row states `cold` for rep1 and `hot_reset` for reps 2-20,
+and requires the matching condition stack to be owned outside the episode
+runner. Do not restart that stack between hot reps. Actual dispatch requires
+both an `AUTHORIZED` manifest and the explicit command below:
+
+```bash
+./scripts/run_v6_formal_episode.sh --formal --execute-formal /absolute/path/to/formal_manifest.yaml
+```
+
+Current authorization is `NOT_AUTHORIZED`; do not run the execution form.

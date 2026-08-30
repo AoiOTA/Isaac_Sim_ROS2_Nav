@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 usage() {
   echo "usage: $0 --pilot [--dispatch-pilot] MANIFEST [runner arguments...]" >&2
-  echo "       $0 --formal MANIFEST [runner arguments...]" >&2
+  echo "       $0 --formal [--execute-formal] MANIFEST" >&2
 }
 
 mode="${1:-}"
@@ -15,8 +15,12 @@ fi
 shift
 
 pilot_dispatch=()
+formal_execute=()
 if [[ "$mode" == "--pilot" && "${1:-}" == "--dispatch-pilot" ]]; then
   pilot_dispatch=(--dispatch-pilot)
+  shift
+elif [[ "$mode" == "--formal" && "${1:-}" == "--execute-formal" ]]; then
+  formal_execute=(--execute-formal)
   shift
 fi
 
@@ -32,9 +36,5 @@ if [[ "$mode" == "--pilot" ]]; then
     --manifest "$manifest" --pilot "${pilot_dispatch[@]}" "$@"
 fi
 
-if [[ "${BIO_NAV_V6_ALLOW_FORMAL_DISPATCH:-}" != "YES" ]]; then
-  echo "STOP: set BIO_NAV_V6_ALLOW_FORMAL_DISPATCH=YES for an explicit formal dispatch" >&2
-  exit 2
-fi
 exec ros2 run robot_experiments v6_formal_episode \
-  --manifest "$manifest" --allow-formal-dispatch "$@"
+  --formal-manifest "$manifest" "${formal_execute[@]}" "$@"

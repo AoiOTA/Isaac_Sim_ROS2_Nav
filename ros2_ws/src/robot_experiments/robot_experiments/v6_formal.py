@@ -10,9 +10,12 @@ from __future__ import annotations
 import argparse
 from collections import deque
 from dataclasses import dataclass, field
+import hashlib
 import json
 import math
 from pathlib import Path
+import shlex
+import subprocess
 import sys
 import time
 from typing import Any, Mapping
@@ -23,9 +26,23 @@ from robot_experiments.reset_receipt import (
     ResetReceiptError,
     parse_reset_receipt,
 )
+from robot_experiments.configuration import ConfigurationError
+from robot_experiments.scenario import load_scenario
 
 
 SCHEMA_VERSION = "bio_nav_v6_r3_phase2_pilot_manifest_v1"
+FORMAL_CAMPAIGN_SCHEMA_VERSION = "bio_nav_v6_formal_campaign_v1"
+FORMAL_CONDITION_IDS = (
+    "indoor_static",
+    "outdoor_static",
+    "outdoor_dynamic",
+    "outdoor_appearance",
+    "indoor_dynamic",
+    "indoor_appearance",
+)
+FORMAL_RUNS_PER_CONDITION = 20
+FORMAL_EXECUTION_AUTHORIZED = "AUTHORIZED"
+FORMAL_EXECUTION_NOT_AUTHORIZED = "NOT_AUTHORIZED"
 NOT_QUALIFIED = "NOT_QUALIFIED"
 ENGINEERING_PILOT = "ENGINEERING_PILOT"
 GT_PREFIX = "/" + "ground_truth/"
@@ -175,6 +192,404 @@ class Manifest:
     mission_legs: tuple[MissionLeg, ...]
     dynamic_schedule: tuple[DynamicScheduleEntry, ...]
     episodes: tuple[Episode, ...]
+
+
+@dataclass(frozen=True)
+class FormalCondition:
+    condition_id: str
+    scene: str
+    category: str
+    scenario_file: Path
+    output_directory: Path
+    runner_arguments: tuple[str, ...]
+    scenario_id: str
+    episode_identities: tuple[Mapping[str, Any], ...]
+
+
+@dataclass(frozen=True)
+class FormalCampaignManifest:
+    path: Path
+    authorization: str
+    conditions: tuple[FormalCondition, ...]
+
+
+def load_formal_campaign_manifest(path: str | Path) -> FormalCampaignManifest:
+    manifest_path = Path(path).expanduser().resolve()
+    raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    raw = _mapping(raw, "formal_manifest")
+    _require_exact_keys(
+        raw,
+        {
+            "schema_version",
+            "intended_use",
+            "execution_authorization",
+            "runs_per_condition",
+            "conditions",
+        },
+        "formal_manifest",
+    )
+    if raw.get("schema_version") != FORMAL_CAMPAIGN_SCHEMA_VERSION:
+        raise V6ContractError(
+            f"formal schema_version must be {FORMAL_CAMPAIGN_SCHEMA_VERSION}"
+        )
+    if raw.get("intended_use") != "formal_qualification":
+        raise V6ContractError("formal intended_use must be formal_qualification")
+    authorization = str(raw.get("execution_authorization", ""))
+    if authorization not in {
+        FORMAL_EXECUTION_AUTHORIZED,
+        FORMAL_EXECUTION_NOT_AUTHORIZED,
+    }:
+        raise V6ContractError(
+            "execution_authorization must be AUTHORIZED or NOT_AUTHORIZED"
+        )
+    if raw.get("runs_per_condition") != FORMAL_RUNS_PER_CONDITION:
+        raise V6ContractError("runs_per_condition must be exactly 20")
+    condition_rows = raw.get("conditions")
+    if not isinstance(condition_rows, list) or len(condition_rows) != len(
+        FORMAL_CONDITION_IDS
+    ):
+        raise V6ContractError("formal conditions must contain exactly six rows")
+    conditions: list[FormalCondition] = []
+    output_directories: set[Path] = set()
+    for index, value in enumerate(condition_rows):
+        row = _mapping(value, f"conditions[{index}]")
+        _require_exact_keys(
+            row,
+            {
+                "id",
+                "scene",
+                "category",
+                "scenario_file",
+                "output_directory",
+                "runner_arguments",
+            },
+            f"conditions[{index}]",
+        )
+        condition_id = str(row.get("id", ""))
+        scene = str(row.get("scene", ""))
+        category = str(row.get("category", ""))
+        if condition_id != f"{scene}_{category}":
+            raise V6ContractError(
+                f"conditions[{index}] id must equal scene_category"
+            )
+        scenario_file = Path(str(row.get("scenario_file", ""))).expanduser()
+        if not scenario_file.is_absolute():
+            scenario_file = manifest_path.parent / scenario_file
+        scenario_file = scenario_file.resolve()
+        if not scenario_file.is_file():
+            raise V6ContractError(
+                f"conditions[{index}].scenario_file is missing: {scenario_file}"
+            )
+        scenario = load_scenario(scenario_file)
+        expected_scenario_type = "static" if category == "appearance" else category
+        if scenario.scenario_type != expected_scenario_type:
+            raise V6ContractError(
+                f"conditions[{index}] category differs from scenario type"
+            )
+        if category == "appearance" and scenario.appearance_config_file is None:
+            raise V6ContractError(
+                f"conditions[{index}] appearance scenario has no appearance config"
+            )
+        actual_scene = (
+            "outdoor"
+            if "rivermark" in f"{scenario.scenario_id} {scenario.map_version}".lower()
+            else "indoor"
+        )
+        if actual_scene != scene:
+            raise V6ContractError(
+                f"conditions[{index}] scene differs from scenario identity"
+            )
+        selections = scenario.run_matrix or tuple(
+            {
+                "seed": seed,
+                "condition_id": None,
+                "dynamic_case_id": None,
+                "dynamic_variant_id": None,
+                "appearance_profile_id": None,
+            }
+            for seed in scenario.seeds
+        )
+        episode_identities: list[dict[str, Any]] = []
+        for selection in selections:
+            if isinstance(selection, Mapping):
+                identity = dict(selection)
+            else:
+                identity = {
+                    "seed": selection.seed,
+                    "condition_id": selection.condition_id,
+                    "dynamic_case_id": selection.case_id,
+                    "dynamic_variant_id": selection.variant_id,
+                    "appearance_profile_id": selection.appearance_profile_id,
+                }
+            episode_identities.append(identity)
+        identity_keys = {
+            (
+                identity.get("seed"),
+                identity.get("condition_id"),
+                identity.get("dynamic_case_id"),
+                identity.get("dynamic_variant_id"),
+                identity.get("appearance_profile_id"),
+            )
+            for identity in episode_identities
+        }
+        if len(episode_identities) != FORMAL_RUNS_PER_CONDITION or len(
+            identity_keys
+        ) != FORMAL_RUNS_PER_CONDITION:
+            raise V6ContractError(
+                f"conditions[{index}] scenario must contain 20 unique run identities"
+            )
+        output_directory = Path(
+            str(row.get("output_directory", ""))
+        ).expanduser()
+        if not output_directory.is_absolute():
+            raise V6ContractError(
+                f"conditions[{index}].output_directory must be absolute"
+            )
+        output_directory = output_directory.resolve()
+        if output_directory in output_directories:
+            raise V6ContractError("formal output directories must be unique")
+        output_directories.add(output_directory)
+        arguments = row.get("runner_arguments")
+        if not isinstance(arguments, list) or not all(
+            isinstance(argument, str) and ":=" in argument
+            for argument in arguments
+        ):
+            raise V6ContractError(
+                f"conditions[{index}].runner_arguments must be ROS name:=value strings"
+            )
+        reserved = {
+            "scenario_file",
+            "output_directory",
+            "run_indices",
+            "resume",
+            "record_evidence",
+            "record_bag",
+            "fail_stop",
+        }
+        if any(argument.split(":=", 1)[0] in reserved for argument in arguments):
+            raise V6ContractError(
+                f"conditions[{index}].runner_arguments overrides dispatcher ownership"
+            )
+        conditions.append(
+            FormalCondition(
+                condition_id=condition_id,
+                scene=scene,
+                category=category,
+                scenario_file=scenario_file,
+                output_directory=output_directory,
+                runner_arguments=tuple(arguments),
+                scenario_id=scenario.scenario_id,
+                episode_identities=tuple(episode_identities),
+            )
+        )
+    if tuple(condition.condition_id for condition in conditions) != FORMAL_CONDITION_IDS:
+        raise V6ContractError(
+            "formal conditions must use the frozen indoor/outdoor execution order"
+        )
+    return FormalCampaignManifest(
+        path=manifest_path,
+        authorization=authorization,
+        conditions=tuple(conditions),
+    )
+
+
+def _checksums_verified(run_root: Path) -> bool:
+    checksum_path = run_root / "checksums.sha256"
+    if not checksum_path.is_file():
+        return False
+    try:
+        entries = [
+            line.split("  ", 1)
+            for line in checksum_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    except OSError:
+        return False
+    if not entries or any(len(entry) != 2 for entry in entries):
+        return False
+    for digest, relative in entries:
+        candidate = run_root / relative
+        try:
+            candidate.resolve().relative_to(run_root.resolve())
+        except ValueError:
+            return False
+        if (
+            len(digest) != 64
+            or not candidate.is_file()
+            or hashlib.sha256(candidate.read_bytes()).hexdigest() != digest
+        ):
+            return False
+    return True
+
+
+def evaluate_formal_campaign(
+    manifest: FormalCampaignManifest,
+) -> dict[str, Any]:
+    condition_results: list[dict[str, Any]] = []
+    total_strict = 0
+    total_valid = 0
+    total_present = 0
+    blockers: list[str] = []
+    for condition in manifest.conditions:
+        runs: list[dict[str, Any]] = []
+        next_run_index: int | None = None
+        condition_blockers: list[str] = []
+        for run_index, identity in enumerate(
+            condition.episode_identities, start=1
+        ):
+            seed = int(identity["seed"])
+            root = (
+                condition.output_directory
+                / condition.scenario_id
+                / f"run-{run_index:04d}-seed-{seed}"
+            )
+            if not root.exists():
+                if next_run_index is None:
+                    next_run_index = run_index
+                runs.append(
+                    {"run_index": run_index, "seed": seed, "status": "pending"}
+                )
+                continue
+            total_present += 1
+            summary_path = root / "run_summary.json"
+            manifest_path = root / "run_manifest.json"
+            try:
+                summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                episode = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                status = "invalid_evidence"
+                detail = f"{type(exc).__name__}:{exc}"
+                condition_blockers.append(f"run-{run_index}:invalid_evidence")
+            else:
+                identity_ok = bool(
+                    episode.get("run_index") == run_index
+                    and episode.get("random_seed") == seed
+                    and episode.get("scenario_id") == condition.scenario_id
+                    and episode.get("condition_id")
+                    == identity.get("condition_id")
+                    and episode.get("dynamic_selection", {}).get("case_id")
+                    == identity.get("dynamic_case_id")
+                    and episode.get("dynamic_selection", {}).get("variant_id")
+                    == identity.get("dynamic_variant_id")
+                    and episode.get("appearance", {}).get("profile_id")
+                    == identity.get("appearance_profile_id")
+                )
+                valid = bool(
+                    identity_ok
+                    and summary.get("episode_validity", {}).get("valid") is True
+                    and summary.get("checksums_verified") is True
+                    and _checksums_verified(root)
+                )
+                strict = bool(valid and summary.get("strict_success") is True)
+                if strict:
+                    status = "strict_success"
+                    total_strict += 1
+                elif valid:
+                    status = "product_failure"
+                    condition_blockers.append(f"run-{run_index}:product_failure")
+                else:
+                    status = "invalid_evidence"
+                    condition_blockers.append(f"run-{run_index}:invalid_evidence")
+                if valid:
+                    total_valid += 1
+                detail = ""
+            runs.append(
+                {
+                    "run_index": run_index,
+                    "seed": seed,
+                    "status": status,
+                    "detail": detail,
+                    "root": str(root),
+                }
+            )
+        blockers.extend(
+            f"{condition.condition_id}:{item}" for item in condition_blockers
+        )
+        condition_results.append(
+            {
+                "id": condition.condition_id,
+                "strict_successes": sum(
+                    run["status"] == "strict_success" for run in runs
+                ),
+                "valid_episodes": sum(
+                    run["status"] in {"strict_success", "product_failure"}
+                    for run in runs
+                ),
+                "next_run_index": None if condition_blockers else next_run_index,
+                "blockers": condition_blockers,
+                "runs": runs,
+            }
+        )
+    return {
+        "schema_version": FORMAL_CAMPAIGN_SCHEMA_VERSION,
+        "formal_qualification": (
+            "PASS" if total_strict == 120 and not blockers else "INCOMPLETE"
+        ),
+        "expected_episodes": 120,
+        "present_episodes": total_present,
+        "valid_episodes": total_valid,
+        "strict_successes": total_strict,
+        "blockers": blockers,
+        "conditions": condition_results,
+    }
+
+
+def formal_dispatch_plan(
+    manifest: FormalCampaignManifest, aggregate: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    script = Path(__file__).resolve().parents[4] / "scripts" / "run_experiment.sh"
+    plans: list[dict[str, Any]] = []
+    by_id = {row["id"]: row for row in aggregate["conditions"]}
+    for condition in manifest.conditions:
+        run_index = by_id[condition.condition_id]["next_run_index"]
+        if run_index is None:
+            continue
+        command = [
+            str(script),
+            str(condition.scenario_file),
+            str(condition.output_directory),
+            *condition.runner_arguments,
+            "record_evidence:=true",
+            "record_bag:=true",
+            "fail_stop:=true",
+            f"run_indices:={run_index}",
+            "resume:=false",
+        ]
+        plans.append(
+            {
+                "condition_id": condition.condition_id,
+                "run_index": run_index,
+                "seed": condition.episode_identities[run_index - 1]["seed"],
+                "episode_identity": dict(
+                    condition.episode_identities[run_index - 1]
+                ),
+                "stack_session": condition.condition_id,
+                "stack_boundary": "cold" if run_index == 1 else "hot_reset",
+                "requires_existing_condition_stack": True,
+                "command": command,
+                "command_text": shlex.join(command),
+            }
+        )
+    return plans
+
+
+def execute_formal_campaign(manifest: FormalCampaignManifest) -> dict[str, Any]:
+    if manifest.authorization != FORMAL_EXECUTION_AUTHORIZED:
+        raise V6ContractError(
+            "formal execution refused: manifest is NOT_AUTHORIZED"
+        )
+    while True:
+        aggregate = evaluate_formal_campaign(manifest)
+        if aggregate["blockers"]:
+            raise V6ContractError(
+                "formal campaign blocked: " + ",".join(aggregate["blockers"])
+            )
+        plan = formal_dispatch_plan(manifest, aggregate)
+        if not plan:
+            return aggregate
+        # One episode at a time keeps the checkpoint and fail-stop boundary
+        # identical to the immutable per-run evidence boundary.
+        subprocess.run(plan[0]["command"], check=True)
 
 
 def _mapping(value: Any, path: str) -> Mapping[str, Any]:
@@ -1535,10 +1950,13 @@ class V6FormalNode:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--manifest", required=True)
+    manifest_group = parser.add_mutually_exclusive_group(required=True)
+    manifest_group.add_argument("--manifest")
+    manifest_group.add_argument("--formal-manifest")
     parser.add_argument("--episode-index", type=int, default=0)
     parser.add_argument("--pilot", action="store_true")
     parser.add_argument("--dispatch-pilot", action="store_true")
+    parser.add_argument("--execute-formal", action="store_true")
     parser.add_argument("--output-jsonl")
     parser.add_argument("--readiness-timeout-sec", type=float, default=120.0)
     parser.add_argument("--reset-timeout-sec", type=float, default=120.0)
@@ -1549,8 +1967,42 @@ def build_parser() -> argparse.ArgumentParser:
 def cli(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.formal_manifest:
+            if args.pilot or args.dispatch_pilot or args.output_jsonl:
+                raise V6ContractError(
+                    "formal campaign manifest cannot use engineering-pilot options"
+                )
+            campaign = load_formal_campaign_manifest(args.formal_manifest)
+            aggregate = (
+                execute_formal_campaign(campaign)
+                if args.execute_formal
+                else evaluate_formal_campaign(campaign)
+            )
+            plans = formal_dispatch_plan(campaign, aggregate)
+            print(
+                json.dumps(
+                    {
+                        "qualification": "FORMAL_CAMPAIGN",
+                        "execution_authorization": campaign.authorization,
+                        "dispatch": args.execute_formal,
+                        "aggregate": aggregate,
+                        "resume_points": {
+                            row["id"]: row["next_run_index"]
+                            for row in aggregate["conditions"]
+                        },
+                        "dispatch_plan": plans,
+                    },
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if args.execute_formal:
+            raise V6ContractError(
+                "--execute-formal requires --formal-manifest"
+            )
         if args.dispatch_pilot and not args.pilot:
             raise V6ContractError("--dispatch-pilot requires --pilot")
+        assert args.manifest is not None
         manifest = load_manifest(args.manifest)
         mode = "pilot" if args.pilot else "formal"
         qualification = authorize_manifest(manifest, mode=mode)
@@ -1587,7 +2039,13 @@ def cli(argv: list[str] | None = None) -> int:
         finally:
             adapter.destroy()
             rclpy.shutdown()
-    except (OSError, V6ContractError, yaml.YAMLError) as exc:
+    except (
+        OSError,
+        subprocess.CalledProcessError,
+        ConfigurationError,
+        V6ContractError,
+        yaml.YAMLError,
+    ) as exc:
         print(f"STOP: {exc}", file=sys.stderr)
         return 2
 
