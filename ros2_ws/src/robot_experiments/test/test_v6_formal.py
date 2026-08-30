@@ -441,7 +441,6 @@ def _write_formal_run(
             "collision_status_seen": True,
             "map_to_odom_seen": True,
         },
-        "isaac_contact_sensor_collision_detected": collision_detected,
         "condition_stack_id": condition.condition_id,
         "stack_session_id": stack_session_id,
         "formal_freeze_digest": formal_freeze_digest,
@@ -733,7 +732,52 @@ def _write_authorized_formal_manifest(tmp_path: Path) -> Path:
     return output
 
 
-def _write_indoor_pilot_inputs(tmp_path: Path):
+def _fake_validator_promotion(freeze, pilot_runtime=None):
+    pilot_runtime = pilot_runtime or {
+        "repositories": freeze["repositories"],
+        "driver_version": freeze["driver_version"],
+        "kernel_release": freeze["kernel_release"],
+    }
+    module3_head = freeze["repositories"]["module3"]["head"]
+    return {
+        "schema": "bio_nav.v6_validator_only_head_promotion.v1",
+        "pilot_runtime": json.loads(json.dumps(pilot_runtime)),
+        "final_repositories": json.loads(json.dumps(freeze["repositories"])),
+        "module3_diff": {
+            "from_head": pilot_runtime["repositories"]["module3"]["head"],
+            "to_head": module3_head,
+            "from_is_ancestor": True,
+            "name_status": [],
+            "canonical_diff_sha256": "0" * 64,
+        },
+        "loaded_validator": {
+            "module": "robot_experiments.experiment_runner",
+            "symbol": "validate_recorded_run_evidence",
+            "source_path": str(REPO / "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py"),
+            "source_sha256": "0" * 64,
+            "git_blob_oid": "fixture",
+            "current_head": module3_head,
+        },
+    }
+
+
+def _mock_validator_promotion(monkeypatch):
+    monkeypatch.setattr(
+        v6_formal_module,
+        "_validate_validator_only_head_promotion",
+        lambda value, *, freeze: dict(value),
+    )
+    monkeypatch.setattr(
+        v6_formal_module,
+        "_build_validator_only_head_promotion",
+        lambda *, freeze, pilot_runtime: _fake_validator_promotion(
+            freeze, pilot_runtime
+        ),
+    )
+
+
+def _write_indoor_pilot_inputs(tmp_path: Path, monkeypatch):
+    _mock_validator_promotion(monkeypatch)
     pilot_manifest, aggregate_path, _reference = _write_sufficient_pilot_inputs(
         tmp_path
     )
@@ -797,11 +841,17 @@ def _write_indoor_pilot_inputs(tmp_path: Path):
             "spawn_manifest": frozen_file(spawn_manifest),
         }
     pilot["freeze"]["physical_contracts"] = physical_contracts
+    pilot["freeze"]["validator_only_head_promotion"] = _fake_validator_promotion(
+        pilot["freeze"]
+    )
     indoor_manifest = tmp_path / "indoor-pilot-manifest.json"
     indoor_manifest.write_text(json.dumps(pilot), encoding="utf-8")
     aggregate = json.loads(aggregate_path.read_text())
     aggregate["schema_version"] = v6_formal_module.INDOOR_PILOT_AGGREGATE_SCHEMA
     aggregate["pilot_manifest"] = str(indoor_manifest)
+    aggregate["validator_only_head_promotion"] = pilot["freeze"][
+        "validator_only_head_promotion"
+    ]
     aggregate["conditions"] = [
         next(row for row in aggregate["conditions"] if row["id"] == condition_id)
         for condition_id in v6_formal_module.INDOOR_CONDITION_IDS
@@ -938,6 +988,7 @@ def _write_production_pilot_root(tmp_path: Path, monkeypatch):
 
 
 def _write_indoor_production_pilot_root(tmp_path: Path, monkeypatch):
+    _mock_validator_promotion(monkeypatch)
     pilot_root = _write_production_pilot_root(tmp_path, monkeypatch)
     for condition_id in set(v6_formal_module.FORMAL_CONDITION_IDS) - set(
         v6_formal_module.INDOOR_CONDITION_IDS
@@ -1227,6 +1278,591 @@ def test_sufficient_pilot_aggregate_cli_never_dispatches(
     assert payload["dispatch"] is False
 
 
+def _validator_promotion_repository(tmp_path: Path, *, mutation: str | None = None):
+    repository = tmp_path / f"promotion-{mutation or 'valid'}"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    experiment_path = repository / (
+        "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py"
+    )
+    formal_path = repository / (
+        "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py"
+    )
+    motion_test = repository / "ros2_ws/src/robot_experiments/test/test_experiment_motion_quality.py"
+    formal_test = repository / "ros2_ws/src/robot_experiments/test/test_v6_formal.py"
+    for path in (experiment_path, formal_path, motion_test, formal_test):
+        path.parent.mkdir(parents=True, exist_ok=True)
+    experiment_path.write_text(
+        "def protected_writer():\n    return 'writer-v1'\n\n"
+        "def validate_recorded_run_evidence():\n    return 'validator-v1'\n",
+        encoding="utf-8",
+    )
+    formal_common = (
+        "import os\n\n"
+        "GLOBAL_VALUE = 1\n\n"
+        "@dataclass(frozen=True)\n"
+        "class V6FormalNode:\n    live_contract = 'unchanged'\n\n"
+        "def _validate_formal_freeze(value):\n    return value\n\n"
+        "def load_indoor_campaign_manifest(path):\n    return path\n\n"
+        "def freeze_indoor_campaign_from_pilot(value):\n    return value\n\n"
+        "def _build_indoor_pilot_manifest(root):\n    return root\n\n"
+    )
+    formal_tail_v1 = (
+        "def aggregate_indoor_pilot(value: str) -> str:\n    return 'v1'\n\n"
+        "def execute_indoor_campaign(manifest):\n    return manifest\n\n"
+        "def cli(argv=None):\n    return argv\n"
+    )
+    formal_path.write_text(
+        "INDOOR_PILOT_MANIFEST_SCHEMA = 'bio_nav_v6_indoor_pilot_manifest_v1'\n"
+        "INDOOR_PILOT_AGGREGATE_SCHEMA = 'bio_nav_v6_indoor_pilot_aggregate_v1'\n"
+        "INDOOR_CAMPAIGN_SCHEMA_VERSION = 'bio_nav_v6_indoor_campaign_v1'\n\n"
+        + formal_common
+        + formal_tail_v1,
+        encoding="utf-8",
+    )
+    motion_test.write_text("def test_old():\n    assert True\n", encoding="utf-8")
+    formal_test.write_text("def test_old():\n    assert True\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repository), "add", "."], check=True)
+    subprocess.run(
+        [
+            "git", "-C", str(repository), "-c", "user.name=Codex Test", "-c",
+            "user.email=codex@example.invalid", "commit", "-qm", "pilot",
+        ],
+        check=True,
+    )
+    from_head = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    experiment_path.write_text(
+        "def protected_writer():\n    return 'writer-v1'\n\n"
+        "def validate_recorded_run_evidence():\n    return 'validator-v2'\n",
+        encoding="utf-8",
+    )
+    new_helpers = (
+        "\ndef _validator_only_git_output(repository, arguments, *, binary):\n    return None\n"
+        "\ndef _validator_only_diff_evidence(repository, from_head, to_head):\n    return None\n"
+        "\ndef _validator_only_ast_guard(repository, from_head, to_head):\n    return None\n"
+        "\ndef _validator_only_loaded_identity(module3_root, current_head):\n    return None\n"
+        "\ndef _validate_validator_only_head_promotion(value, *, freeze):\n    return None\n"
+        "\ndef _build_validator_only_head_promotion(*, freeze, pilot_runtime):\n    return None\n"
+        "\ndef _derive_indoor_pilot_runtime(pilot_root, *, repositories):\n    return None\n"
+        "\ndef _pilot_freeze_from_validator_promotion(freeze, promotion):\n    return None\n"
+        "\ndef _revalidate_indoor_pilot_freeze_provenance("
+        "provenance, *, conditions, freeze, freeze_digest):\n    return None\n"
+    )
+    formal_tail_v2 = (
+        "def aggregate_indoor_pilot(value: str) -> str:\n    return 'v2'\n\n"
+        "def execute_indoor_campaign(manifest):\n    return 'validated'\n\n"
+        "def cli(argv=None):\n    return argv\n"
+    )
+    formal_path.write_text(
+        "INDOOR_PILOT_MANIFEST_SCHEMA = 'bio_nav_v6_indoor_pilot_manifest_v2'\n"
+        "INDOOR_PILOT_AGGREGATE_SCHEMA = 'bio_nav_v6_indoor_pilot_aggregate_v2'\n"
+        "INDOOR_CAMPAIGN_SCHEMA_VERSION = 'bio_nav_v6_indoor_campaign_v2'\n\n"
+        + formal_common
+        + formal_tail_v2
+        + new_helpers,
+        encoding="utf-8",
+    )
+    motion_test.write_text("def test_new():\n    assert True\n", encoding="utf-8")
+    formal_test.write_text("def test_new():\n    assert True\n", encoding="utf-8")
+    if mutation == "product_symbol":
+        experiment_path.write_text(
+            experiment_path.read_text().replace("writer-v1", "writer-v2"),
+            encoding="utf-8",
+        )
+    elif mutation == "function_default_call":
+        formal_path.write_text(
+            formal_path.read_text().replace(
+                "def aggregate_indoor_pilot(value: str) -> str:",
+                "def aggregate_indoor_pilot(value: str = import_time_call()) -> str:",
+            ),
+            encoding="utf-8",
+        )
+    elif mutation == "function_decorator":
+        formal_path.write_text(
+            formal_path.read_text().replace(
+                "def aggregate_indoor_pilot(value: str) -> str:",
+                "@changed\ndef aggregate_indoor_pilot(value: str) -> str:",
+            ),
+            encoding="utf-8",
+        )
+    elif mutation == "function_annotation":
+        formal_path.write_text(
+            formal_path.read_text().replace(
+                "def aggregate_indoor_pilot(value: str) -> str:",
+                "def aggregate_indoor_pilot(value: bytes) -> bytes:",
+            ),
+            encoding="utf-8",
+        )
+    elif mutation == "class_frozen":
+        formal_path.write_text(
+            formal_path.read_text().replace("@dataclass(frozen=True)", "@dataclass(frozen=False)"),
+            encoding="utf-8",
+        )
+    elif mutation == "class_base":
+        formal_path.write_text(
+            formal_path.read_text().replace("class V6FormalNode:", "class V6FormalNode(BaseNode):"),
+            encoding="utf-8",
+        )
+    elif mutation == "class_decorator":
+        formal_path.write_text(
+            formal_path.read_text().replace("@dataclass(frozen=True)", "@changed\n@dataclass(frozen=True)"),
+            encoding="utf-8",
+        )
+    elif mutation == "class_field":
+        formal_path.write_text(
+            formal_path.read_text().replace(
+                "    live_contract = 'unchanged'", "    live_contract = 'unchanged'\n    new_field = 1"
+            ),
+            encoding="utf-8",
+        )
+    elif mutation == "class_method":
+        formal_path.write_text(
+            formal_path.read_text().replace(
+                "    live_contract = 'unchanged'",
+                "    live_contract = 'unchanged'\n\n    def new_method(self):\n        return 1",
+            ),
+            encoding="utf-8",
+        )
+    elif mutation == "import_change":
+        formal_path.write_text(
+            formal_path.read_text().replace("import os", "import sys"), encoding="utf-8"
+        )
+    elif mutation == "global_change":
+        formal_path.write_text(
+            formal_path.read_text().replace("GLOBAL_VALUE = 1", "GLOBAL_VALUE = 2"),
+            encoding="utf-8",
+        )
+    elif mutation == "schema_call":
+        formal_path.write_text(
+            formal_path.read_text().replace(
+                "INDOOR_PILOT_MANIFEST_SCHEMA = 'bio_nav_v6_indoor_pilot_manifest_v2'",
+                "INDOOR_PILOT_MANIFEST_SCHEMA = import_time_call()",
+            ),
+            encoding="utf-8",
+        )
+    elif mutation == "schema_multi_target":
+        formal_path.write_text(
+            formal_path.read_text().replace(
+                "INDOOR_PILOT_MANIFEST_SCHEMA = 'bio_nav_v6_indoor_pilot_manifest_v2'",
+                "INDOOR_PILOT_MANIFEST_SCHEMA = os.environ['PROMOTION_SIDE_EFFECT'] = "
+                "'bio_nav_v6_indoor_pilot_manifest_v2'",
+            ),
+            encoding="utf-8",
+        )
+    elif mutation == "schema_attribute_target":
+        formal_path.write_text(
+            formal_path.read_text().replace(
+                "INDOOR_PILOT_MANIFEST_SCHEMA = 'bio_nav_v6_indoor_pilot_manifest_v2'",
+                "holder.INDOOR_PILOT_MANIFEST_SCHEMA = "
+                "'bio_nav_v6_indoor_pilot_manifest_v2'",
+            ),
+            encoding="utf-8",
+        )
+    elif mutation == "schema_subscript_target":
+        formal_path.write_text(
+            formal_path.read_text().replace(
+                "INDOOR_PILOT_MANIFEST_SCHEMA = 'bio_nav_v6_indoor_pilot_manifest_v2'",
+                "holder['INDOOR_PILOT_MANIFEST_SCHEMA'] = "
+                "'bio_nav_v6_indoor_pilot_manifest_v2'",
+            ),
+            encoding="utf-8",
+        )
+    elif mutation == "schema_tuple_target":
+        formal_path.write_text(
+            formal_path.read_text().replace(
+                "INDOOR_PILOT_MANIFEST_SCHEMA = 'bio_nav_v6_indoor_pilot_manifest_v2'",
+                "(INDOOR_PILOT_MANIFEST_SCHEMA, other) = "
+                "('bio_nav_v6_indoor_pilot_manifest_v2', 'x')",
+            ),
+            encoding="utf-8",
+        )
+    elif mutation == "schema_renamed_target":
+        formal_path.write_text(
+            formal_path.read_text().replace(
+                "INDOOR_PILOT_MANIFEST_SCHEMA = 'bio_nav_v6_indoor_pilot_manifest_v2'",
+                "RENAMED_INDOOR_PILOT_MANIFEST_SCHEMA = "
+                "'bio_nav_v6_indoor_pilot_manifest_v2'",
+            ),
+            encoding="utf-8",
+        )
+    elif mutation == "schema_annassign_target":
+        formal_path.write_text(
+            formal_path.read_text().replace(
+                "INDOOR_PILOT_MANIFEST_SCHEMA = 'bio_nav_v6_indoor_pilot_manifest_v2'",
+                "INDOOR_PILOT_MANIFEST_SCHEMA: str = "
+                "'bio_nav_v6_indoor_pilot_manifest_v2'",
+            ),
+            encoding="utf-8",
+        )
+    elif mutation == "schema_type_comment":
+        formal_path.write_text(
+            formal_path.read_text().replace(
+                "INDOOR_PILOT_MANIFEST_SCHEMA = 'bio_nav_v6_indoor_pilot_manifest_v2'",
+                "INDOOR_PILOT_MANIFEST_SCHEMA = "
+                "'bio_nav_v6_indoor_pilot_manifest_v2'  # type: str",
+            ),
+            encoding="utf-8",
+        )
+    elif mutation == "cli_change":
+        formal_path.write_text(
+            formal_path.read_text().replace("def cli(argv=None):\n    return argv", "def cli(argv=None):\n    return 'changed'"),
+            encoding="utf-8",
+        )
+    elif mutation == "helper_default_call":
+        formal_path.write_text(
+            formal_path.read_text().replace(
+                "def _validator_only_git_output(repository, arguments, *, binary):",
+                "def _validator_only_git_output(repository, arguments=import_time_call(), *, binary):",
+            ),
+            encoding="utf-8",
+        )
+    elif mutation == "helper_decorator":
+        formal_path.write_text(
+            formal_path.read_text().replace(
+                "def _validator_only_git_output(repository, arguments, *, binary):",
+                "@changed\ndef _validator_only_git_output(repository, arguments, *, binary):",
+            ),
+            encoding="utf-8",
+        )
+    elif mutation in {"runner_path", "writer_path", "scenario_path", "navigation_path"}:
+        relative = {
+            "runner_path": "scripts/run_experiment.sh",
+            "writer_path": "ros2_ws/src/robot_experiments/robot_experiments/writer.py",
+            "scenario_path": "ros2_ws/src/robot_experiments/config/scenario.yaml",
+            "navigation_path": "ros2_ws/src/robot_navigation/config/nav2.yaml",
+        }[mutation]
+        path = repository / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("changed\n", encoding="utf-8")
+    elif mutation == "rename":
+        renamed = formal_test.with_name("test_v6_formal_renamed.py")
+        formal_test.rename(renamed)
+    elif mutation == "delete":
+        motion_test.unlink()
+    subprocess.run(["git", "-C", str(repository), "add", "-A"], check=True)
+    subprocess.run(
+        [
+            "git", "-C", str(repository), "-c", "user.name=Codex Test", "-c",
+            "user.email=codex@example.invalid", "commit", "-qm", "promotion",
+        ],
+        check=True,
+    )
+    to_head = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    repositories = {
+        name: {"path": str(repository), "head": to_head}
+        for name in ("integration", "module2", "module3")
+    }
+    freeze = {
+        "repositories": repositories,
+        "driver_version": "driver",
+        "kernel_release": "kernel",
+    }
+    pilot_runtime = {
+        "repositories": {
+            **repositories,
+            "module3": {"path": str(repository), "head": from_head},
+        },
+        "driver_version": "driver",
+        "kernel_release": "kernel",
+    }
+    return repository, from_head, to_head, freeze, pilot_runtime
+
+
+def _promotion_loaded_identity(repository: Path, head: str):
+    return {
+        "module": "robot_experiments.experiment_runner",
+        "symbol": "validate_recorded_run_evidence",
+        "source_path": str(repository / "validator.py"),
+        "source_sha256": "1" * 64,
+        "git_blob_oid": "blob",
+        "current_head": head,
+    }
+
+
+def test_validator_only_head_promotion_accepts_exact_offline_symbol_delta(
+    tmp_path, monkeypatch
+):
+    repository, _from, to_head, freeze, pilot_runtime = (
+        _validator_promotion_repository(tmp_path)
+    )
+    monkeypatch.setattr(
+        v6_formal_module, "_validator_only_loaded_identity",
+        lambda _root, head: _promotion_loaded_identity(repository, head),
+    )
+
+    promotion = v6_formal_module._build_validator_only_head_promotion(
+        freeze=freeze, pilot_runtime=pilot_runtime
+    )
+
+    assert promotion["module3_diff"]["from_is_ancestor"] is True
+    assert {row["status"] for row in promotion["module3_diff"]["name_status"]} == {"M"}
+    assert len(promotion["module3_diff"]["name_status"]) == 4
+    assert promotion["loaded_validator"]["current_head"] == to_head
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "product_symbol", "runner_path", "writer_path", "scenario_path",
+        "navigation_path", "rename", "delete",
+    ],
+)
+def test_validator_only_head_promotion_rejects_product_or_path_delta(
+    tmp_path, monkeypatch, mutation
+):
+    repository, _from, _to, freeze, pilot_runtime = (
+        _validator_promotion_repository(tmp_path, mutation=mutation)
+    )
+    monkeypatch.setattr(
+        v6_formal_module, "_validator_only_loaded_identity",
+        lambda _root, head: _promotion_loaded_identity(repository, head),
+    )
+
+    with pytest.raises(V6ContractError, match="disallowed|protected top-level AST"):
+        v6_formal_module._build_validator_only_head_promotion(
+            freeze=freeze, pilot_runtime=pilot_runtime
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["function_default_call", "function_decorator", "function_annotation"],
+)
+def test_validator_only_ast_guard_rejects_callable_header_changes(
+    tmp_path, monkeypatch, mutation
+):
+    repository, _from, _to, freeze, pilot_runtime = (
+        _validator_promotion_repository(tmp_path, mutation=mutation)
+    )
+    monkeypatch.setattr(
+        v6_formal_module, "_validator_only_loaded_identity",
+        lambda _root, head: _promotion_loaded_identity(repository, head),
+    )
+
+    with pytest.raises(V6ContractError, match="callable signature/decorators"):
+        v6_formal_module._build_validator_only_head_promotion(
+            freeze=freeze, pilot_runtime=pilot_runtime
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "class_frozen", "class_base", "class_decorator", "class_field",
+        "class_method", "import_change", "global_change", "cli_change",
+    ],
+)
+def test_validator_only_ast_guard_rejects_class_import_global_or_cli_changes(
+    tmp_path, monkeypatch, mutation
+):
+    repository, _from, _to, freeze, pilot_runtime = (
+        _validator_promotion_repository(tmp_path, mutation=mutation)
+    )
+    monkeypatch.setattr(
+        v6_formal_module, "_validator_only_loaded_identity",
+        lambda _root, head: _promotion_loaded_identity(repository, head),
+    )
+
+    with pytest.raises(V6ContractError, match="protected top-level AST"):
+        v6_formal_module._build_validator_only_head_promotion(
+            freeze=freeze, pilot_runtime=pilot_runtime
+        )
+
+
+@pytest.mark.parametrize("mutation", ["helper_default_call", "helper_decorator"])
+def test_validator_only_ast_guard_rejects_new_helper_decorator_or_default(
+    tmp_path, monkeypatch, mutation
+):
+    repository, _from, _to, freeze, pilot_runtime = (
+        _validator_promotion_repository(tmp_path, mutation=mutation)
+    )
+    monkeypatch.setattr(
+        v6_formal_module, "_validator_only_loaded_identity",
+        lambda _root, head: _promotion_loaded_identity(repository, head),
+    )
+
+    with pytest.raises(V6ContractError, match="helper kind/decorator|helper signature/default"):
+        v6_formal_module._build_validator_only_head_promotion(
+            freeze=freeze, pilot_runtime=pilot_runtime
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "schema_call", "schema_multi_target", "schema_attribute_target",
+        "schema_subscript_target", "schema_tuple_target", "schema_renamed_target",
+        "schema_annassign_target", "schema_type_comment",
+    ],
+)
+def test_validator_only_ast_guard_rejects_schema_assignment_shell_changes(
+    tmp_path, monkeypatch, mutation
+):
+    repository, _from, _to, freeze, pilot_runtime = (
+        _validator_promotion_repository(tmp_path, mutation=mutation)
+    )
+    monkeypatch.setattr(
+        v6_formal_module, "_validator_only_loaded_identity",
+        lambda _root, head: _promotion_loaded_identity(repository, head),
+    )
+
+    with pytest.raises(V6ContractError, match="schema assignment|protected top-level AST"):
+        v6_formal_module._build_validator_only_head_promotion(
+            freeze=freeze, pilot_runtime=pilot_runtime
+        )
+
+
+@pytest.mark.parametrize("tamper", ["hash", "record", "loaded"])
+def test_validator_only_head_promotion_rejects_tampered_record(
+    tmp_path, monkeypatch, tamper
+):
+    repository, _from, _to, freeze, pilot_runtime = (
+        _validator_promotion_repository(tmp_path)
+    )
+    monkeypatch.setattr(
+        v6_formal_module, "_validator_only_loaded_identity",
+        lambda _root, head: _promotion_loaded_identity(repository, head),
+    )
+    monkeypatch.setattr(
+        v6_formal_module, "_repository_tracked_dirty", REAL_TRACKED_GUARD
+    )
+    promotion = v6_formal_module._build_validator_only_head_promotion(
+        freeze=freeze, pilot_runtime=pilot_runtime
+    )
+    if tamper == "hash":
+        promotion["module3_diff"]["canonical_diff_sha256"] = "0" * 64
+    elif tamper == "record":
+        promotion["module3_diff"]["name_status"][0]["path"] = "scripts/run_experiment.sh"
+    else:
+        promotion["loaded_validator"]["source_sha256"] = "0" * 64
+
+    with pytest.raises(V6ContractError, match="diff record|loaded validator"):
+        v6_formal_module._validate_validator_only_head_promotion(
+            promotion, freeze=freeze
+        )
+
+
+def test_validator_only_head_promotion_rejects_current_checkout_drift(
+    tmp_path, monkeypatch
+):
+    repository, _from, _to, freeze, pilot_runtime = (
+        _validator_promotion_repository(tmp_path)
+    )
+    monkeypatch.setattr(
+        v6_formal_module, "_validator_only_loaded_identity",
+        lambda _root, head: _promotion_loaded_identity(repository, head),
+    )
+    monkeypatch.setattr(
+        v6_formal_module, "_repository_tracked_dirty", REAL_TRACKED_GUARD
+    )
+    promotion = v6_formal_module._build_validator_only_head_promotion(
+        freeze=freeze, pilot_runtime=pilot_runtime
+    )
+    protected = repository / (
+        "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py"
+    )
+    protected.write_text(protected.read_text() + "# drift\n", encoding="utf-8")
+
+    with pytest.raises(V6ContractError, match="current checkout drift"):
+        v6_formal_module._validate_validator_only_head_promotion(
+            promotion, freeze=freeze
+        )
+
+
+def test_validator_only_head_promotion_rejects_nonancestor_from_head(
+    tmp_path, monkeypatch
+):
+    repository, _from, to_head, freeze, pilot_runtime = (
+        _validator_promotion_repository(tmp_path)
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "checkout", "--orphan", "unrelated"],
+        check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "commit", "--allow-empty", "-qm", "unrelated"],
+        check=True,
+        env={**os.environ, "GIT_AUTHOR_NAME": "Codex Test", "GIT_AUTHOR_EMAIL": "codex@example.invalid", "GIT_COMMITTER_NAME": "Codex Test", "GIT_COMMITTER_EMAIL": "codex@example.invalid"},
+    )
+    unrelated = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "-C", str(repository), "checkout", "-q", to_head], check=True
+    )
+    pilot_runtime["repositories"]["module3"]["head"] = unrelated
+    monkeypatch.setattr(
+        v6_formal_module, "_validator_only_loaded_identity",
+        lambda _root, head: _promotion_loaded_identity(repository, head),
+    )
+
+    with pytest.raises(V6ContractError, match="not an ancestor"):
+        v6_formal_module._build_validator_only_head_promotion(
+            freeze=freeze, pilot_runtime=pilot_runtime
+        )
+
+
+def test_validator_only_head_promotion_rejects_loaded_module_bytes_drift(
+    tmp_path, monkeypatch
+):
+    repository, _from, _to, freeze, pilot_runtime = (
+        _validator_promotion_repository(tmp_path)
+    )
+    state = {"sha": "1" * 64}
+    monkeypatch.setattr(
+        v6_formal_module, "_validator_only_loaded_identity",
+        lambda _root, head: {
+            **_promotion_loaded_identity(repository, head),
+            "source_sha256": state["sha"],
+        },
+    )
+    promotion = v6_formal_module._build_validator_only_head_promotion(
+        freeze=freeze, pilot_runtime=pilot_runtime
+    )
+    state["sha"] = "2" * 64
+
+    with pytest.raises(V6ContractError, match="loaded validator identity"):
+        v6_formal_module._validate_validator_only_head_promotion(
+            promotion, freeze=freeze
+        )
+
+
+def test_indoor_pilot_runtime_derivation_rejects_mixed_stack_snapshots(tmp_path):
+    pilot_root = tmp_path / "pilot"
+    template_root = tmp_path / "template"
+    template_root.mkdir()
+    template_path = _live_stack_contract(template_root)
+    template = json.loads(template_path.read_text())
+    for condition_id in v6_formal_module.INDOOR_CONDITION_IDS:
+        for rep in range(1, 4):
+            destination = (
+                pilot_root / condition_id / f"rep{rep}" / "scenario"
+                / f"run-{rep:04d}" / "stack_contract.json"
+            )
+            destination.parent.mkdir(parents=True)
+            payload = dict(template)
+            if condition_id == "indoor_dynamic" and rep == 2:
+                payload["module3_head"] = "0" * 40
+            payload["stack_session_id"] = v6_formal_module._stack_session_id(payload)
+            destination.write_text(json.dumps(payload), encoding="utf-8")
+    repositories = {
+        name: {"path": str(REPO), "head": template[f"{name}_head"]}
+        for name in ("integration", "module2", "module3")
+    }
+
+    with pytest.raises(V6ContractError, match="mixed runtime tuple"):
+        v6_formal_module._derive_indoor_pilot_runtime(
+            pilot_root, repositories=repositories
+        )
+
+
 def test_indoor_pilot_aggregate_publishes_only_nine_indoor_runs(
     tmp_path, monkeypatch
 ):
@@ -1245,6 +1881,12 @@ def test_indoor_pilot_aggregate_publishes_only_nine_indoor_runs(
     assert result["strict_successes"] == 9
     aggregate = json.loads(aggregate_output.read_text())
     assert aggregate["schema_version"] == v6_formal_module.INDOOR_PILOT_AGGREGATE_SCHEMA
+    assert aggregate["validator_only_head_promotion"]["schema"] == (
+        "bio_nav.v6_validator_only_head_promotion.v1"
+    )
+    assert result["validator_only_head_promotion"] == aggregate[
+        "validator_only_head_promotion"
+    ]
     assert [row["id"] for row in aggregate["conditions"]] == list(
         v6_formal_module.INDOOR_CONDITION_IDS
     )
@@ -1398,7 +2040,7 @@ def test_indoor_pilot_aggregate_rejects_extra_run_directory(
 
 
 def test_indoor_freezer_and_dry_run_are_scope_separated(tmp_path, monkeypatch, capsys):
-    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
     monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
     output = tmp_path / "indoor-campaign.json"
     output_root = tmp_path / "nas" / "indoor-60"
@@ -1416,6 +2058,12 @@ def test_indoor_freezer_and_dry_run_are_scope_separated(tmp_path, monkeypatch, c
     )
     assert all(len(row.episode_identities) == 20 for row in campaign.conditions)
     frozen_raw = json.loads(output.read_text())
+    assert frozen_raw["freeze"]["validator_only_head_promotion"] == json.loads(
+        pilot_manifest.read_text()
+    )["freeze"]["validator_only_head_promotion"]
+    assert campaign.freeze["validator_only_head_promotion"] == frozen_raw["freeze"][
+        "validator_only_head_promotion"
+    ]
     physical = frozen_raw["freeze"]["physical_contracts"]
     assert physical["indoor_static"]["static_obstacle_ids"] == ["v6_low_box_solo"]
     assert physical["indoor_static"]["static_obstacle_count"] == 1
@@ -1451,7 +2099,7 @@ def test_indoor_freezer_and_dry_run_are_scope_separated(tmp_path, monkeypatch, c
 def test_indoor_loader_rejects_physical_obstacle_identity_drift(
     tmp_path, monkeypatch
 ):
-    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
     monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
     output = tmp_path / "indoor.json"
     freeze_indoor_campaign_from_pilot(
@@ -1474,7 +2122,7 @@ def test_indoor_loader_rejects_physical_obstacle_identity_drift(
 def test_indoor_freezer_requires_unique_canonical_v6_spawn_override(
     tmp_path, monkeypatch, mutation
 ):
-    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
     pilot = json.loads(pilot_manifest.read_text())
     arguments = pilot["conditions"][0]["runner_arguments"]
     index = next(
@@ -1507,7 +2155,7 @@ def test_indoor_freezer_requires_unique_canonical_v6_spawn_override(
 
 
 def test_indoor_freezer_never_clobbers_existing_outputs(tmp_path, monkeypatch):
-    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
     monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
     output = tmp_path / "indoor-campaign.json"
     output.write_text("owner\n", encoding="utf-8")
@@ -1527,7 +2175,7 @@ def test_indoor_freezer_never_clobbers_existing_outputs(tmp_path, monkeypatch):
 def test_indoor_freezer_requires_explicit_clean_tracked_provenance(
     tmp_path, monkeypatch, provenance_value
 ):
-    pilot_manifest, aggregate_path = _write_indoor_pilot_inputs(tmp_path)
+    pilot_manifest, aggregate_path = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
     aggregate = json.loads(aggregate_path.read_text())
     manifest_path = Path(aggregate["conditions"][0]["episodes"][0]["manifest_path"])
     episode = json.loads(manifest_path.read_text())
@@ -1551,7 +2199,7 @@ def test_indoor_freezer_requires_explicit_clean_tracked_provenance(
 def test_indoor_freezer_allows_untracked_diagnostics_when_tracked_clean(
     tmp_path, monkeypatch
 ):
-    pilot_manifest, aggregate_path = _write_indoor_pilot_inputs(tmp_path)
+    pilot_manifest, aggregate_path = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
     aggregate = json.loads(aggregate_path.read_text())
     manifest_path = Path(aggregate["conditions"][0]["episodes"][0]["manifest_path"])
     episode = json.loads(manifest_path.read_text())
@@ -1582,7 +2230,7 @@ def test_indoor_freezer_allows_untracked_diagnostics_when_tracked_clean(
 def test_indoor_freezer_rejects_mixed_head_session_or_generation(
     tmp_path, monkeypatch, mutation, message
 ):
-    pilot_manifest, aggregate_path = _write_indoor_pilot_inputs(tmp_path)
+    pilot_manifest, aggregate_path = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
     aggregate = json.loads(aggregate_path.read_text())
     row = aggregate["conditions"][0]["episodes"][1]
     manifest_path = Path(row["manifest_path"])
@@ -2096,8 +2744,53 @@ def test_formal_execution_dispatches_one_episode_and_returns(
     assert aggregate["present_episodes"] == 1
 
 
+@pytest.mark.parametrize("failure", ["tampered_record", "checkout_drift"])
+def test_indoor_execute_revalidates_promotion_before_evaluate_plan_or_subprocess(
+    tmp_path, monkeypatch, failure
+):
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+    campaign = freeze_indoor_campaign_from_pilot(
+        pilot_manifest_path=pilot_manifest,
+        pilot_aggregate_path=aggregate,
+        output_manifest_path=tmp_path / "indoor.json",
+        indoor_output_root=tmp_path / "nas" / "indoor-60",
+    )
+    promotion = campaign.freeze["validator_only_head_promotion"]
+    if failure == "tampered_record":
+        promotion["module3_diff"]["canonical_diff_sha256"] = "f" * 64
+    calls = {"validator": 0, "evaluate": 0, "plan": 0, "subprocess": 0}
+
+    def reject_promotion(value, *, freeze):
+        calls["validator"] += 1
+        assert value is promotion
+        raise V6ContractError(failure)
+
+    def forbidden(name):
+        def fail(*_args, **_kwargs):
+            calls[name] += 1
+            raise AssertionError(f"{name} ran before promotion validation")
+        return fail
+
+    monkeypatch.setattr(
+        v6_formal_module, "_validate_validator_only_head_promotion", reject_promotion
+    )
+    monkeypatch.setattr(v6_formal_module, "evaluate_indoor_campaign", forbidden("evaluate"))
+    monkeypatch.setattr(v6_formal_module, "indoor_dispatch_plan", forbidden("plan"))
+    monkeypatch.setattr(v6_formal_module.subprocess, "run", forbidden("subprocess"))
+
+    with pytest.raises(V6ContractError, match=failure):
+        v6_formal_module.execute_indoor_campaign(
+            campaign,
+            condition_stack_id="indoor_static",
+            condition_stack_contract=tmp_path / "never-read.json",
+        )
+
+    assert calls == {"validator": 1, "evaluate": 0, "plan": 0, "subprocess": 0}
+
+
 def test_indoor_execution_dispatches_exactly_one_episode(tmp_path, monkeypatch):
-    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
     monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
     campaign = freeze_indoor_campaign_from_pilot(
         pilot_manifest_path=pilot_manifest,
@@ -2153,7 +2846,7 @@ def test_indoor_execution_dispatches_exactly_one_episode(tmp_path, monkeypatch):
 def test_indoor_execution_keeps_valid_failure_and_advances_identity(
     tmp_path, monkeypatch
 ):
-    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
     monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
     campaign = freeze_indoor_campaign_from_pilot(
         pilot_manifest_path=pilot_manifest,
@@ -2191,7 +2884,7 @@ def test_indoor_execution_keeps_valid_failure_and_advances_identity(
 
 
 def test_complete_indoor_campaign_never_reports_formal_pass(tmp_path, monkeypatch):
-    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
     monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
     campaign = freeze_indoor_campaign_from_pilot(
         pilot_manifest_path=pilot_manifest,
@@ -2231,7 +2924,7 @@ def test_complete_indoor_campaign_never_reports_formal_pass(tmp_path, monkeypatc
 def test_indoor_threshold_does_not_pass_before_all_twenty_valid_runs(
     tmp_path, monkeypatch
 ):
-    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
     monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
     campaign = freeze_indoor_campaign_from_pilot(
         pilot_manifest_path=pilot_manifest,
@@ -2261,7 +2954,7 @@ def test_indoor_threshold_does_not_pass_before_all_twenty_valid_runs(
 def test_indoor_valid_failures_continue_until_budget_is_unreachable(
     tmp_path, monkeypatch
 ):
-    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
     monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
     campaign = freeze_indoor_campaign_from_pilot(
         pilot_manifest_path=pilot_manifest,
@@ -2298,7 +2991,7 @@ def test_indoor_valid_failures_continue_until_budget_is_unreachable(
 def test_indoor_invalid_evidence_stops_without_entering_valid_denominator(
     tmp_path, monkeypatch
 ):
-    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
     monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
     campaign = freeze_indoor_campaign_from_pilot(
         pilot_manifest_path=pilot_manifest,
@@ -2324,7 +3017,7 @@ def test_indoor_invalid_evidence_stops_without_entering_valid_denominator(
 def test_indoor_final_rejects_summary_success_tampering_over_manifest_failure(
     tmp_path, monkeypatch
 ):
-    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
     monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
     campaign = freeze_indoor_campaign_from_pilot(
         pilot_manifest_path=pilot_manifest,
@@ -2360,7 +3053,7 @@ def test_indoor_final_rejects_summary_success_tampering_over_manifest_failure(
 def test_indoor_final_rejects_one_of_five_route_forged_to_strict_success(
     tmp_path, monkeypatch
 ):
-    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
     monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
     campaign = freeze_indoor_campaign_from_pilot(
         pilot_manifest_path=pilot_manifest,
@@ -2398,7 +3091,7 @@ def test_indoor_final_rejects_one_of_five_route_forged_to_strict_success(
 def test_indoor_final_keeps_one_of_five_route_as_valid_product_failure(
     tmp_path, monkeypatch
 ):
-    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
     monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
     campaign = freeze_indoor_campaign_from_pilot(
         pilot_manifest_path=pilot_manifest,
@@ -2426,7 +3119,7 @@ def test_indoor_final_keeps_one_of_five_route_as_valid_product_failure(
 def test_indoor_final_cross_checks_contact_sensor_product_failure(
     tmp_path, monkeypatch
 ):
-    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
     monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
     campaign = freeze_indoor_campaign_from_pilot(
         pilot_manifest_path=pilot_manifest,
@@ -2454,7 +3147,7 @@ def test_indoor_final_cross_checks_contact_sensor_product_failure(
 def test_indoor_static_requires_nonnull_finite_executed_path_deviation(
     tmp_path, monkeypatch, metric
 ):
-    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path)
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
     monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
     campaign = freeze_indoor_campaign_from_pilot(
         pilot_manifest_path=pilot_manifest,

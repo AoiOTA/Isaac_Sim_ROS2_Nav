@@ -553,19 +553,44 @@ def validate_recorded_run_evidence(
     )
     if summary.get("navigation_contract_success") is not navigation_success:
         reasons.append("navigation_contract_mismatch")
-    collision_seen = manifest.get("observability", {}).get("collision_status_seen") is True
-    manifest_collision = manifest.get("isaac_contact_sensor_collision_detected")
+    observability = manifest.get("observability")
+    collision_seen = bool(
+        isinstance(observability, Mapping)
+        and observability.get("collision_status_seen") is True
+    )
     summary_collision = summary.get("isaac_contact_sensor_collision_detected")
-    collision_evidence_consistent = bool(
-        isinstance(manifest_collision, bool)
-        and isinstance(summary_collision, bool)
-        and manifest_collision is summary_collision
-        and summary.get("physical_collision_free") is (not summary_collision)
-        and (
-            not inventory.get("passed")
-            or (inventory["semantic"]["collision_true_count"] > 0)
+    summary_collision_free = summary.get("physical_collision_free")
+    optional_manifest_collision_keys = (
+        "isaac_contact_sensor_collision_detected",
+        "physical_collision_free",
+    )
+    present_manifest_collision_keys = {
+        key for key in optional_manifest_collision_keys if key in manifest
+    }
+    manifest_collision_evidence_consistent = bool(
+        not present_manifest_collision_keys
+        or (
+            present_manifest_collision_keys
+            == set(optional_manifest_collision_keys)
+            and isinstance(
+                manifest.get("isaac_contact_sensor_collision_detected"), bool
+            )
+            and isinstance(manifest.get("physical_collision_free"), bool)
+            and manifest["isaac_contact_sensor_collision_detected"]
             is summary_collision
+            and manifest["physical_collision_free"] is summary_collision_free
+            and manifest["physical_collision_free"]
+            is (not manifest["isaac_contact_sensor_collision_detected"])
         )
+    )
+    collision_evidence_consistent = bool(
+        isinstance(summary_collision, bool)
+        and isinstance(summary_collision_free, bool)
+        and summary_collision_free is (not summary_collision)
+        and manifest_collision_evidence_consistent
+        and inventory.get("passed") is True
+        and (inventory["semantic"]["collision_true_count"] > 0)
+        is summary_collision
     )
     collision_free = bool(collision_evidence_consistent and not summary_collision)
     if not collision_seen or not collision_evidence_consistent:

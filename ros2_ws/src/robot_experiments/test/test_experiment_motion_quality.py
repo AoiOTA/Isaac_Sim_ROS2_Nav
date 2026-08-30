@@ -24,6 +24,7 @@ from robot_experiments.experiment_runner import (
     _result_with_terminal_zero,
     _route_prior_application_evidence,
     _strict_success_from_leg_count,
+    validate_recorded_run_evidence,
     CommandSample,
     ExperimentRunner,
     OdometrySample,
@@ -190,6 +191,191 @@ def test_mcap_inventory_rejects_placeholder_and_requires_metadata_schema(tmp_pat
     mcap.write_bytes(magic + b"payload" + magic)
     assert not _mcap_inventory_evidence(root)["passed"]
 
+
+def _recorded_collision_contract_fixture(tmp_path, monkeypatch, *, collision=False):
+    root = tmp_path / "recorded-run"
+    root.mkdir()
+    mandatory = {
+        "TRIAL_DISPATCHED.json", "run_manifest.json", "run_summary.json",
+        "events.jsonl", "ground_truth.csv.gz", "odom.csv.gz", "cmd_vel.csv.gz",
+        "obstacles.csv.gz", "dynamic_obstacles.csv.gz", "leg_metrics.csv",
+        "depth_frame.pgm", "depth_frame.json", "scan.csv", "scan.json",
+        "scan_safety.csv", "scan_safety.json", "local_costmap.pgm",
+        "local_costmap.json", "global_costmap.pgm", "global_costmap.json",
+        "FINAL_TRIAL_METRICS.json", "telemetry/metadata.yaml",
+    }
+    for relative in mandatory:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("fixture\n", encoding="utf-8")
+    coverage = {
+        "required_topics": ["/simulation/collision"],
+        "message_counts": {"/simulation/collision": 3},
+        "forbidden_topics": [],
+        "forbidden_message_counts": {},
+        "observed_forbidden_topics": [],
+        "passed": True,
+    }
+    inventory = {
+        "passed": True,
+        "topic_counts": {"/simulation/collision": 3},
+        "topic_types": {"/simulation/collision": "std_msgs/msg/Bool"},
+        "semantic": {
+            "collision_true_count": int(collision),
+            "route_complete_true_count": 5,
+            "terminal_zero_count": 2,
+            "terminal_nonzero_count": 0,
+            "positive_requested_count": 1,
+            "positive_applied_count": 1,
+        },
+    }
+    monkeypatch.setattr(experiment_runner_module, "_mcap_inventory_evidence", lambda _root: inventory)
+    monkeypatch.setattr(
+        experiment_runner_module,
+        "_mcap_required_topic_coverage",
+        lambda *_args, **_kwargs: coverage,
+    )
+    monkeypatch.setattr(
+        ExperimentRunner, "_checksums_are_verified", staticmethod(lambda _root: True)
+    )
+    route_costs = [{
+        "request_id": 1,
+        "edges": [{
+            "requested_module2_delta_m": 0.2,
+            "applied_module2_delta_m": 0.2,
+        }],
+    }]
+    route_prior = _route_prior_application_evidence(route_costs, required=True)
+    manifest = {
+        "result": "failure" if collision else "success",
+        "legs": [{"id": f"G{index}"} for index in range(1, 6)],
+        "terminal_zero_confirmed": True,
+        "reset_receipt": {"generation": 2},
+        "observability": {"collision_status_seen": True},
+        "route_edge_costs": route_costs,
+    }
+    summary = {
+        "navigation_contract_success": not collision,
+        "terminal_zero_confirmed": True,
+        "reset_receipt": {"generation": 2},
+        "reset_receipt_confirmed": True,
+        "isaac_contact_sensor_collision_detected": collision,
+        "physical_collision_free": not collision,
+        "contact_sensor_evidence_confirmed": True,
+        "fixed_map_to_odom_evidence_confirmed": True,
+        "localization_node_ownership": {},
+        "data_complete": True,
+        "checksums_verified": True,
+        "required_topic_coverage": coverage,
+        "route_prior_application": route_prior,
+        "route_prior_application_confirmed": True,
+        "evidence": {
+            "required_files": sorted(
+                mandatory - {
+                    "run_summary.json", "FINAL_TRIAL_METRICS.json",
+                    "telemetry/metadata.yaml",
+                }
+            )
+        },
+        "final_trial_metric_gate": {"passed": True},
+        "episode_validity": {
+            "valid": True,
+            "status": "valid",
+            "invalid_reasons": [],
+        },
+        "strict_success": not collision,
+    }
+    (root / "FINAL_TRIAL_METRICS.json").write_text(
+        json.dumps(summary["final_trial_metric_gate"]), encoding="utf-8"
+    )
+    return root, summary, manifest, inventory, coverage
+
+
+def test_recorded_contact_validator_accepts_legacy_absent_and_future_consistent_fields(
+    tmp_path, monkeypatch
+):
+    root, summary, manifest, _inventory, _coverage = (
+        _recorded_collision_contract_fixture(tmp_path, monkeypatch)
+    )
+
+    assert validate_recorded_run_evidence(
+        root, summary, manifest, scene="indoor", route_guided=True,
+        route_prior_required=True, expected_leg_count=5,
+    )["strict_success"] is True
+
+    manifest["isaac_contact_sensor_collision_detected"] = False
+    manifest["physical_collision_free"] = True
+    assert validate_recorded_run_evidence(
+        root, summary, manifest, scene="indoor", route_guided=True,
+        route_prior_required=True, expected_leg_count=5,
+    )["strict_success"] is True
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["missing_one", "wrong_type", "manifest_disagrees", "summary_wrong", "observability"],
+)
+def test_recorded_contact_validator_rejects_inconsistent_boolean_contract(
+    tmp_path, monkeypatch, mutation
+):
+    root, summary, manifest, _inventory, _coverage = (
+        _recorded_collision_contract_fixture(tmp_path, monkeypatch)
+    )
+    manifest.update({
+        "isaac_contact_sensor_collision_detected": False,
+        "physical_collision_free": True,
+    })
+    if mutation == "missing_one":
+        manifest.pop("physical_collision_free")
+    elif mutation == "wrong_type":
+        manifest["isaac_contact_sensor_collision_detected"] = 0
+    elif mutation == "manifest_disagrees":
+        manifest["isaac_contact_sensor_collision_detected"] = True
+        manifest["physical_collision_free"] = False
+    elif mutation == "summary_wrong":
+        summary["physical_collision_free"] = 1
+    else:
+        manifest["observability"]["collision_status_seen"] = False
+
+    with pytest.raises(ConfigurationError, match="contact_sensor"):
+        validate_recorded_run_evidence(
+            root, summary, manifest, scene="indoor", route_guided=True,
+            route_prior_required=True, expected_leg_count=5,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["true_count", "zero_count_for_collision", "wrong_type", "count", "inventory", "checksum"],
+)
+def test_recorded_contact_validator_rejects_mcap_or_checksum_tamper(
+    tmp_path, monkeypatch, mutation
+):
+    collision = mutation == "zero_count_for_collision"
+    root, summary, manifest, inventory, _coverage = _recorded_collision_contract_fixture(
+        tmp_path, monkeypatch, collision=collision
+    )
+    if mutation == "true_count":
+        inventory["semantic"]["collision_true_count"] = 1
+    elif mutation == "zero_count_for_collision":
+        inventory["semantic"]["collision_true_count"] = 0
+    elif mutation == "wrong_type":
+        inventory["topic_types"]["/simulation/collision"] = "std_msgs/msg/String"
+    elif mutation == "count":
+        inventory["topic_counts"]["/simulation/collision"] = 2
+    elif mutation == "inventory":
+        inventory["passed"] = False
+    else:
+        monkeypatch.setattr(
+            ExperimentRunner, "_checksums_are_verified", staticmethod(lambda _root: False)
+        )
+
+    with pytest.raises(ConfigurationError, match="recorded run evidence invalid"):
+        validate_recorded_run_evidence(
+            root, summary, manifest, scene="indoor", route_guided=True,
+            route_prior_required=True, expected_leg_count=5,
+            require_strict_success=not collision,
+        )
 
 @pytest.mark.parametrize(
     "scenario_id",

@@ -46,9 +46,9 @@ SCHEMA_VERSION = "bio_nav_v6_r3_phase2_pilot_manifest_v1"
 FORMAL_CAMPAIGN_SCHEMA_VERSION = "bio_nav_v6_formal_campaign_v1"
 SUFFICIENT_PILOT_MANIFEST_SCHEMA = "bio_nav_v6_sufficient_pilot_manifest_v1"
 SUFFICIENT_PILOT_AGGREGATE_SCHEMA = "bio_nav_v6_sufficient_pilot_aggregate_v1"
-INDOOR_PILOT_MANIFEST_SCHEMA = "bio_nav_v6_indoor_pilot_manifest_v1"
-INDOOR_PILOT_AGGREGATE_SCHEMA = "bio_nav_v6_indoor_pilot_aggregate_v1"
-INDOOR_CAMPAIGN_SCHEMA_VERSION = "bio_nav_v6_indoor_campaign_v1"
+INDOOR_PILOT_MANIFEST_SCHEMA = "bio_nav_v6_indoor_pilot_manifest_v2"
+INDOOR_PILOT_AGGREGATE_SCHEMA = "bio_nav_v6_indoor_pilot_aggregate_v2"
+INDOOR_CAMPAIGN_SCHEMA_VERSION = "bio_nav_v6_indoor_campaign_v2"
 FORMAL_NAS_ROOT = Path("/mnt/nas_home")
 PILOT_SCENARIO_FILENAMES = {
     "indoor_static": "v6_final_kujiale_static.yaml",
@@ -407,6 +407,7 @@ def _validate_formal_freeze(
     }
     if expected_physical_contracts is not None:
         required_freeze_keys.add("physical_contracts")
+        required_freeze_keys.add("validator_only_head_promotion")
     _require_exact_keys(
         freeze,
         required_freeze_keys,
@@ -576,6 +577,10 @@ def _validate_formal_freeze(
     }
     if normalized_physical_contracts is not None:
         normalized["physical_contracts"] = normalized_physical_contracts
+        normalized["validator_only_head_promotion"] = dict(_mapping(
+            freeze.get("validator_only_head_promotion"),
+            "freeze.validator_only_head_promotion",
+        ))
     canonical = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
     return normalized, hashlib.sha256(canonical.encode()).hexdigest()
 
@@ -1031,6 +1036,519 @@ def load_formal_campaign_manifest(path: str | Path) -> FormalCampaignManifest:
     )
 
 
+def _validator_only_git_output(
+    repository: Path, arguments: list[str], *, binary: bool
+) -> str | bytes:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repository), *arguments],
+            check=True,
+            capture_output=True,
+            text=not binary,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise V6ContractError(
+            f"validator-only promotion git command failed: {' '.join(arguments)}"
+        ) from exc
+    return result.stdout
+
+
+def _validator_only_diff_evidence(
+    repository: Path, from_head: str, to_head: str
+) -> tuple[list[dict[str, str]], str]:
+    raw_name_status = str(_validator_only_git_output(
+        repository,
+        ["diff", "--name-status", "--no-renames", from_head, to_head, "--"],
+        binary=False,
+    ))
+    rows: list[dict[str, str]] = []
+    for line in raw_name_status.splitlines():
+        fields = line.split("\t")
+        if len(fields) != 2:
+            raise V6ContractError("validator-only promotion name-status is malformed")
+        rows.append({"status": fields[0], "path": fields[1]})
+    canonical_diff = _validator_only_git_output(
+        repository,
+        [
+            "diff", "--binary", "--full-index", "--no-ext-diff", "--no-renames",
+            from_head, to_head, "--",
+        ],
+        binary=True,
+    )
+    assert isinstance(canonical_diff, bytes)
+    return rows, hashlib.sha256(canonical_diff).hexdigest()
+
+
+def _validator_only_ast_guard(
+    repository: Path, from_head: str, to_head: str
+) -> None:
+    import ast
+    import copy
+
+    experiment_runner_path = (
+        "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py"
+    )
+    v6_formal_path = "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py"
+    body_only = {
+        experiment_runner_path: {
+            "FunctionDef:validate_recorded_run_evidence",
+        },
+        v6_formal_path: {
+            "FunctionDef:_validate_formal_freeze",
+            "FunctionDef:load_indoor_campaign_manifest",
+            "FunctionDef:freeze_indoor_campaign_from_pilot",
+            "FunctionDef:_build_indoor_pilot_manifest",
+            "FunctionDef:aggregate_indoor_pilot",
+            "FunctionDef:execute_indoor_campaign",
+        },
+    }
+    allowed_assignments = {
+        experiment_runner_path: set(),
+        v6_formal_path: {
+            "Assign:INDOOR_PILOT_MANIFEST_SCHEMA",
+            "Assign:INDOOR_PILOT_AGGREGATE_SCHEMA",
+            "Assign:INDOOR_CAMPAIGN_SCHEMA_VERSION",
+        },
+    }
+    schema_values = {
+        "Assign:INDOOR_PILOT_MANIFEST_SCHEMA": (
+            "bio_nav_v6_indoor_pilot_manifest_v1",
+            "bio_nav_v6_indoor_pilot_manifest_v2",
+        ),
+        "Assign:INDOOR_PILOT_AGGREGATE_SCHEMA": (
+            "bio_nav_v6_indoor_pilot_aggregate_v1",
+            "bio_nav_v6_indoor_pilot_aggregate_v2",
+        ),
+        "Assign:INDOOR_CAMPAIGN_SCHEMA_VERSION": (
+            "bio_nav_v6_indoor_campaign_v1",
+            "bio_nav_v6_indoor_campaign_v2",
+        ),
+    }
+    new_helpers = {
+        "FunctionDef:_validator_only_git_output": (
+            ("repository", "arguments"), ("binary",)
+        ),
+        "FunctionDef:_validator_only_diff_evidence": (
+            ("repository", "from_head", "to_head"), ()
+        ),
+        "FunctionDef:_validator_only_ast_guard": (
+            ("repository", "from_head", "to_head"), ()
+        ),
+        "FunctionDef:_validator_only_loaded_identity": (
+            ("module3_root", "current_head"), ()
+        ),
+        "FunctionDef:_validate_validator_only_head_promotion": (
+            ("value",), ("freeze",)
+        ),
+        "FunctionDef:_build_validator_only_head_promotion": (
+            (), ("freeze", "pilot_runtime")
+        ),
+        "FunctionDef:_derive_indoor_pilot_runtime": (
+            ("pilot_root",), ("repositories",)
+        ),
+        "FunctionDef:_pilot_freeze_from_validator_promotion": (
+            ("freeze", "promotion"), ()
+        ),
+        "FunctionDef:_revalidate_indoor_pilot_freeze_provenance": (
+            ("provenance",), ("conditions", "freeze", "freeze_digest")
+        ),
+    }
+
+    def node_key(node: ast.AST, anonymous_index: int) -> str:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return f"{type(node).__name__}:{node.name}"
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names = [target.id for target in targets if isinstance(target, ast.Name)]
+            if names:
+                return f"{type(node).__name__}:{','.join(names)}"
+        return f"{type(node).__name__}:#{anonymous_index}"
+
+    for relative_path in (experiment_runner_path, v6_formal_path):
+        sources = []
+        for head in (from_head, to_head):
+            value = _validator_only_git_output(
+                repository, ["show", f"{head}:{relative_path}"], binary=False
+            )
+            assert isinstance(value, str)
+            sources.append(value)
+        parsed = [
+            ast.parse(source, filename=relative_path, type_comments=True)
+            for source in sources
+        ]
+        keyed_nodes = []
+        protected_rows = []
+        for source, tree in zip(sources, parsed):
+            anonymous_counts: dict[str, int] = {}
+            rows = []
+            nodes: dict[str, ast.AST] = {}
+            for node in tree.body:
+                kind = type(node).__name__
+                anonymous_index = anonymous_counts.get(kind, 0)
+                key = node_key(node, anonymous_index)
+                if key.endswith(f":#{anonymous_index}"):
+                    anonymous_counts[kind] = anonymous_index + 1
+                if key in nodes:
+                    raise V6ContractError(
+                        f"validator-only promotion duplicated top-level symbol: {key}"
+                    )
+                nodes[key] = node
+                if (
+                    key in body_only[relative_path]
+                    or key in allowed_assignments[relative_path]
+                    or (relative_path == v6_formal_path and key in new_helpers)
+                ):
+                    continue
+                segment = ast.get_source_segment(source, node)
+                rows.append((key, segment, ast.dump(node, include_attributes=False)))
+            keyed_nodes.append(nodes)
+            protected_rows.append(rows)
+        if protected_rows[0] != protected_rows[1]:
+            raise V6ContractError(
+                f"validator-only promotion changed protected top-level AST: {relative_path}"
+            )
+        for key in body_only[relative_path]:
+            before = keyed_nodes[0].get(key)
+            after = keyed_nodes[1].get(key)
+            if not isinstance(before, ast.FunctionDef) or not isinstance(
+                after, ast.FunctionDef
+            ):
+                raise V6ContractError(
+                    f"validator-only promotion callable is missing or changed kind: {key}"
+                )
+            headers = []
+            for node in (before, after):
+                header = copy.deepcopy(node)
+                header.body = [ast.Pass()]
+                headers.append(ast.dump(header, include_attributes=False))
+            if headers[0] != headers[1]:
+                raise V6ContractError(
+                    f"validator-only promotion changed callable signature/decorators: {key}"
+                )
+        for key in allowed_assignments[relative_path]:
+            before = keyed_nodes[0].get(key)
+            after = keyed_nodes[1].get(key)
+            if not isinstance(before, ast.Assign) or not isinstance(after, ast.Assign):
+                raise V6ContractError(
+                    f"validator-only promotion schema assignment is missing: {key}"
+                )
+            target_name = key.split(":", 1)[1]
+            if not (
+                len(before.targets) == 1
+                and isinstance(before.targets[0], ast.Name)
+                and before.targets[0].id == target_name
+                and len(after.targets) == 1
+                and isinstance(after.targets[0], ast.Name)
+                and after.targets[0].id == target_name
+                and isinstance(before.value, ast.Constant)
+                and isinstance(before.value.value, str)
+                and before.value.value == schema_values[key][0]
+                and isinstance(after.value, ast.Constant)
+                and isinstance(after.value.value, str)
+                and after.value.value == schema_values[key][1]
+            ):
+                raise V6ContractError(
+                    f"validator-only promotion schema assignment is not v1-to-v2: {key}"
+                )
+            before_shell = copy.deepcopy(before)
+            after_shell = copy.deepcopy(after)
+            before_shell.value = ast.Constant(value=None)
+            after_shell.value = ast.Constant(value=None)
+            if ast.dump(before_shell, include_attributes=False) != ast.dump(
+                after_shell, include_attributes=False
+            ):
+                raise V6ContractError(
+                    f"validator-only promotion schema assignment shell changed: {key}"
+                )
+        if relative_path == v6_formal_path:
+            for key, (positional, keyword_only) in new_helpers.items():
+                if key in keyed_nodes[0]:
+                    raise V6ContractError(
+                        f"validator-only promotion helper already existed at Pilot HEAD: {key}"
+                    )
+                node = keyed_nodes[1].get(key)
+                if not isinstance(node, ast.FunctionDef) or node.decorator_list:
+                    raise V6ContractError(
+                        f"validator-only promotion helper kind/decorator mismatch: {key}"
+                    )
+                arguments = node.args
+                actual_positional = tuple(
+                    argument.arg
+                    for argument in (*arguments.posonlyargs, *arguments.args)
+                )
+                actual_keyword_only = tuple(
+                    argument.arg for argument in arguments.kwonlyargs
+                )
+                if (
+                    actual_positional != positional
+                    or actual_keyword_only != keyword_only
+                    or arguments.vararg is not None
+                    or arguments.kwarg is not None
+                    or arguments.defaults
+                    or any(value is not None for value in arguments.kw_defaults)
+                ):
+                    raise V6ContractError(
+                        f"validator-only promotion helper signature/default mismatch: {key}"
+                    )
+
+
+def _validator_only_loaded_identity(
+    module3_root: Path, current_head: str
+) -> dict[str, str]:
+    from robot_experiments.experiment_runner import validate_recorded_run_evidence
+
+    relative_path = (
+        "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py"
+    )
+    expected_path = (module3_root / relative_path).resolve()
+    loaded_path = Path(validate_recorded_run_evidence.__code__.co_filename).resolve()
+    if (
+        validate_recorded_run_evidence.__module__
+        != "robot_experiments.experiment_runner"
+        or loaded_path != expected_path
+    ):
+        raise V6ContractError("validator-only promotion loaded validator source mismatch")
+    tracked_source = _validator_only_git_output(
+        module3_root, ["show", f"{current_head}:{relative_path}"], binary=True
+    )
+    assert isinstance(tracked_source, bytes)
+    try:
+        loaded_source = loaded_path.read_bytes()
+    except OSError as exc:
+        raise V6ContractError(
+            "validator-only promotion loaded validator source is unreadable"
+        ) from exc
+    if loaded_source != tracked_source:
+        raise V6ContractError(
+            "validator-only promotion loaded validator bytes differ from current HEAD"
+        )
+    blob = str(_validator_only_git_output(
+        module3_root,
+        ["rev-parse", f"{current_head}:{relative_path}"],
+        binary=False,
+    )).strip()
+    return {
+        "module": validate_recorded_run_evidence.__module__,
+        "symbol": validate_recorded_run_evidence.__name__,
+        "source_path": str(loaded_path),
+        "source_sha256": hashlib.sha256(loaded_source).hexdigest(),
+        "git_blob_oid": blob,
+        "current_head": current_head,
+    }
+
+
+def _validate_validator_only_head_promotion(
+    value: Any, *, freeze: Mapping[str, Any]
+) -> dict[str, Any]:
+    promotion = dict(_mapping(value, "validator_only_head_promotion"))
+    _require_exact_keys(
+        promotion,
+        {
+            "schema", "pilot_runtime", "final_repositories", "module3_diff",
+            "loaded_validator",
+        },
+        "validator_only_head_promotion",
+    )
+    if promotion.get("schema") != "bio_nav.v6_validator_only_head_promotion.v1":
+        raise V6ContractError("validator-only head promotion schema mismatch")
+    final_repositories = _mapping(
+        promotion.get("final_repositories"),
+        "validator_only_head_promotion.final_repositories",
+    )
+    if final_repositories != freeze["repositories"]:
+        raise V6ContractError("validator-only promotion final repository tuple mismatch")
+    pilot_runtime = _mapping(
+        promotion.get("pilot_runtime"), "validator_only_head_promotion.pilot_runtime"
+    )
+    _require_exact_keys(
+        pilot_runtime, {"repositories", "driver_version", "kernel_release"},
+        "validator_only_head_promotion.pilot_runtime",
+    )
+    pilot_repositories = _mapping(
+        pilot_runtime.get("repositories"),
+        "validator_only_head_promotion.pilot_runtime.repositories",
+    )
+    _require_exact_keys(
+        pilot_repositories, {"integration", "module2", "module3"},
+        "validator_only_head_promotion.pilot_runtime.repositories",
+    )
+    for name in ("integration", "module2", "module3"):
+        pilot_entry = _mapping(
+            pilot_repositories.get(name),
+            f"validator_only_head_promotion.pilot_runtime.repositories.{name}",
+        )
+        _require_exact_keys(
+            pilot_entry, {"path", "head"},
+            f"validator_only_head_promotion.pilot_runtime.repositories.{name}",
+        )
+        final_entry = _mapping(freeze["repositories"][name], f"freeze.repositories.{name}")
+        if Path(str(pilot_entry["path"])).resolve() != Path(str(final_entry["path"])).resolve():
+            raise V6ContractError("validator-only promotion repository path mismatch")
+        repository = Path(str(final_entry["path"])).resolve()
+        current_head = str(_validator_only_git_output(
+            repository, ["rev-parse", "HEAD"], binary=False
+        )).strip()
+        if current_head != final_entry["head"] or _repository_tracked_dirty(repository):
+            raise V6ContractError(
+                f"validator-only promotion current checkout drift: {name}"
+            )
+        if name in {"integration", "module2"} and pilot_entry["head"] != final_entry["head"]:
+            raise V6ContractError(
+                f"validator-only promotion changed non-Module3 repository: {name}"
+            )
+    if (
+        pilot_runtime.get("driver_version") != freeze["driver_version"]
+        or pilot_runtime.get("kernel_release") != freeze["kernel_release"]
+    ):
+        raise V6ContractError("validator-only promotion runtime platform mismatch")
+    module3_root = Path(str(freeze["repositories"]["module3"]["path"])).resolve()
+    from_head = str(pilot_repositories["module3"]["head"])
+    to_head = str(freeze["repositories"]["module3"]["head"])
+    if from_head == to_head:
+        raise V6ContractError("validator-only promotion requires a new Module3 HEAD")
+    try:
+        subprocess.run(
+            ["git", "-C", str(module3_root), "merge-base", "--is-ancestor", from_head, to_head],
+            check=True,
+            capture_output=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise V6ContractError("validator-only promotion from HEAD is not an ancestor") from exc
+    diff_rows, canonical_diff_sha256 = _validator_only_diff_evidence(
+        module3_root, from_head, to_head
+    )
+    allowed_paths = {
+        "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py",
+        "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py",
+        "ros2_ws/src/robot_experiments/test/test_experiment_motion_quality.py",
+        "ros2_ws/src/robot_experiments/test/test_v6_formal.py",
+    }
+    required_paths = {
+        "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py",
+        "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py",
+    }
+    if (
+        not diff_rows
+        or any(row["status"] != "M" or row["path"] not in allowed_paths for row in diff_rows)
+        or not required_paths <= {row["path"] for row in diff_rows}
+    ):
+        raise V6ContractError("validator-only promotion changed a disallowed path or status")
+    module3_diff = _mapping(
+        promotion.get("module3_diff"), "validator_only_head_promotion.module3_diff"
+    )
+    _require_exact_keys(
+        module3_diff,
+        {
+            "from_head", "to_head", "from_is_ancestor", "name_status",
+            "canonical_diff_sha256",
+        },
+        "validator_only_head_promotion.module3_diff",
+    )
+    if (
+        module3_diff.get("from_head") != from_head
+        or module3_diff.get("to_head") != to_head
+        or module3_diff.get("from_is_ancestor") is not True
+        or module3_diff.get("name_status") != diff_rows
+        or module3_diff.get("canonical_diff_sha256") != canonical_diff_sha256
+    ):
+        raise V6ContractError("validator-only promotion diff record mismatch")
+    _validator_only_ast_guard(module3_root, from_head, to_head)
+    loaded_identity = _validator_only_loaded_identity(module3_root, to_head)
+    if promotion.get("loaded_validator") != loaded_identity:
+        raise V6ContractError("validator-only promotion loaded validator identity mismatch")
+    return promotion
+
+
+def _build_validator_only_head_promotion(
+    *, freeze: Mapping[str, Any], pilot_runtime: Mapping[str, Any]
+) -> dict[str, Any]:
+    module3_root = Path(str(freeze["repositories"]["module3"]["path"])).resolve()
+    from_head = str(pilot_runtime["repositories"]["module3"]["head"])
+    to_head = str(freeze["repositories"]["module3"]["head"])
+    diff_rows, canonical_diff_sha256 = _validator_only_diff_evidence(
+        module3_root, from_head, to_head
+    )
+    candidate = {
+        "schema": "bio_nav.v6_validator_only_head_promotion.v1",
+        "pilot_runtime": json.loads(json.dumps(pilot_runtime)),
+        "final_repositories": json.loads(json.dumps(freeze["repositories"])),
+        "module3_diff": {
+            "from_head": from_head,
+            "to_head": to_head,
+            "from_is_ancestor": True,
+            "name_status": diff_rows,
+            "canonical_diff_sha256": canonical_diff_sha256,
+        },
+        "loaded_validator": _validator_only_loaded_identity(module3_root, to_head),
+    }
+    return _validate_validator_only_head_promotion(candidate, freeze=freeze)
+
+
+def _derive_indoor_pilot_runtime(
+    pilot_root: Path, *, repositories: Mapping[str, Any]
+) -> dict[str, Any]:
+    expected_paths = []
+    for condition_id in INDOOR_CONDITION_IDS:
+        for rep in range(1, 4):
+            rep_root = pilot_root / condition_id / f"rep{rep}"
+            matches = list(rep_root.glob("*/run-*/stack_contract.json"))
+            if len(matches) != 1 or matches[0].is_symlink():
+                raise V6ContractError("indoor Pilot stack snapshot topology mismatch")
+            expected_paths.append(matches[0])
+    tuples = []
+    for path in expected_paths:
+        try:
+            payload = dict(_mapping(
+                json.loads(path.read_text(encoding="utf-8")),
+                "indoor_pilot_stack_contract",
+            ))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise V6ContractError(f"indoor Pilot stack snapshot is unreadable: {exc}") from exc
+        _require_exact_keys(payload, STACK_CONTRACT_KEYS, "indoor_pilot_stack_contract")
+        if (
+            payload.get("schema") != STACK_CONTRACT_SCHEMA
+            or payload.get("stack_session_id") != _stack_session_id(payload)
+            or payload.get("integration_dirty") is not False
+            or payload.get("module2_dirty") is not False
+            or payload.get("module3_dirty") is not False
+        ):
+            raise V6ContractError("indoor Pilot stack snapshot identity/cleanliness mismatch")
+        tuples.append((
+            payload.get("integration_head"), payload.get("module2_head"),
+            payload.get("module3_head"), payload.get("driver_version"),
+            payload.get("kernel_release"), payload.get("t2_selector_path"),
+            payload.get("t2_selector_sha256"),
+        ))
+    if len(set(tuples)) != 1:
+        raise V6ContractError("indoor Pilot stack snapshots contain a mixed runtime tuple")
+    integration_head, module2_head, module3_head, driver, kernel, _selector, _selector_sha = tuples[0]
+    if not all(
+        isinstance(head, str) and re.fullmatch(r"[0-9a-f]{40,64}", head)
+        for head in (integration_head, module2_head, module3_head)
+    ) or not all(isinstance(value, str) and value for value in (driver, kernel)):
+        raise V6ContractError("indoor Pilot stack snapshot repository HEAD is invalid")
+    return {
+        "repositories": {
+            "integration": {**repositories["integration"], "head": integration_head},
+            "module2": {**repositories["module2"], "head": module2_head},
+            "module3": {**repositories["module3"], "head": module3_head},
+        },
+        "driver_version": driver,
+        "kernel_release": kernel,
+    }
+
+
+def _pilot_freeze_from_validator_promotion(
+    freeze: Mapping[str, Any], promotion: Mapping[str, Any]
+) -> dict[str, Any]:
+    pilot_freeze = json.loads(json.dumps(freeze))
+    pilot_runtime = promotion["pilot_runtime"]
+    pilot_freeze["repositories"] = json.loads(json.dumps(pilot_runtime["repositories"]))
+    pilot_freeze["driver_version"] = pilot_runtime["driver_version"]
+    pilot_freeze["kernel_release"] = pilot_runtime["kernel_release"]
+    return pilot_freeze
+
+
 def load_indoor_campaign_manifest(
     path: str | Path, *, _require_pilot_provenance: bool = True
 ) -> IndoorCampaignManifest:
@@ -1208,6 +1726,9 @@ def load_indoor_campaign_manifest(
         ),
     )
     _validate_indoor_static_reference_contract(condition_tuple[0], freeze)
+    promotion = _validate_validator_only_head_promotion(
+        freeze.get("validator_only_head_promotion"), freeze=freeze
+    )
     if not _require_pilot_provenance:
         return IndoorCampaignManifest(
             path=manifest_path,
@@ -1230,10 +1751,10 @@ def load_indoor_campaign_manifest(
     episodes = provenance.get("episodes")
     if not isinstance(episodes, list) or len(episodes) != 9:
         raise V6ContractError("indoor Pilot freeze provenance must index 9 episodes")
-    _revalidate_pilot_freeze_provenance(
+    _revalidate_indoor_pilot_freeze_provenance(
         provenance,
         conditions=condition_tuple,
-        freeze=freeze,
+        freeze=_pilot_freeze_from_validator_promotion(freeze, promotion),
         freeze_digest=freeze_digest,
     )
     return IndoorCampaignManifest(
@@ -1639,7 +2160,10 @@ def freeze_indoor_campaign_from_pilot(
         raise V6ContractError(f"indoor freezer input is unreadable: {exc}") from exc
     _require_exact_keys(
         pilot,
-        {"schema_version", "intended_use", "runner_entrypoint", "freeze", "conditions"},
+        {
+            "schema_version", "intended_use", "runner_entrypoint", "freeze",
+            "conditions",
+        },
         "indoor_pilot_manifest",
     )
     if (
@@ -1672,7 +2196,10 @@ def freeze_indoor_campaign_from_pilot(
         )
     _require_exact_keys(
         aggregate,
-        {"schema_version", "pilot_manifest", "conditions"},
+        {
+            "schema_version", "pilot_manifest", "validator_only_head_promotion",
+            "conditions",
+        },
         "indoor_pilot_aggregate",
     )
     if aggregate.get("schema_version") != INDOOR_PILOT_AGGREGATE_SCHEMA:
@@ -1683,6 +2210,10 @@ def freeze_indoor_campaign_from_pilot(
     aggregate_rows = aggregate.get("conditions")
     if not isinstance(aggregate_rows, list) or len(aggregate_rows) != 3:
         raise V6ContractError("indoor Pilot aggregate must contain three conditions")
+    if aggregate.get("validator_only_head_promotion") != _mapping(
+        pilot.get("freeze"), "indoor_pilot_manifest.freeze"
+    ).get("validator_only_head_promotion"):
+        raise V6ContractError("indoor Pilot promotion binding mismatch")
     if not output_root.parent.is_dir():
         raise V6ContractError("indoor output root parent must exist")
     output_root.mkdir(exist_ok=False)
@@ -1702,6 +2233,9 @@ def freeze_indoor_campaign_from_pilot(
         )
         campaign = load_indoor_campaign_manifest(
             temporary, _require_pilot_provenance=False
+        )
+        pilot_freeze = _pilot_freeze_from_validator_promotion(
+            campaign.freeze, campaign.freeze["validator_only_head_promotion"]
         )
         sessions: dict[str, str] = {}
         evidence_index: list[dict[str, Any]] = []
@@ -1747,7 +2281,7 @@ def freeze_indoor_campaign_from_pilot(
                     manifest_path=evidence_paths[1].resolve(),
                     stack_contract_path=evidence_paths[2].resolve(),
                     expected_stack_tuple_digest=str(episode_row["stack_tuple_digest"]),
-                    freeze=campaign.freeze,
+                    freeze=pilot_freeze,
                     freeze_digest=campaign.freeze_digest,
                 )
                 sessions.setdefault(expected_condition.condition_id, session)
@@ -1838,6 +2372,55 @@ def _revalidate_pilot_freeze_provenance(
         summary_path = Path(summary_entry["path"])
         if Path(checksum_entry["path"]) != summary_path.parent / "checksums.sha256":
             raise V6ContractError("pilot freeze checksum index path mismatch")
+        _validate_sufficient_pilot_episode(
+            condition=condition,
+            rep=rep,
+            summary_path=summary_path,
+            manifest_path=Path(manifest_entry["path"]),
+            stack_contract_path=Path(stack_entry["path"]),
+            expected_stack_tuple_digest=str(row.get("stack_tuple_digest", "")),
+            freeze=freeze,
+            freeze_digest=freeze_digest,
+        )
+
+
+def _revalidate_indoor_pilot_freeze_provenance(
+    provenance: Mapping[str, Any],
+    *,
+    conditions: tuple[FormalCondition, ...],
+    freeze: Mapping[str, Any],
+    freeze_digest: str,
+) -> None:
+    for name in ("pilot_manifest", "pilot_aggregate"):
+        _validate_frozen_file(
+            provenance.get(name), f"indoor_pilot_freeze_provenance.{name}"
+        )
+    rows = provenance.get("episodes")
+    assert isinstance(rows, list)
+    for index, row_value in enumerate(rows):
+        path = f"indoor_pilot_freeze_provenance.episodes[{index}]"
+        row = _mapping(row_value, path)
+        _require_exact_keys(
+            row,
+            {
+                "condition_id", "rep", "summary", "manifest", "checksums",
+                "stack_contract", "stack_tuple_digest",
+            },
+            path,
+        )
+        condition = conditions[index // 3]
+        rep = index % 3 + 1
+        if row.get("condition_id") != condition.condition_id or row.get("rep") != rep:
+            raise V6ContractError("indoor Pilot freeze evidence index order mismatch")
+        summary_entry = _validate_frozen_file(row.get("summary"), f"{path}.summary")
+        manifest_entry = _validate_frozen_file(row.get("manifest"), f"{path}.manifest")
+        checksum_entry = _validate_frozen_file(row.get("checksums"), f"{path}.checksums")
+        stack_entry = _validate_frozen_file(
+            row.get("stack_contract"), f"{path}.stack_contract"
+        )
+        summary_path = Path(summary_entry["path"])
+        if Path(checksum_entry["path"]) != summary_path.parent / "checksums.sha256":
+            raise V6ContractError("indoor Pilot freeze checksum index path mismatch")
         _validate_sufficient_pilot_episode(
             condition=condition,
             rep=rep,
@@ -2141,6 +2724,13 @@ def _build_indoor_pilot_manifest(
             module3_root / "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py"
         ),
     }
+    pilot_runtime = _derive_indoor_pilot_runtime(
+        pilot_root, repositories=freeze["repositories"]
+    )
+    promotion = _build_validator_only_head_promotion(
+        freeze=freeze, pilot_runtime=pilot_runtime
+    )
+    freeze["validator_only_head_promotion"] = promotion
     pilot_manifest = {
         "schema_version": INDOOR_PILOT_MANIFEST_SCHEMA,
         "intended_use": "indoor_pilot",
@@ -2432,6 +3022,10 @@ def aggregate_indoor_pilot(
     pilot_manifest, conditions, freeze_digest, freeze = _build_indoor_pilot_manifest(
         root
     )
+    promotion = _validate_validator_only_head_promotion(
+        freeze.get("validator_only_head_promotion"), freeze=freeze
+    )
+    pilot_freeze = _pilot_freeze_from_validator_promotion(freeze, promotion)
     aggregate_rows = []
     strict_successes = 0
     for condition in conditions:
@@ -2481,7 +3075,7 @@ def aggregate_indoor_pilot(
             _contract, tuple_digest = _load_stack_contract_snapshot(
                 stack_contract_path,
                 expected_condition_id=condition.condition_id,
-                freeze=freeze,
+                freeze=pilot_freeze,
             )
             _validate_sufficient_pilot_episode(
                 condition=condition,
@@ -2490,7 +3084,7 @@ def aggregate_indoor_pilot(
                 manifest_path=manifest_path,
                 stack_contract_path=stack_contract_path,
                 expected_stack_tuple_digest=tuple_digest,
-                freeze=freeze,
+                freeze=pilot_freeze,
                 freeze_digest=freeze_digest,
             )
             strict_successes += 1
@@ -2513,6 +3107,7 @@ def aggregate_indoor_pilot(
     aggregate = {
         "schema_version": INDOOR_PILOT_AGGREGATE_SCHEMA,
         "pilot_manifest": str(manifest_output),
+        "validator_only_head_promotion": promotion,
         "conditions": aggregate_rows,
     }
     _publish_no_clobber_json_pair(
@@ -2522,6 +3117,7 @@ def aggregate_indoor_pilot(
         "qualification": "INDOOR_PILOT_READY",
         "formal_qualification": NOT_QUALIFIED,
         "strict_successes": 9,
+        "validator_only_head_promotion": promotion,
         "pilot_manifest": {
             "path": str(manifest_output),
             "sha256": _file_sha256(manifest_output),
@@ -3294,6 +3890,9 @@ def execute_indoor_campaign(
     condition_stack_id: str,
     condition_stack_contract: str | Path,
 ) -> dict[str, Any]:
+    _validate_validator_only_head_promotion(
+        manifest.freeze.get("validator_only_head_promotion"), freeze=manifest.freeze
+    )
     if condition_stack_id not in INDOOR_CONDITION_IDS:
         raise V6ContractError(f"unknown indoor condition stack: {condition_stack_id}")
     aggregate = evaluate_indoor_campaign(manifest)
