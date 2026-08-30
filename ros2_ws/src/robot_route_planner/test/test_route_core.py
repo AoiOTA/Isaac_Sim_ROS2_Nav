@@ -51,6 +51,7 @@ def _edge_prior_message(
     model_id: str = 'srdr-v310',
     source_physical_graph_id: str = 'test:gvg_v1',
     source_physical_graph_revision: int = 3,
+    ttl_s: float = 2.0,
 ):
     return SimpleNamespace(
         header=SimpleNamespace(stamp=SimpleNamespace(
@@ -69,6 +70,10 @@ def _edge_prior_message(
         model_id=model_id,
         source_physical_graph_id=source_physical_graph_id,
         source_physical_graph_revision=source_physical_graph_revision,
+        ttl=SimpleNamespace(
+            sec=int(ttl_s),
+            nanosec=int(round((ttl_s - int(ttl_s)) * 1_000_000_000)),
+        ),
         healthy=True,
         priors=[SimpleNamespace(
             edge_id=7,
@@ -438,6 +443,55 @@ def test_matching_prior_for_new_request_is_accepted() -> None:
     assert coordinator.latest_priors_stamp_ns == 5_800_000_000
     assert coordinator.latest_prior_model_id == 'srdr-v310'
     assert replans == [{7: (1.0, 0.8)}]
+
+
+def test_expired_incoming_prior_uses_message_ttl() -> None:
+    coordinator = _prior_wait_coordinator(mode='gvg')
+    coordinator._now_ns = 2_000_000_000
+
+    coordinator._on_priors(_edge_prior_message(
+        request_id=9,
+        stamp_ns=1_600_000_000,
+        ttl_s=0.25,
+    ))
+
+    assert coordinator.latest_priors == {}
+    assert coordinator.prepared == [{}]
+
+
+def test_message_ttl_is_capped_by_configured_ceiling() -> None:
+    coordinator = _prior_wait_coordinator(mode='gvg')
+    coordinator.module2_prior_ttl_s = 0.25
+    coordinator._now_ns = 2_000_000_000
+
+    coordinator._on_priors(_edge_prior_message(
+        request_id=9,
+        stamp_ns=1_600_000_000,
+        ttl_s=5.0,
+    ))
+
+    assert coordinator.latest_priors == {}
+    assert coordinator.prepared == [{}]
+
+
+def test_expired_refresh_retains_prior_for_same_route_identity() -> None:
+    coordinator = _prior_wait_coordinator(mode='gvg')
+    coordinator._now_ns = 1_100_000_000
+    coordinator._on_priors(_edge_prior_message(
+        request_id=9, stamp_ns=1_100_000_000))
+    accepted = {7: (1.0, 0.8)}
+
+    coordinator._now_ns = 2_000_000_000
+    coordinator._arm_prior_request(coordinator._now_ns)
+    coordinator._now_ns = 2_400_000_000
+    coordinator._on_priors(_edge_prior_message(
+        request_id=9,
+        stamp_ns=2_000_000_000,
+        ttl_s=0.25,
+    ))
+
+    assert coordinator.latest_priors == accepted
+    assert coordinator.prepared == [accepted]
 
 
 def test_unhealthy_and_zero_refresh_do_not_replace_accepted_prior() -> None:
@@ -900,6 +954,32 @@ def test_accepted_prior_remains_consumable_after_admission_ttl() -> None:
     ) == {7: (1.0, 0.8)}
     assert coordinator.latest_priors == {7: (1.0, 0.8)}
     assert warnings == []
+
+
+@pytest.mark.parametrize(
+    ('attribute', 'value'),
+    (
+        ('request_id', 10),
+        ('graph_generation', 1),
+        ('reset_generation', 1),
+    ),
+)
+def test_accepted_prior_is_retired_when_route_identity_changes(
+    attribute, value,
+) -> None:
+    coordinator = _prior_wait_coordinator(mode='gvg')
+    coordinator._now_ns = 1_100_000_000
+    coordinator._on_priors(_edge_prior_message(
+        request_id=9, stamp_ns=1_100_000_000))
+    assert coordinator.latest_priors_input_generation.reset_generation == 0
+
+    setattr(coordinator, attribute, value)
+
+    assert coordinator._priors_for_consumption(
+        coordinator.latest_priors
+    ) == {}
+    assert coordinator.latest_priors == {}
+    assert coordinator.latest_priors_input_generation is None
 
 
 def test_old_dynamic_edges_callback_generation_is_discarded() -> None:

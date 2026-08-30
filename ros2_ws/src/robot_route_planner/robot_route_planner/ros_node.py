@@ -80,6 +80,25 @@ def edge_prior_is_usable(
     return True, "fresh and healthy"
 
 
+def edge_prior_admission_max_age_s(ttl, configured_ceiling_s: float) -> float:
+    """Return the message-owned admission TTL capped by local policy."""
+
+    ceiling_s = float(configured_ceiling_s)
+    if not math.isfinite(ceiling_s) or ceiling_s <= 0.0:
+        raise ValueError("configured prior TTL ceiling is invalid")
+    try:
+        seconds = int(ttl.sec)
+        nanoseconds = int(ttl.nanosec)
+    except (AttributeError, TypeError, ValueError) as error:
+        raise ValueError("message prior TTL is invalid") from error
+    if seconds < 0 or not 0 <= nanoseconds < 1_000_000_000:
+        raise ValueError("message prior TTL is invalid")
+    message_ttl_s = seconds + nanoseconds / 1.0e9
+    if not math.isfinite(message_ttl_s) or message_ttl_s <= 0.0:
+        raise ValueError("message prior TTL is invalid")
+    return min(message_ttl_s, ceiling_s)
+
+
 def validate_route_odometry_topic(topic: str) -> str:
     """Reject evaluation-only ground-truth inputs from online route tracking."""
 
@@ -570,7 +589,10 @@ class RouteCoordinator:
         )
         if self.module2_response_timeout_s < 0.0:
             raise ValueError("module2_response_timeout_s must be non-negative")
-        if self.module2_prior_ttl_s <= 0.0:
+        if (
+            not math.isfinite(self.module2_prior_ttl_s)
+            or self.module2_prior_ttl_s <= 0.0
+        ):
             raise ValueError("module2_prior_ttl_s must be positive")
         if (
             self.cognitive_graph_mode in {"primary", "hybrid"}
@@ -712,6 +734,7 @@ class RouteCoordinator:
         self.latest_priors_graph_id: str | None = None
         self.latest_priors_graph_revision: int | None = None
         self.latest_priors_generation: EdgePriorGeneration | None = None
+        self.latest_priors_input_generation: RouteInputGeneration | None = None
         self.latest_priors_cognitive_identity: CognitiveGraphIdentity | None = None
         self.tracker: RouteTracker | None = None
         self.latest_pose_xy: tuple[float, float] | None = None
@@ -3841,6 +3864,7 @@ class RouteCoordinator:
         self.latest_priors_graph_id = None
         self.latest_priors_graph_revision = None
         self.latest_priors_generation = None
+        self.latest_priors_input_generation = None
         self.latest_priors_cognitive_identity = None
 
     def _accepted_prior_is_current_locked(self) -> bool:
@@ -3854,6 +3878,9 @@ class RouteCoordinator:
         current_identity = getattr(self, "cognitive_graph_identity", None)
         accepted_generation = getattr(
             self, "latest_priors_generation", None
+        )
+        accepted_input_generation = getattr(
+            self, "latest_priors_input_generation", None
         )
         current_constraints_identity = getattr(
             self, "cognitive_constraints_identity", None
@@ -3881,6 +3908,11 @@ class RouteCoordinator:
             and getattr(
                 self, "latest_priors_graph_revision", self.graph.revision
             ) == self.graph.revision
+            and (
+                accepted_input_generation is None
+                or accepted_input_generation
+                == self._route_input_generation_locked()
+            )
             and local_cognitive_identity_is_current
             and region_identity_is_current
         )
@@ -4066,19 +4098,26 @@ class RouteCoordinator:
         rejection_mask = int(getattr(message, "rejection_mask", 0))
         usable, reason = (False, "invalid graph edge identity")
         if not invalid_edges:
-            usable, reason = edge_prior_is_usable(
-                healthy=(
-                    bool(message.healthy)
-                    and trusted
-                    and rejection_mask == 0
-                    and not out_of_distribution
-                ),
-                model_id=str(message.model_id),
-                stamp_ns=stamp_ns,
-                now_ns=now_ns,
-                max_age_s=self.module2_prior_ttl_s,
-                priors=rows,
-            )
+            try:
+                admission_max_age_s = edge_prior_admission_max_age_s(
+                    message.ttl, self.module2_prior_ttl_s
+                )
+            except ValueError as error:
+                usable, reason = False, str(error)
+            else:
+                usable, reason = edge_prior_is_usable(
+                    healthy=(
+                        bool(message.healthy)
+                        and trusted
+                        and rejection_mask == 0
+                        and not out_of_distribution
+                    ),
+                    model_id=str(message.model_id),
+                    stamp_ns=stamp_ns,
+                    now_ns=now_ns,
+                    max_age_s=admission_max_age_s,
+                    priors=rows,
+                )
         priors = {
             edge_id: (cost_delta_m, confidence)
             for edge_id, cost_delta_m, _learned_risk, confidence in rows
@@ -4139,6 +4178,7 @@ class RouteCoordinator:
                 self.latest_priors_graph_id = str(message.graph_id)
                 self.latest_priors_graph_revision = int(message.graph_revision)
                 self.latest_priors_generation = incoming_generation
+                self.latest_priors_input_generation = input_generation
                 self.latest_priors_cognitive_identity = (
                     None
                     if getattr(self, "cognitive_graph_mode", "gvg") == "gvg"
