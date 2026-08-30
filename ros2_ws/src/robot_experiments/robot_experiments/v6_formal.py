@@ -768,8 +768,9 @@ def _validate_sufficient_pilot_episode(
         and episode.get("stack_session_id")
         and summary.get("stack_session_id") == episode.get("stack_session_id")
         and stack_contract["stack_session_id"] == episode.get("stack_session_id")
-        and episode.get("formal_freeze_digest") == freeze_digest
-        and summary.get("formal_freeze_digest") == freeze_digest
+        and episode.get("formal_freeze_digest")
+        == summary.get("formal_freeze_digest")
+        and episode.get("formal_freeze_digest") in {None, "", freeze_digest}
     ):
         raise V6ContractError("Pilot episode frozen tuple/session mismatch")
     sequence_receipt = episode.get("stack_episode_receipt", {})

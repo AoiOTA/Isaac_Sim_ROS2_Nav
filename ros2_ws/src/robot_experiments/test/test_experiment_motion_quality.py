@@ -17,6 +17,7 @@ from robot_experiments.experiment_runner import (
     _mcap_inventory_evidence,
     _mcap_required_topic_coverage,
     _module2_readiness_required,
+    _validate_condition_stack_parameters,
     _parse_obstacle_completion,
     _record_tracked_route_length,
     _result_with_terminal_zero,
@@ -178,6 +179,39 @@ def test_final_scenarios_force_module2_planning_readiness(scenario_id):
 def test_legacy_scenarios_keep_module2_readiness_default_off():
     assert _module2_readiness_required("static", "auto") is False
     assert _module2_readiness_required("static", "false") is False
+
+
+def test_pilot_stack_attestation_allows_empty_formal_digest(tmp_path):
+    _validate_condition_stack_parameters(
+        condition_stack_id="indoor_static",
+        stack_session_id="a" * 64,
+        condition_stack_contract_path=tmp_path / "stack.contract.json",
+        formal_freeze_digest="",
+    )
+
+
+def test_formal_digest_requires_complete_stack_attestation(tmp_path):
+    with pytest.raises(ConfigurationError, match="requires condition stack"):
+        _validate_condition_stack_parameters(
+            condition_stack_id="",
+            stack_session_id="",
+            condition_stack_contract_path=None,
+            formal_freeze_digest="b" * 64,
+        )
+    with pytest.raises(ConfigurationError, match="supplied together"):
+        _validate_condition_stack_parameters(
+            condition_stack_id="indoor_static",
+            stack_session_id="",
+            condition_stack_contract_path=tmp_path / "stack.contract.json",
+            formal_freeze_digest="",
+        )
+
+    _validate_condition_stack_parameters(
+        condition_stack_id="indoor_static",
+        stack_session_id="a" * 64,
+        condition_stack_contract_path=tmp_path / "stack.contract.json",
+        formal_freeze_digest="b" * 64,
+    )
 
 
 @pytest.mark.parametrize(

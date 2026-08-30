@@ -199,6 +199,27 @@ def _module2_readiness_required(scenario_id: str, configured: object) -> bool:
     return required
 
 
+def _validate_condition_stack_parameters(
+    *,
+    condition_stack_id: str,
+    stack_session_id: str,
+    condition_stack_contract_path: Path | None,
+    formal_freeze_digest: str,
+) -> None:
+    if bool(condition_stack_id) != bool(stack_session_id):
+        raise ConfigurationError(
+            "condition_stack_id and stack_session_id must be supplied together"
+        )
+    if bool(condition_stack_contract_path) != bool(condition_stack_id):
+        raise ConfigurationError(
+            "condition_stack_contract_path requires condition stack attestation"
+        )
+    if formal_freeze_digest and not condition_stack_id:
+        raise ConfigurationError(
+            "formal_freeze_digest requires condition stack attestation"
+        )
+
+
 def _localization_node_ownership_evidence(
     scene: str, node_names: list[tuple[str, str]] | list[str]
 ) -> dict[str, Any]:
@@ -1091,10 +1112,12 @@ class ExperimentRunner(Node):
             if stack_contract_path
             else None
         )
-        if bool(self._condition_stack_id) != bool(self._stack_session_id):
-            raise ConfigurationError(
-                "condition_stack_id and stack_session_id must be supplied together"
-            )
+        _validate_condition_stack_parameters(
+            condition_stack_id=self._condition_stack_id,
+            stack_session_id=self._stack_session_id,
+            condition_stack_contract_path=self._condition_stack_contract_path,
+            formal_freeze_digest=self._formal_freeze_digest,
+        )
         if self._condition_stack_id:
             scene = _evidence_scene(
                 self._scenario.scenario_id, self._scenario.map_version
@@ -1116,14 +1139,6 @@ class ExperimentRunner(Node):
                 raise ConfigurationError(
                     "stack_session_id must be a lowercase SHA-256 digest"
                 )
-        if bool(self._formal_freeze_digest) != bool(self._condition_stack_id):
-            raise ConfigurationError(
-                "formal_freeze_digest requires condition stack attestation"
-            )
-        if bool(self._condition_stack_contract_path) != bool(self._condition_stack_id):
-            raise ConfigurationError(
-                "condition_stack_contract_path requires condition stack attestation"
-            )
         self._condition_stack_contract: dict[str, Any] = {}
         if self._condition_stack_contract_path is not None:
             try:

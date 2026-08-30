@@ -520,6 +520,7 @@ def _write_sufficient_pilot_inputs(
     reference_path = tmp_path / "reference-formal.json"
     reference_path.write_text(json.dumps(raw), encoding="utf-8")
     reference = load_formal_campaign_manifest(reference_path)
+    pilot_formal_digest = ""
     pilot_manifest = {
         "schema_version": "bio_nav_v6_sufficient_pilot_manifest_v1",
         "intended_use": "sufficient_pilot",
@@ -552,7 +553,7 @@ def _write_sufficient_pilot_inputs(
                 condition,
                 rep,
                 strict_success=True,
-                formal_freeze_digest=reference.freeze_digest,
+                formal_freeze_digest=pilot_formal_digest,
                 stack_session_id=contract["stack_session_id"],
                 collision_detected=bool(
                     first_collision
@@ -616,7 +617,7 @@ def _write_sufficient_pilot_inputs(
                 "required": True,
                 "condition_stack_id": condition.condition_id,
                 "stack_session_id": contract["stack_session_id"],
-                "formal_freeze_digest": reference.freeze_digest,
+                "formal_freeze_digest": pilot_formal_digest,
                 "stack_episode_receipt": stack_episode_receipt,
                 "confirmed": True,
             }
