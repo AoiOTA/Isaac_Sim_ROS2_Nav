@@ -86,6 +86,8 @@ def test_required_topic_coverage_is_scene_aware_and_requires_messages(tmp_path):
     outdoor = _mcap_required_topic_coverage(metadata, scene="outdoor")
 
     assert indoor["passed"]
+    assert "/simulation/reset_event" in indoor["required_topics"]
+    assert "/simulation/reset_stop_gate/status" in indoor["required_topics"]
     assert "/amcl_pose" in indoor["required_topics"]
     assert "/amcl_pose" not in outdoor["required_topics"]
     assert "/tf_static" not in outdoor["required_topics"]

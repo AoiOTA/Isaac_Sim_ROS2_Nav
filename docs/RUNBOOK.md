@@ -104,7 +104,12 @@ Terminal T3, after T1 and T2 are READY, is the only indoor episode command:
 
 ```bash
 export BIO_NAV_REP=rep1  # then rep2 and rep3, without restarting T1 or T2
-test "${BIO_NAV_REP}" = rep1 || test "${BIO_NAV_REP}" = rep2 || test "${BIO_NAV_REP}" = rep3
+case "${BIO_NAV_REP}" in
+  rep1) BIO_NAV_RUN_INDEX=1 ;;  # seed 8601, cold
+  rep2) BIO_NAV_RUN_INDEX=2 ;;  # seed 8602, hot reset
+  rep3) BIO_NAV_RUN_INDEX=3 ;;  # seed 8603, hot reset
+  *) echo "BIO_NAV_REP must be rep1, rep2, or rep3" >&2; return 2 ;;
+esac
 test ! -e "${BIO_NAV_RUN_ROOT}/${BIO_NAV_REP}"
 
 ./scripts/run_experiment.sh \
@@ -118,8 +123,8 @@ test ! -e "${BIO_NAV_RUN_ROOT}/${BIO_NAV_REP}"
   record_evidence:=true \
   record_bag:=true \
   clear_slam_localization_buffer:=false \
-  reset_map_base_translation_tolerance_m:=0.15 \
-  run_indices:=1 \
+  reset_map_base_translation_tolerance_m:=0.1 \
+  run_indices:="${BIO_NAV_RUN_INDEX}" \
   resume:=false
 ```
 

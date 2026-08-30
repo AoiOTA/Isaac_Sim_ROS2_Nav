@@ -149,6 +149,8 @@ COMMON_REQUIRED_RECORDED_TOPICS = (
     "/bio_nav/canonical_route",
     "/bio_nav/route_progress",
     "/simulation/collision",
+    "/simulation/reset_event",
+    "/simulation/reset_stop_gate/status",
 )
 SCENE_REQUIRED_RECORDED_TOPICS = {
     "indoor": ("/amcl_pose",),
