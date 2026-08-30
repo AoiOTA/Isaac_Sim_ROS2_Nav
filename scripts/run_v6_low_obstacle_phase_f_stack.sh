@@ -456,6 +456,13 @@ if [[ "${arm}" != "M0" && -z "${module2_asset_root}" ]]; then
   echo "--module2-asset-root is required for ${arm}" >&2
   exit 2
 fi
+startup_profile="estimated_shadow"
+if [[ "${arm}" =~ ^M[23]$ ]]; then
+  startup_profile="module2_causal_obstacle_active"
+fi
+if [[ "${scene}" == "rivermark" ]]; then
+  startup_profile="module2_causal_obstacle_outdoor"
+fi
 module2_asset_args=(
   --shadow-config configs/kujiale_0026_module1_visual_shadow_v310.yaml
 )
@@ -481,10 +488,8 @@ fi
 }
 if [[ "${dry_run}" == true ]]; then
   dry_scope="none"
-  dry_profile="estimated_shadow"
   if [[ "${arm}" =~ ^M[23]$ ]]; then
     dry_scope="obstacle_only"
-    dry_profile="module2_causal_obstacle_active"
   fi
   printf 'arm=%s\n' "${arm}"
   printf 'graph_mode=gvg\n'
@@ -521,7 +526,7 @@ if [[ "${dry_run}" == true ]]; then
   printf '\n'
   if [[ "${arm}" != "M0" ]]; then
     printf 'bridge: ros2 launch bio_nav_ros_bridge v6_cognitive_navigation.launch.py startup_profile:=%q' \
-      "${dry_profile}"
+      "${startup_profile}"
     printf ' cognitive_graph_mode:=gvg route_prior_enabled:=%s' \
       "${route_prior_enabled}"
     printf ' module2_asset_root:=%q' "${module2_asset_root}"
@@ -805,7 +810,7 @@ if [[ "${arm}" != "M0" ]]; then
   else
     exit_if_terminating
     setsid --wait -- "${integration_root}/scripts/run_v6_module2_causal_obstacle_server.sh" \
-      --startup-profile module2_causal_obstacle_active \
+      --startup-profile "${startup_profile}" \
       --active-effect-scope obstacle_only \
       --socket "${socket_path}" \
       --module2-root "${module2_root}" \
@@ -817,8 +822,6 @@ if [[ "${arm}" != "M0" ]]; then
   register_child module2_server "${module2_server_pid}"
   exit_if_terminating
 
-  startup_profile="estimated_shadow"
-  [[ "${arm}" =~ ^M[23]$ ]] && startup_profile="module2_causal_obstacle_active"
   exit_if_terminating
   setsid --wait -- ros2 launch bio_nav_ros_bridge v6_cognitive_navigation.launch.py \
     startup_profile:="${startup_profile}" \

@@ -8,7 +8,9 @@ class TfOwnershipError(RuntimeError):
 
 
 def expected_tf_owners(
-    odometry_mode: str, structure_tf_source: str = "isaac"
+    odometry_mode: str,
+    structure_tf_source: str = "isaac",
+    localization_owner: str = "auto",
 ) -> dict[str, str]:
     if odometry_mode == "ideal":
         odom_owner = "isaac"
@@ -26,10 +28,25 @@ def expected_tf_owners(
         raise TfOwnershipError(
             f"{odometry_mode} odometry requires Isaac-owned structure TF"
         )
+    if localization_owner not in {"auto", "amcl", "ideal"}:
+        raise TfOwnershipError(
+            f"unknown localization owner {localization_owner!r}"
+        )
+    if localization_owner == "auto":
+        localization_owner = "ideal" if odometry_mode == "ideal" else "amcl"
+    if odometry_mode == "ideal" and localization_owner != "ideal":
+        raise TfOwnershipError(
+            "ideal odometry requires ideal localization ownership"
+        )
+    if odometry_mode in {"realistic", "estimated"} \
+            and localization_owner != "amcl":
+        raise TfOwnershipError(
+            f"{odometry_mode} odometry requires AMCL localization ownership"
+        )
     return {
         "map->odom": (
             "ideal_localization_tf"
-            if odometry_mode == "ideal"
+            if localization_owner == "ideal"
             else "amcl"
         ),
         "odom->base_link": odom_owner,
@@ -43,8 +60,13 @@ def validate_tf_publishers(
     odometry_mode: str,
     publishers: dict[str, list[str]],
     structure_tf_source: str = "isaac",
+    localization_owner: str = "auto",
 ) -> None:
-    expected = expected_tf_owners(odometry_mode, structure_tf_source)
+    expected = expected_tf_owners(
+        odometry_mode,
+        structure_tf_source,
+        localization_owner,
+    )
     for transform, owner in expected.items():
         actual = publishers.get(transform, [])
         if actual != [owner]:

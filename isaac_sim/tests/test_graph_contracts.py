@@ -299,6 +299,20 @@ def test_tf_ownership_requires_exactly_one_publisher():
     validate_tf_publishers(
         "mixed", {key: [owner] for key, owner in mixed.items()}
     )
+    mixed_ideal = expected_tf_owners("mixed", localization_owner="ideal")
+    assert mixed_ideal["odom->base_link"] == "isaac_compute_odometry"
+    assert mixed_ideal["map->odom"] == "ideal_localization_tf"
+    validate_tf_publishers(
+        "mixed",
+        {key: [owner] for key, owner in mixed_ideal.items()},
+        localization_owner="ideal",
+    )
+    with pytest.raises(TfOwnershipError, match="unknown localization owner"):
+        expected_tf_owners("mixed", localization_owner="slam_toolbox")
+    with pytest.raises(TfOwnershipError, match="requires ideal localization"):
+        expected_tf_owners("ideal", localization_owner="amcl")
+    with pytest.raises(TfOwnershipError, match="requires AMCL localization"):
+        expected_tf_owners("estimated", localization_owner="ideal")
     with pytest.raises(TfOwnershipError, match="mixed odometry requires"):
         expected_tf_owners("mixed", "rsp")
 

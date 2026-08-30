@@ -3302,6 +3302,10 @@ def test_phase_f_rivermark_preflight_uses_separate_checkpoint_asset_root(
             "configs/module2_pdf_v310_module3.yaml")
         assert module2[module2.index("--checkpoint") + 1] == (
             "weights/module2_srdr_v310_seed20260822.pt")
+        assert module2[module2.index("--startup-profile") + 1] == (
+            "module2_causal_obstacle_outdoor")
+        bridge = fake.bridge_argv.read_text(encoding="utf-8").splitlines()
+        assert "startup_profile:=module2_causal_obstacle_outdoor" in bridge
         assert fake.module3_argv.read_text(encoding="utf-8").splitlines() == [
             "ros", "static"]
     finally:
@@ -3415,7 +3419,7 @@ def test_phase_f_rivermark_m3_dry_run_uses_catalog_and_generic_assets(
     assert module3.endswith(condition)
     assert f"route_prior_snapshot_catalog_root:={escaped_catalog}" in bridge
     assert "outdoor_context_switch_enabled:=true" in bridge
-    assert "startup_profile:=module2_causal_obstacle_active" in bridge
+    assert "startup_profile:=module2_causal_obstacle_outdoor" in bridge
 
 
 def test_phase_f_rivermark_rejects_non_m3_invalid_condition_and_snapshot(
