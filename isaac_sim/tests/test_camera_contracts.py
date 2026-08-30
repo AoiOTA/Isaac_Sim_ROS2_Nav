@@ -217,6 +217,7 @@ def test_camera_render_product_owner_releases_exactly_once():
 def test_camera_cli_accepts_only_named_profiles():
     parser = _parser()
 
+    assert parser.allow_abbrev is False
     assert parser.parse_args([]).camera_profile is None
     assert parser.parse_args([]).disable_dlss is False
     assert parser.parse_args([]).rtx_descriptor_sets is None
@@ -233,6 +234,9 @@ def test_camera_cli_accepts_only_named_profiles():
     for invalid in ("0", "-1", "not-an-int"):
         with pytest.raises(SystemExit):
             parser.parse_args(["--rtx-descriptor-sets", invalid])
+    for abbreviated in ("--rtx-descriptor-set", "--rtx-desc"):
+        with pytest.raises(SystemExit):
+            parser.parse_args([abbreviated, "10000"])
 
 
 def test_stage_readiness_cli_uses_typed_config_override(monkeypatch):

@@ -76,7 +76,7 @@ if [[ "${entrypoint}" == "isaac" ]]; then
       --structure-tf-source|--structure-tf-source=*|\
       --localization-owner|--localization-owner=*|\
       --camera-profile|--camera-profile=*|\
-      --rtx-descriptor-sets|--rtx-descriptor-sets=*|\
+      --rtx-descriptor*|\
       --disable-dlss|--disable-dlss=*|\
       --no-disable-dlss|--no-disable-dlss=*|\
       --dynamic-obstacle-config|--dynamic-obstacle-config=*|\

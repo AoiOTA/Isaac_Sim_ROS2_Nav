@@ -792,7 +792,9 @@ def test_v6_rivermark_isaac_argv_covers_three_pilot_scenes(tmp_path):
     for override in (
             '--disable-dlss', '--no-disable-dlss',
             '--localization-owner', '--localization-owner=amcl',
-            '--rtx-descriptor-sets', '--rtx-descriptor-sets=10000'):
+            '--rtx-descriptor', '--rtx-descriptor-set',
+            '--rtx-descriptor-set=10000', '--rtx-descriptor-sets',
+            '--rtx-descriptor-sets=10000'):
         rejected = subprocess.run(
             [str(static_root / 'scripts' / RUN_V6_RIVERMARK.name),
              'isaac', 'static', override],

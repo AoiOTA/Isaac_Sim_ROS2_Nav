@@ -302,7 +302,8 @@ def _positive_int(value: str) -> int:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run the Isaac Sim + ROS 2 Jackal navigation simulation"
+        description="Run the Isaac Sim + ROS 2 Jackal navigation simulation",
+        allow_abbrev=False,
     )
     parser.add_argument(
         "--config",
