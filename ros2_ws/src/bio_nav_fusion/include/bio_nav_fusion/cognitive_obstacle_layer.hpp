@@ -120,13 +120,17 @@ private:
     bio_nav_interfaces::msg::CognitiveObstacle obstacle;
     double map_x{0.0};
     double map_y{0.0};
+    double anchor_map_x{0.0};
+    double anchor_map_y{0.0};
     double radius_m{0.0};
     double height_m{0.0};
     uint64_t rehit_count{0};
     uint64_t last_source_sequence{0};
     int64_t last_validation_stamp_ns{0};
+    int64_t first_refresh_ns{0};
     int64_t last_refresh_ns{0};
     bool promoted{false};
+    std::string reassociated_to_track_id;
   };
 
   struct AppliedObstacle
@@ -142,6 +146,8 @@ private:
   static StaticTrackKey staticTrackKey(
     const bio_nav_interfaces::msg::CognitiveObstacleArray & message,
     const std::string & track_id);
+  static bool sameStaticIdentity(
+    const StaticTrackKey & first, const StaticTrackKey & second);
   uint64_t observeStaticTrack(
     const bio_nav_interfaces::msg::CognitiveObstacleArray & message,
     const bio_nav_interfaces::msg::CognitiveObstacle & obstacle,

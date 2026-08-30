@@ -444,6 +444,18 @@ CognitiveObstacleLayer::StaticTrackKey CognitiveObstacleLayer::staticTrackKey(
     message.model_id, track_id};
 }
 
+bool CognitiveObstacleLayer::sameStaticIdentity(
+  const StaticTrackKey & first, const StaticTrackKey & second)
+{
+  return first.reset_epoch == second.reset_epoch &&
+         first.recurrent_session_id == second.recurrent_session_id &&
+         first.map_version == second.map_version &&
+         first.cognitive_tile_id == second.cognitive_tile_id &&
+         first.tile_revision == second.tile_revision &&
+         first.graph_revision == second.graph_revision &&
+         first.model_id == second.model_id;
+}
+
 uint64_t CognitiveObstacleLayer::observeStaticTrack(
   const bio_nav_interfaces::msg::CognitiveObstacleArray & message,
   const bio_nav_interfaces::msg::CognitiveObstacle & obstacle,
@@ -456,10 +468,16 @@ uint64_t CognitiveObstacleLayer::observeStaticTrack(
     state.rehit_count == 0U || state.last_source_sequence != message.sequence ||
     state.last_validation_stamp_ns != validation_ns;
   if (independent_rehit) {
+    const int64_t refresh_ns = clock_->now().nanoseconds();
+    if (state.rehit_count == 0U) {
+      state.anchor_map_x = map_x;
+      state.anchor_map_y = map_y;
+      state.first_refresh_ns = refresh_ns;
+    }
     ++state.rehit_count;
     state.last_source_sequence = message.sequence;
     state.last_validation_stamp_ns = validation_ns;
-    state.last_refresh_ns = clock_->now().nanoseconds();
+    state.last_refresh_ns = refresh_ns;
     state.map_x = map_x;
     state.map_y = map_y;
     if (!state.promoted) {
@@ -483,7 +501,7 @@ CognitiveObstacleLayer::promotedStaticObstacles()
   std::vector<AppliedObstacle> obstacles;
   for (const auto & [key, state] : static_tracks_) {
     (void)key;
-    if (!state.promoted) {
+    if (!state.promoted || !state.reassociated_to_track_id.empty()) {
       continue;
     }
     obstacles.push_back(AppliedObstacle{
@@ -498,7 +516,9 @@ bool CognitiveObstacleLayer::hasPromotedStaticObstacle()
   pruneStaticTracks();
   return std::any_of(
     static_tracks_.begin(), static_tracks_.end(),
-    [](const auto & entry) {return entry.second.promoted;});
+    [](const auto & entry) {
+      return entry.second.promoted && entry.second.reassociated_to_track_id.empty();
+    });
 }
 
 void CognitiveObstacleLayer::pruneStaticTracks()
@@ -506,12 +526,28 @@ void CognitiveObstacleLayer::pruneStaticTracks()
   const int64_t now_ns = clock_->now().nanoseconds();
   const int64_t cutoff_ns =
     now_ns - static_cast<int64_t>(track_ttl_s_ * 1.0e9);
-  for (auto it = static_tracks_.begin(); it != static_tracks_.end();) {
+  for (auto it = static_tracks_.begin(); it != static_tracks_.end(); ) {
     if (it->second.last_refresh_ns < cutoff_ns) {
       RCLCPP_WARN_THROTTLE(
         logger_, *clock_, 5000,
         "CognitiveObstacleLayer static track '%s' expired after %.1f s without refresh",
         it->first.track_id.c_str(), track_ttl_s_);
+      it = static_tracks_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  for (auto it = static_tracks_.begin(); it != static_tracks_.end(); ) {
+    if (it->second.reassociated_to_track_id.empty()) {
+      ++it;
+      continue;
+    }
+    auto canonical_key = it->first;
+    canonical_key.track_id = it->second.reassociated_to_track_id;
+    const auto canonical = static_tracks_.find(canonical_key);
+    if (canonical == static_tracks_.end() ||
+      !canonical->second.reassociated_to_track_id.empty())
+    {
       it = static_tracks_.erase(it);
     } else {
       ++it;
@@ -662,7 +698,15 @@ void CognitiveObstacleLayer::updateCosts(
       tf_failed = true;
     }
     if (!tf_failed) {
-      std::set<StaticTrackKey> observed_static_tracks;
+      struct TransformedObstacle
+      {
+        StaticTrackKey key;
+        bio_nav_interfaces::msg::CognitiveObstacle obstacle;
+        double map_x;
+        double map_y;
+        bool static_revalidated;
+      };
+      std::map<StaticTrackKey, TransformedObstacle> transformed_batch;
       for (const auto & obstacle : message->obstacles) {
         geometry_msgs::msg::PointStamped source;
         geometry_msgs::msg::PointStamped target;
@@ -672,6 +716,10 @@ void CognitiveObstacleLayer::updateCosts(
         source.point.y = obstacle.pose_xy_m[1];
         tf2::doTransform(source, target, transform);
 
+        if (!std::isfinite(target.point.x) || !std::isfinite(target.point.y)) {
+          continue;
+        }
+
         const bool static_revalidated =
           message->validation_mode ==
           bio_nav_interfaces::msg::CognitiveObstacleArray::
@@ -679,34 +727,260 @@ void CognitiveObstacleLayer::updateCosts(
           obstacle.motion_class ==
           bio_nav_interfaces::msg::CognitiveObstacle::MOTION_STATIC &&
           obstacle.static_confirmed;
-        if (!static_revalidated) {
-          applied_obstacles.push_back(AppliedObstacle{
-            obstacle, target.point.x, target.point.y, obstacle.count});
-          continue;
+        const auto key = staticTrackKey(*message, obstacle.id);
+        TransformedObstacle transformed{
+          key, obstacle, target.point.x, target.point.y, static_revalidated};
+        const auto [it, inserted] = transformed_batch.emplace(key, transformed);
+        if (!inserted) {
+          // Duplicate IDs are not expected, but choose a canonical observation
+          // so input ordering cannot affect tracking or costmap output.
+          const auto canonical = [](const TransformedObstacle & value) {
+              return std::tie(
+                value.map_x, value.map_y, value.obstacle.pose_xy_m[0],
+                value.obstacle.pose_xy_m[1], value.obstacle.radius_m,
+                value.obstacle.height_m, value.obstacle.confidence,
+                value.obstacle.reliability, value.obstacle.ood_probability,
+                value.obstacle.position_stddev_m[0],
+                value.obstacle.position_stddev_m[1], value.obstacle.count,
+                value.obstacle.last_seen.sec, value.obstacle.last_seen.nanosec,
+                value.obstacle.motion_class, value.obstacle.static_confirmed,
+                value.obstacle.class_id, value.obstacle.id);
+            };
+          if (canonical(transformed) < canonical(it->second)) {
+            it->second = transformed;
+          }
+        }
+      }
+
+      std::lock_guard<std::mutex> lock(mutex_);
+      const AcceptanceCursor no_batch_ordering_gate;
+      const std::string locked_validation_reason =
+        latest_ == message && latest_admission_reason_.empty() ?
+        validateMessage(
+          *message, clock_->now().nanoseconds(), expected_,
+          no_batch_ordering_gate, maximum_age_s_, maximum_ood_probability_, true) :
+        std::string("superseded");
+      if (locked_validation_reason.empty()) {
+        pruneStaticTracks();
+
+        std::set<StaticTrackKey> observed_static_tracks;
+        for (const auto & [key, transformed] : transformed_batch) {
+          if (transformed.static_revalidated) {
+            observed_static_tracks.insert(key);
+          }
         }
 
-        const auto key = staticTrackKey(*message, obstacle.id);
-        if (!observed_static_tracks.insert(key).second) {
-          continue;
+        const auto pre_batch_tracks = static_tracks_;
+        const int64_t matching_now_ns = clock_->now().nanoseconds();
+        constexpr int64_t kMaximumReassociationAgeNs = 2000000000LL;
+        constexpr double kMaximumReassociationDistanceM = 0.20;
+
+        std::map<StaticTrackKey, std::vector<StaticTrackKey>>
+        observed_aliases_by_canonical;
+        for (const auto & observed_key : observed_static_tracks) {
+          const auto observed = static_tracks_.find(observed_key);
+          if (observed == static_tracks_.end() ||
+            observed->second.reassociated_to_track_id.empty())
+          {
+            continue;
+          }
+          auto canonical_key = observed_key;
+          canonical_key.track_id = observed->second.reassociated_to_track_id;
+          observed_aliases_by_canonical[canonical_key].push_back(observed_key);
         }
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (latest_ != message || !latest_admission_reason_.empty()) {
-          continue;
+        for (const auto & [canonical_key, observed_aliases] :
+          observed_aliases_by_canonical)
+        {
+          if (observed_aliases.size() < 2U &&
+            observed_static_tracks.count(canonical_key) == 0U)
+          {
+            continue;
+          }
+          for (const auto & alias_key : observed_aliases) {
+            auto alias = static_tracks_.find(alias_key);
+            if (alias != static_tracks_.end() &&
+              alias->second.reassociated_to_track_id == canonical_key.track_id)
+            {
+              alias->second.reassociated_to_track_id.clear();
+            }
+          }
         }
-        const uint64_t effective_count = observeStaticTrack(
-          *message, obstacle, target.point.x, target.point.y);
-        const auto & state = static_tracks_.at(key);
-        applied_obstacles.push_back(AppliedObstacle{
-          state.obstacle, state.map_x, state.map_y, effective_count});
+
+        for (const auto & [key, transformed] : transformed_batch) {
+          if (!transformed.static_revalidated) {
+            applied_obstacles.push_back(AppliedObstacle{
+                transformed.obstacle, transformed.map_x, transformed.map_y,
+                transformed.obstacle.count});
+            continue;
+          }
+
+          auto state = static_tracks_.find(key);
+          if (state != static_tracks_.end() &&
+            !state->second.reassociated_to_track_id.empty())
+          {
+            auto canonical_key = key;
+            canonical_key.track_id = state->second.reassociated_to_track_id;
+            auto canonical = static_tracks_.find(canonical_key);
+            const int64_t canonical_age_ns = canonical == static_tracks_.end() ?
+              -1 : matching_now_ns - canonical->second.last_refresh_ns;
+            const double distance_limit = canonical == static_tracks_.end() ?
+              -1.0 : std::min(
+              kMaximumReassociationDistanceM,
+              canonical->second.radius_m + transformed.obstacle.radius_m);
+            const bool canonical_observed =
+              observed_static_tracks.count(canonical_key) != 0U;
+            const bool alias_valid =
+              !canonical_observed && canonical != static_tracks_.end() &&
+              canonical->second.promoted &&
+              canonical->second.reassociated_to_track_id.empty() &&
+              sameStaticIdentity(key, canonical_key) &&
+              canonical_age_ns >= 0 &&
+              canonical_age_ns <= kMaximumReassociationAgeNs &&
+              std::hypot(
+              transformed.map_x - canonical->second.anchor_map_x,
+              transformed.map_y - canonical->second.anchor_map_y) <= distance_limit;
+            if (alias_valid) {
+              const int64_t validation_ns = stampNs(message->validation_stamp);
+              const bool independent_refresh =
+                state->second.last_source_sequence != message->sequence ||
+                state->second.last_validation_stamp_ns != validation_ns;
+              if (independent_refresh) {
+                const int64_t refresh_ns = clock_->now().nanoseconds();
+                const uint64_t canonical_rehit_count = canonical->second.rehit_count;
+                const bool canonical_promoted = canonical->second.promoted;
+                const double canonical_anchor_x = canonical->second.anchor_map_x;
+                const double canonical_anchor_y = canonical->second.anchor_map_y;
+                const int64_t canonical_first_refresh_ns =
+                  canonical->second.first_refresh_ns;
+
+                state->second.obstacle = transformed.obstacle;
+                state->second.map_x = transformed.map_x;
+                state->second.map_y = transformed.map_y;
+                state->second.radius_m = transformed.obstacle.radius_m;
+                state->second.height_m = transformed.obstacle.height_m;
+                state->second.last_source_sequence = message->sequence;
+                state->second.last_validation_stamp_ns = validation_ns;
+                state->second.last_refresh_ns = refresh_ns;
+
+                canonical->second = state->second;
+                canonical->second.obstacle.id = canonical_key.track_id;
+                canonical->second.rehit_count = canonical_rehit_count;
+                canonical->second.promoted = canonical_promoted;
+                canonical->second.anchor_map_x = canonical_anchor_x;
+                canonical->second.anchor_map_y = canonical_anchor_y;
+                canonical->second.first_refresh_ns = canonical_first_refresh_ns;
+                canonical->second.reassociated_to_track_id.clear();
+              }
+              continue;
+            }
+            state->second.reassociated_to_track_id.clear();
+          }
+          observeStaticTrack(
+            *message, transformed.obstacle, transformed.map_x, transformed.map_y);
+        }
+
+        struct MatchCandidate
+        {
+          StaticTrackKey old_key;
+          StaticTrackKey new_key;
+        };
+        std::vector<MatchCandidate> candidates;
+        std::map<StaticTrackKey, size_t> old_degrees;
+        std::map<StaticTrackKey, size_t> new_degrees;
+        for (const auto & [old_key, old_state] : pre_batch_tracks) {
+          const int64_t old_age_ns = matching_now_ns - old_state.last_refresh_ns;
+          if (!old_state.promoted || !old_state.reassociated_to_track_id.empty() ||
+            observed_static_tracks.count(old_key) != 0U ||
+            old_age_ns < 0 || old_age_ns > kMaximumReassociationAgeNs)
+          {
+            continue;
+          }
+          for (const auto & new_key : observed_static_tracks) {
+            const auto previous_new = pre_batch_tracks.find(new_key);
+            if (previous_new != pre_batch_tracks.end() && previous_new->second.promoted) {
+              continue;
+            }
+            const auto current_new = static_tracks_.find(new_key);
+            if (current_new == static_tracks_.end() || !current_new->second.promoted ||
+              !current_new->second.reassociated_to_track_id.empty() ||
+              !sameStaticIdentity(old_key, new_key))
+            {
+              continue;
+            }
+            const double dx = current_new->second.map_x - old_state.anchor_map_x;
+            const double dy = current_new->second.map_y - old_state.anchor_map_y;
+            const double distance_limit = std::min(
+              kMaximumReassociationDistanceM,
+              old_state.radius_m + current_new->second.radius_m);
+            if (std::hypot(dx, dy) > distance_limit) {
+              continue;
+            }
+            candidates.push_back(MatchCandidate{old_key, new_key});
+            ++old_degrees[old_key];
+            ++new_degrees[new_key];
+          }
+        }
+
+        std::vector<MatchCandidate> selected;
+        for (const auto & candidate : candidates) {
+          if (old_degrees[candidate.old_key] == 1U &&
+            new_degrees[candidate.new_key] == 1U)
+          {
+            selected.push_back(candidate);
+          }
+        }
+
+        for (const auto & match : selected) {
+          auto old_it = static_tracks_.find(match.old_key);
+          auto new_it = static_tracks_.find(match.new_key);
+          if (old_it == static_tracks_.end() || new_it == static_tracks_.end()) {
+            continue;
+          }
+          const uint64_t old_rehit_count = old_it->second.rehit_count;
+          const bool old_promoted = old_it->second.promoted;
+          const double old_anchor_x = old_it->second.anchor_map_x;
+          const double old_anchor_y = old_it->second.anchor_map_y;
+          const int64_t old_first_refresh_ns = old_it->second.first_refresh_ns;
+          old_it->second = new_it->second;
+          old_it->second.obstacle.id = match.old_key.track_id;
+          old_it->second.rehit_count = old_rehit_count;
+          old_it->second.promoted = old_promoted;
+          old_it->second.anchor_map_x = old_anchor_x;
+          old_it->second.anchor_map_y = old_anchor_y;
+          old_it->second.first_refresh_ns = old_first_refresh_ns;
+          old_it->second.reassociated_to_track_id.clear();
+          new_it->second.reassociated_to_track_id = match.old_key.track_id;
+        }
+
+        for (const auto & [key, state] : static_tracks_) {
+          (void)key;
+          if (state.promoted && state.reassociated_to_track_id.empty()) {
+            applied_obstacles.push_back(AppliedObstacle{
+                state.obstacle, state.map_x, state.map_y,
+                std::max(state.obstacle.count, state.rehit_count)});
+          }
+        }
+        for (const auto & observed_key : observed_static_tracks) {
+          const auto state = static_tracks_.find(observed_key);
+          if (state != static_tracks_.end() && !state->second.promoted &&
+            state->second.reassociated_to_track_id.empty())
+          {
+            applied_obstacles.push_back(AppliedObstacle{
+                state->second.obstacle, state->second.map_x, state->second.map_y,
+                std::max(state->second.obstacle.count, state->second.rehit_count)});
+          }
+        }
       }
     }
   }
 
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    auto promoted = promotedStaticObstacles();
-    applied_obstacles.insert(
-      applied_obstacles.end(), promoted.begin(), promoted.end());
+    if (applied_obstacles.empty()) {
+      auto promoted = promotedStaticObstacles();
+      applied_obstacles.insert(
+        applied_obstacles.end(), promoted.begin(), promoted.end());
+    }
     if ((tf_failed || !validation_reason.empty()) && latest_ == message) {
       latest_.reset();
       latest_admission_reason_.clear();
@@ -727,13 +1001,31 @@ void CognitiveObstacleLayer::updateCosts(
     {
       continue;
     }
-    const int radius_cells = static_cast<int>(std::ceil(obstacle.radius_m / getResolution()));
+    const double costmap_diagonal_cells = std::hypot(
+      static_cast<double>(getSizeInCellsX()),
+      static_cast<double>(getSizeInCellsY()));
+    const double bounded_radius_m = std::min(
+      obstacle.radius_m, costmap_diagonal_cells * getResolution());
+    const double requested_radius_cells = bounded_radius_m / getResolution();
+    if (!std::isfinite(requested_radius_cells)) {
+      continue;
+    }
+    const double bounded_radius_cells = std::ceil(std::min(
+      requested_radius_cells,
+      std::min(
+        costmap_diagonal_cells,
+        static_cast<double>(std::numeric_limits<int>::max()))));
+    const int radius_cells = static_cast<int>(bounded_radius_cells);
     const uint8_t cost = obstacleCost(
       obstacle, applied_obstacle.effective_count, maximum_soft_cost_,
       collision_min_height_m_, collision_max_height_m_);
     for (int dy = -radius_cells; dy <= radius_cells; ++dy) {
       for (int dx = -radius_cells; dx <= radius_cells; ++dx) {
-        if (dx * dx + dy * dy > radius_cells * radius_cells) {continue;}
+        if (static_cast<int64_t>(dx) * dx + static_cast<int64_t>(dy) * dy >
+          static_cast<int64_t>(radius_cells) * radius_cells)
+        {
+          continue;
+        }
         const int mx = static_cast<int>(center_x) + dx;
         const int my = static_cast<int>(center_y) + dy;
         if (mx >= min_i && mx < max_i && my >= min_j && my < max_j &&

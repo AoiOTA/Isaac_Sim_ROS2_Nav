@@ -194,6 +194,25 @@ public:
 class CognitiveObstacleLayerTestPeer
 {
 public:
+  struct StaticTrackSnapshot
+  {
+    std::string key_track_id;
+    std::string payload_track_id;
+    double map_x;
+    double map_y;
+    double anchor_map_x;
+    double anchor_map_y;
+    double radius_m;
+    double height_m;
+    uint64_t rehit_count;
+    uint64_t last_source_sequence;
+    int64_t last_validation_stamp_ns;
+    int64_t first_refresh_ns;
+    int64_t last_refresh_ns;
+    bool promoted;
+    std::string reassociated_to_track_id;
+  };
+
   static void configureActive(
     CognitiveObstacleLayer & layer,
     const bio_nav_interfaces::msg::CognitiveObstacleArray & message)
@@ -232,7 +251,37 @@ public:
     std::lock_guard<std::mutex> lock(layer.mutex_);
     return static_cast<size_t>(std::count_if(
       layer.static_tracks_.begin(), layer.static_tracks_.end(),
-      [](const auto & entry) {return entry.second.promoted;}));
+             [](const auto & entry) {
+               return entry.second.promoted &&
+                      entry.second.reassociated_to_track_id.empty();
+             }));
+  }
+
+  static std::vector<StaticTrackSnapshot> staticTracks(CognitiveObstacleLayer & layer)
+  {
+    std::lock_guard<std::mutex> lock(layer.mutex_);
+    std::vector<StaticTrackSnapshot> tracks;
+    for (const auto & [key, state] : layer.static_tracks_) {
+      tracks.push_back(StaticTrackSnapshot{
+          key.track_id, state.obstacle.id, state.map_x, state.map_y,
+          state.anchor_map_x, state.anchor_map_y, state.radius_m, state.height_m,
+          state.rehit_count, state.last_source_sequence,
+          state.last_validation_stamp_ns, state.first_refresh_ns,
+          state.last_refresh_ns, state.promoted,
+          state.reassociated_to_track_id});
+    }
+    return tracks;
+  }
+
+  static std::optional<StaticTrackSnapshot> staticTrack(
+    CognitiveObstacleLayer & layer, const std::string & track_id)
+  {
+    const auto tracks = staticTracks(layer);
+    const auto track = std::find_if(
+      tracks.begin(), tracks.end(), [&track_id](const auto & value) {
+        return value.key_track_id == track_id;
+      });
+    return track == tracks.end() ? std::nullopt : std::optional(*track);
   }
 
   static void setClock(
@@ -247,6 +296,33 @@ public:
     for (auto & entry : layer.static_tracks_) {
       entry.second.last_refresh_ns -= age_ns;
     }
+  }
+
+  static void ageStaticTrack(
+    CognitiveObstacleLayer & layer, const std::string & track_id, int64_t age_ns)
+  {
+    std::lock_guard<std::mutex> lock(layer.mutex_);
+    for (auto & [key, state] : layer.static_tracks_) {
+      if (key.track_id == track_id) {
+        state.last_refresh_ns -= age_ns;
+      }
+    }
+  }
+
+  static size_t aliasTrackCount(CognitiveObstacleLayer & layer)
+  {
+    std::lock_guard<std::mutex> lock(layer.mutex_);
+    return static_cast<size_t>(std::count_if(
+      layer.static_tracks_.begin(), layer.static_tracks_.end(),
+             [](const auto & entry) {
+               return !entry.second.reassociated_to_track_id.empty();
+             }));
+  }
+
+  static size_t appliedPromotedTrackCount(CognitiveObstacleLayer & layer)
+  {
+    std::lock_guard<std::mutex> lock(layer.mutex_);
+    return layer.promotedStaticObstacles().size();
   }
 
   static double trackTtl(const CognitiveObstacleLayer & layer)
@@ -705,6 +781,96 @@ void retimeStatic(
   obstacles.validation_odom_stamp = obstacles.validation_stamp;
   obstacles.obstacles[0].last_seen = obstacles.header.stamp;
 }
+
+bio_nav_interfaces::msg::CognitiveObstacle staticObstacle(
+  const std::string & id, double x, double y, double radius_m = 0.06,
+  uint64_t count = 3U)
+{
+  auto obstacle = staticRevalidatedObstacleFixture().obstacles.front();
+  obstacle.id = id;
+  obstacle.pose_xy_m = {x, y};
+  obstacle.radius_m = radius_m;
+  obstacle.count = count;
+  obstacle.confidence = 1.0;
+  obstacle.reliability = 1.0;
+  obstacle.ood_probability = 0.0;
+  return obstacle;
+}
+
+bio_nav_interfaces::msg::CognitiveObstacleArray staticBatch(
+  int64_t now_ns, uint64_t sequence, int64_t validation_age_ns,
+  const std::vector<bio_nav_interfaces::msg::CognitiveObstacle> & obstacles)
+{
+  auto message = staticRevalidatedObstacleFixture();
+  message.sequence = sequence;
+  message.obstacles = obstacles;
+  const int64_t source_ns = now_ns - 1000000000LL;
+  retimeStatic(message, source_ns, now_ns - validation_age_ns);
+  for (auto & obstacle : message.obstacles) {
+    obstacle.last_seen = message.header.stamp;
+  }
+  return message;
+}
+
+class StaticReassociationTestRig
+{
+public:
+  StaticReassociationTestRig()
+  : clock(std::make_shared<rclcpp::Clock>(RCL_SYSTEM_TIME)),
+    tf_buffer(clock), layered_costmap("map", true, false)
+  {
+    if (!rclcpp::ok()) {
+      rclcpp::init(0, nullptr);
+    }
+    layered_costmap.resizeMap(80U, 80U, 0.02, -0.8, -0.8);
+    layer.bind(layered_costmap, tf_buffer, clock);
+    layer.resizeMap(80U, 80U, 0.02, -0.8, -0.8);
+  }
+
+  void addTransform(
+    const builtin_interfaces::msg::Time & stamp,
+    double translation_x = 0.0)
+  {
+    geometry_msgs::msg::TransformStamped transform;
+    transform.header.frame_id = "map";
+    transform.header.stamp = stamp;
+    transform.child_frame_id = "base_link";
+    transform.transform.translation.x = translation_x;
+    transform.transform.rotation.w = 1.0;
+    ASSERT_TRUE(tf_buffer.setTransform(transform, "static_reassociation_test"));
+  }
+
+  void apply(
+    const bio_nav_interfaces::msg::CognitiveObstacleArray & message,
+    bool install_transform = true, double translation_x = 0.0)
+  {
+    if (install_transform) {
+      addTransform(message.validation_stamp, translation_x);
+    }
+    layered_costmap.getCostmap()->resetMap(0U, 0U, 80U, 80U);
+    bio_nav_fusion::CognitiveObstacleLayerTestPeer::configureActive(layer, message);
+    layer.updateCosts(*layered_costmap.getCostmap(), 0, 0, 80, 80);
+  }
+
+  void repeatUpdate()
+  {
+    layered_costmap.getCostmap()->resetMap(0U, 0U, 80U, 80U);
+    layer.updateCosts(*layered_costmap.getCostmap(), 0, 0, 80, 80);
+  }
+
+  uint8_t privateCost(double x, double y)
+  {
+    unsigned int mx = 0U;
+    unsigned int my = 0U;
+    EXPECT_TRUE(layer.worldToMap(x, y, mx, my));
+    return layer.getCost(mx, my);
+  }
+
+  rclcpp::Clock::SharedPtr clock;
+  tf2_ros::Buffer tf_buffer;
+  nav2_costmap_2d::LayeredCostmap layered_costmap;
+  CognitiveObstacleLayerHarness layer;
+};
 
 bool addTransform(
   const std::shared_ptr<CriticTestCostmap> & costmap, int64_t stamp_ns,
@@ -1440,6 +1606,560 @@ TEST(CognitiveObstacleLayer, independent_static_rehits_promote_and_persist_until
   ASSERT_TRUE(layer.worldToMap(1.0, 0.0, mx, my));
   EXPECT_EQ(layer.getCost(mx, my), nav2_costmap_2d::FREE_SPACE);
   EXPECT_EQ(Peer::staticTrackCount(layer), 0U);
+}
+
+TEST(CognitiveObstacleLayer, promoted_id_chain_reassociates_to_immutable_anchor)
+{
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  StaticReassociationTestRig rig;
+  const int64_t now_ns = rig.clock->now().nanoseconds();
+
+  const auto first = staticBatch(
+    now_ns, 7U, 40000000LL, {staticObstacle("A", 0.0, 0.0)});
+  rig.apply(first);
+  auto tracks = Peer::staticTracks(rig.layer);
+  ASSERT_EQ(tracks.size(), 1U);
+  ASSERT_TRUE(tracks.front().promoted);
+  const auto original = tracks.front();
+
+  auto replacement_obstacle = staticObstacle("B", 0.10, 0.0, 0.07);
+  replacement_obstacle.height_m = 0.30;
+  replacement_obstacle.confidence = 0.95;
+  const auto replacement = staticBatch(
+    now_ns, 8U, 30000000LL, {replacement_obstacle});
+  rig.apply(replacement);
+  tracks = Peer::staticTracks(rig.layer);
+  ASSERT_EQ(tracks.size(), 2U);
+  EXPECT_EQ(tracks.front().key_track_id, "A");
+  EXPECT_EQ(tracks.front().payload_track_id, "A");
+  EXPECT_DOUBLE_EQ(tracks.front().map_x, 0.10);
+  EXPECT_DOUBLE_EQ(tracks.front().anchor_map_x, 0.0);
+  EXPECT_DOUBLE_EQ(tracks.front().radius_m, 0.07);
+  EXPECT_DOUBLE_EQ(tracks.front().height_m, 0.30);
+  EXPECT_EQ(tracks.front().rehit_count, original.rehit_count);
+  EXPECT_EQ(tracks.front().first_refresh_ns, original.first_refresh_ns);
+  EXPECT_EQ(tracks.front().last_source_sequence, replacement.sequence);
+  EXPECT_EQ(
+    tracks.front().last_validation_stamp_ns,
+    rclcpp::Time(replacement.validation_stamp).nanoseconds());
+  EXPECT_GT(tracks.front().last_refresh_ns, 0);
+  EXPECT_EQ(tracks[1].key_track_id, "B");
+  EXPECT_EQ(tracks[1].reassociated_to_track_id, "A");
+  EXPECT_EQ(Peer::aliasTrackCount(rig.layer), 1U);
+  EXPECT_EQ(Peer::appliedPromotedTrackCount(rig.layer), 1U);
+  EXPECT_EQ(rig.privateCost(0.0, 0.0), nav2_costmap_2d::FREE_SPACE);
+  EXPECT_EQ(rig.privateCost(0.10, 0.0), nav2_costmap_2d::LETHAL_OBSTACLE);
+
+  // B's current position must not become the anchor: C is accepted at 0.19 m
+  // from A's original anchor, while D at 0.21 m is a distinct track.
+  const auto third = staticBatch(
+    now_ns, 9U, 20000000LL, {staticObstacle("C", 0.19, 0.0, 0.13)});
+  rig.apply(third);
+  tracks = Peer::staticTracks(rig.layer);
+  ASSERT_EQ(tracks.size(), 3U);
+  EXPECT_EQ(tracks.front().key_track_id, "A");
+  EXPECT_DOUBLE_EQ(tracks.front().map_x, 0.19);
+  EXPECT_DOUBLE_EQ(tracks.front().anchor_map_x, 0.0);
+
+  const auto beyond_anchor = staticBatch(
+    now_ns, 10U, 10000000LL, {staticObstacle("D", 0.21, 0.0, 0.13)});
+  rig.apply(beyond_anchor);
+  tracks = Peer::staticTracks(rig.layer);
+  ASSERT_EQ(tracks.size(), 4U);
+  EXPECT_EQ(tracks[0].key_track_id, "A");
+  EXPECT_EQ(tracks[3].key_track_id, "D");
+}
+
+TEST(CognitiveObstacleLayer, repeated_update_of_same_latest_keeps_alias_cursor_exact_once)
+{
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  StaticReassociationTestRig rig;
+  const int64_t now_ns = rig.clock->now().nanoseconds();
+  rig.apply(staticBatch(
+    now_ns, 7U, 30000000LL, {staticObstacle("A", 0.0, 0.0)}));
+  const auto replacement = staticBatch(
+    now_ns, 8U, 10000000LL, {staticObstacle("B", 0.10, 0.0, 0.07)});
+  rig.apply(replacement);
+
+  const auto canonical_before = Peer::staticTrack(rig.layer, "A");
+  const auto alias_before = Peer::staticTrack(rig.layer, "B");
+  ASSERT_TRUE(canonical_before.has_value());
+  ASSERT_TRUE(alias_before.has_value());
+  ASSERT_EQ(alias_before->reassociated_to_track_id, "A");
+  for (size_t repeat = 0; repeat < 4U; ++repeat) {
+    rig.repeatUpdate();
+  }
+  const auto canonical_after = Peer::staticTrack(rig.layer, "A");
+  const auto alias_after = Peer::staticTrack(rig.layer, "B");
+  ASSERT_TRUE(canonical_after.has_value());
+  ASSERT_TRUE(alias_after.has_value());
+  EXPECT_EQ(Peer::staticTrackCount(rig.layer), 2U);
+  EXPECT_EQ(Peer::aliasTrackCount(rig.layer), 1U);
+  EXPECT_EQ(Peer::appliedPromotedTrackCount(rig.layer), 1U);
+  EXPECT_EQ(canonical_after->rehit_count, canonical_before->rehit_count);
+  EXPECT_EQ(canonical_after->last_refresh_ns, canonical_before->last_refresh_ns);
+  EXPECT_EQ(alias_after->last_refresh_ns, alias_before->last_refresh_ns);
+  EXPECT_EQ(canonical_after->last_source_sequence, replacement.sequence);
+  EXPECT_EQ(alias_after->last_source_sequence, replacement.sequence);
+  EXPECT_EQ(rig.privateCost(0.0, 0.0), nav2_costmap_2d::FREE_SPACE);
+  EXPECT_EQ(rig.privateCost(0.10, 0.0), nav2_costmap_2d::LETHAL_OBSTACLE);
+}
+
+TEST(CognitiveObstacleLayer, alias_routes_each_new_cursor_to_canonical_once)
+{
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  StaticReassociationTestRig rig;
+  const int64_t now_ns = rig.clock->now().nanoseconds();
+  rig.apply(staticBatch(
+    now_ns, 7U, 40000000LL, {staticObstacle("A", 0.0, 0.0, 0.08)}));
+  rig.apply(staticBatch(
+    now_ns, 8U, 30000000LL, {staticObstacle("B", 0.05, 0.0, 0.08)}));
+  const auto initial = Peer::staticTrack(rig.layer, "A");
+  ASSERT_TRUE(initial.has_value());
+
+  auto next_obstacle = staticObstacle("B", 0.08, 0.0, 0.08);
+  next_obstacle.height_m = 0.31;
+  const auto next = staticBatch(now_ns, 9U, 20000000LL, {next_obstacle});
+  rig.apply(next);
+  const auto after_next = Peer::staticTrack(rig.layer, "A");
+  ASSERT_TRUE(after_next.has_value());
+  EXPECT_EQ(after_next->last_source_sequence, 9U);
+  EXPECT_DOUBLE_EQ(after_next->map_x, 0.08);
+  EXPECT_DOUBLE_EQ(after_next->height_m, 0.31);
+  EXPECT_EQ(after_next->rehit_count, initial->rehit_count);
+  rig.repeatUpdate();
+  EXPECT_EQ(
+    Peer::staticTrack(rig.layer, "A")->last_refresh_ns,
+    after_next->last_refresh_ns);
+
+  auto final_obstacle = staticObstacle("B", 0.10, 0.0, 0.08);
+  final_obstacle.height_m = 0.32;
+  const auto final = staticBatch(now_ns, 10U, 10000000LL, {final_obstacle});
+  rig.apply(final);
+  const auto after_final = Peer::staticTrack(rig.layer, "A");
+  ASSERT_TRUE(after_final.has_value());
+  EXPECT_EQ(after_final->last_source_sequence, 10U);
+  EXPECT_DOUBLE_EQ(after_final->map_x, 0.10);
+  EXPECT_DOUBLE_EQ(after_final->height_m, 0.32);
+  EXPECT_EQ(after_final->rehit_count, initial->rehit_count);
+  rig.repeatUpdate();
+  EXPECT_EQ(
+    Peer::staticTrack(rig.layer, "A")->last_refresh_ns,
+    after_final->last_refresh_ns);
+  EXPECT_EQ(Peer::staticTrackCount(rig.layer), 2U);
+  EXPECT_EQ(Peer::aliasTrackCount(rig.layer), 1U);
+  EXPECT_EQ(Peer::appliedPromotedTrackCount(rig.layer), 1U);
+}
+
+TEST(CognitiveObstacleLayer, observed_sibling_aliases_split_before_any_canonical_update)
+{
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  const auto run = [](bool reverse) {
+      StaticReassociationTestRig rig;
+      const int64_t now_ns = rig.clock->now().nanoseconds();
+      rig.apply(staticBatch(
+        now_ns, 7U, 40000000LL, {staticObstacle("A", 0.0, 0.0)}));
+      rig.apply(staticBatch(
+        now_ns, 8U, 30000000LL, {staticObstacle("B", -0.03, 0.0)}));
+      auto c = staticObstacle("C", 0.03, 0.0);
+      c.height_m = 0.31;
+      rig.apply(staticBatch(now_ns, 9U, 20000000LL, {c}));
+      EXPECT_EQ(Peer::aliasTrackCount(rig.layer), 2U);
+      const auto canonical_before = Peer::staticTrack(rig.layer, "A");
+      EXPECT_TRUE(canonical_before.has_value());
+
+      auto b_observed = staticObstacle("B", -0.15, 0.0);
+      b_observed.height_m = 0.41;
+      auto c_observed = staticObstacle("C", 0.15, 0.0);
+      c_observed.height_m = 0.42;
+      std::vector<bio_nav_interfaces::msg::CognitiveObstacle> siblings{
+        b_observed, c_observed};
+      if (reverse) {
+        std::reverse(siblings.begin(), siblings.end());
+      }
+      rig.apply(staticBatch(now_ns, 10U, 10000000LL, siblings));
+
+      const auto canonical_after = Peer::staticTrack(rig.layer, "A");
+      EXPECT_TRUE(canonical_after.has_value());
+      EXPECT_EQ(Peer::staticTrackCount(rig.layer), 3U);
+      EXPECT_EQ(Peer::aliasTrackCount(rig.layer), 0U);
+      EXPECT_EQ(Peer::appliedPromotedTrackCount(rig.layer), 3U);
+      EXPECT_EQ(canonical_after->last_source_sequence, 9U);
+      EXPECT_EQ(
+        canonical_after->last_validation_stamp_ns,
+        canonical_before->last_validation_stamp_ns);
+      EXPECT_EQ(canonical_after->last_refresh_ns, canonical_before->last_refresh_ns);
+      EXPECT_DOUBLE_EQ(canonical_after->height_m, 0.31);
+      EXPECT_DOUBLE_EQ(Peer::staticTrack(rig.layer, "B")->map_x, -0.15);
+      EXPECT_DOUBLE_EQ(Peer::staticTrack(rig.layer, "C")->map_x, 0.15);
+      EXPECT_TRUE(Peer::staticTrack(rig.layer, "B")->reassociated_to_track_id.empty());
+      EXPECT_TRUE(Peer::staticTrack(rig.layer, "C")->reassociated_to_track_id.empty());
+      EXPECT_EQ(rig.privateCost(-0.15, 0.0), nav2_costmap_2d::LETHAL_OBSTACLE);
+      EXPECT_EQ(rig.privateCost(0.15, 0.0), nav2_costmap_2d::LETHAL_OBSTACLE);
+      return Peer::staticTracks(rig.layer);
+    };
+
+  const auto forward = run(false);
+  const auto reverse = run(true);
+  ASSERT_EQ(forward.size(), reverse.size());
+  for (size_t index = 0; index < forward.size(); ++index) {
+    EXPECT_EQ(forward[index].key_track_id, reverse[index].key_track_id);
+    EXPECT_EQ(
+      forward[index].reassociated_to_track_id,
+      reverse[index].reassociated_to_track_id);
+    EXPECT_DOUBLE_EQ(forward[index].map_x, reverse[index].map_x);
+    EXPECT_DOUBLE_EQ(forward[index].map_y, reverse[index].map_y);
+    EXPECT_EQ(forward[index].last_source_sequence, reverse[index].last_source_sequence);
+  }
+}
+
+TEST(CognitiveObstacleLayer, canonical_with_sibling_aliases_splits_all_observed_tracks)
+{
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  StaticReassociationTestRig rig;
+  const int64_t now_ns = rig.clock->now().nanoseconds();
+  rig.apply(staticBatch(
+    now_ns, 7U, 40000000LL, {staticObstacle("A", 0.0, 0.0)}));
+  rig.apply(staticBatch(
+    now_ns, 8U, 30000000LL, {staticObstacle("B", -0.03, 0.0)}));
+  rig.apply(staticBatch(
+    now_ns, 9U, 20000000LL, {staticObstacle("C", 0.03, 0.0)}));
+  ASSERT_EQ(Peer::aliasTrackCount(rig.layer), 2U);
+
+  rig.apply(staticBatch(
+    now_ns, 10U, 10000000LL,
+      {staticObstacle("A", 0.0, 0.0), staticObstacle("B", -0.15, 0.0),
+        staticObstacle("C", 0.15, 0.0)}));
+  EXPECT_EQ(Peer::staticTrackCount(rig.layer), 3U);
+  EXPECT_EQ(Peer::aliasTrackCount(rig.layer), 0U);
+  EXPECT_EQ(Peer::appliedPromotedTrackCount(rig.layer), 3U);
+  EXPECT_TRUE(Peer::staticTrack(rig.layer, "A")->reassociated_to_track_id.empty());
+  EXPECT_TRUE(Peer::staticTrack(rig.layer, "B")->reassociated_to_track_id.empty());
+  EXPECT_TRUE(Peer::staticTrack(rig.layer, "C")->reassociated_to_track_id.empty());
+}
+
+TEST(CognitiveObstacleLayer, unobserved_sibling_alias_does_not_force_split)
+{
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  StaticReassociationTestRig rig;
+  const int64_t now_ns = rig.clock->now().nanoseconds();
+  rig.apply(staticBatch(
+    now_ns, 7U, 40000000LL, {staticObstacle("A", 0.0, 0.0, 0.08)}));
+  rig.apply(staticBatch(
+    now_ns, 8U, 30000000LL, {staticObstacle("B", -0.05, 0.0, 0.08)}));
+  rig.apply(staticBatch(
+    now_ns, 9U, 20000000LL, {staticObstacle("C", 0.05, 0.0, 0.08)}));
+  ASSERT_EQ(Peer::aliasTrackCount(rig.layer), 2U);
+  const auto c_before = Peer::staticTrack(rig.layer, "C");
+  ASSERT_TRUE(c_before.has_value());
+
+  rig.apply(staticBatch(
+    now_ns, 10U, 10000000LL, {staticObstacle("B", -0.10, 0.0, 0.08)}));
+  EXPECT_EQ(Peer::staticTrackCount(rig.layer), 3U);
+  EXPECT_EQ(Peer::aliasTrackCount(rig.layer), 2U);
+  EXPECT_EQ(Peer::appliedPromotedTrackCount(rig.layer), 1U);
+  EXPECT_EQ(Peer::staticTrack(rig.layer, "B")->reassociated_to_track_id, "A");
+  EXPECT_EQ(Peer::staticTrack(rig.layer, "C")->reassociated_to_track_id, "A");
+  EXPECT_EQ(Peer::staticTrack(rig.layer, "C")->last_source_sequence, 9U);
+  EXPECT_EQ(
+    Peer::staticTrack(rig.layer, "C")->last_refresh_ns,
+    c_before->last_refresh_ns);
+  EXPECT_EQ(Peer::staticTrack(rig.layer, "A")->last_source_sequence, 10U);
+  EXPECT_DOUBLE_EQ(Peer::staticTrack(rig.layer, "A")->map_x, -0.10);
+}
+
+TEST(CognitiveObstacleLayer, canonical_and_alias_coobservation_splits_real_obstacles)
+{
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  StaticReassociationTestRig rig;
+  const int64_t now_ns = rig.clock->now().nanoseconds();
+  rig.apply(staticBatch(
+    now_ns, 7U, 30000000LL, {staticObstacle("A", 0.0, 0.0)}));
+  rig.apply(staticBatch(
+    now_ns, 8U, 20000000LL, {staticObstacle("B", 0.05, 0.0)}));
+  ASSERT_EQ(Peer::aliasTrackCount(rig.layer), 1U);
+
+  rig.apply(staticBatch(
+    now_ns, 9U, 10000000LL,
+      {staticObstacle("A", 0.0, 0.0), staticObstacle("B", 0.15, 0.0)}));
+  EXPECT_EQ(Peer::staticTrackCount(rig.layer), 2U);
+  EXPECT_EQ(Peer::aliasTrackCount(rig.layer), 0U);
+  EXPECT_EQ(Peer::appliedPromotedTrackCount(rig.layer), 2U);
+  EXPECT_TRUE(Peer::staticTrack(rig.layer, "A")->reassociated_to_track_id.empty());
+  EXPECT_TRUE(Peer::staticTrack(rig.layer, "B")->reassociated_to_track_id.empty());
+  EXPECT_EQ(rig.privateCost(0.0, 0.0), nav2_costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_EQ(rig.privateCost(0.15, 0.0), nav2_costmap_2d::LETHAL_OBSTACLE);
+}
+
+TEST(CognitiveObstacleLayer, alias_is_removed_with_missing_canonical_ttl_and_reset)
+{
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  StaticReassociationTestRig rig;
+  Peer::setTrackTtl(rig.layer, 5.0);
+  const int64_t now_ns = rig.clock->now().nanoseconds();
+  rig.apply(staticBatch(
+    now_ns, 7U, 30000000LL, {staticObstacle("A", 0.0, 0.0)}));
+  rig.apply(staticBatch(
+    now_ns, 8U, 20000000LL, {staticObstacle("B", 0.05, 0.0)}));
+  ASSERT_EQ(Peer::aliasTrackCount(rig.layer), 1U);
+
+  Peer::ageStaticTrack(rig.layer, "A", 6000000000LL);
+  auto empty = staticBatch(
+    now_ns, 9U, 10000000LL, {staticObstacle("unused", 0.0, 0.0)});
+  empty.obstacles.clear();
+  rig.apply(empty);
+  EXPECT_EQ(Peer::staticTrackCount(rig.layer), 0U);
+  EXPECT_EQ(Peer::aliasTrackCount(rig.layer), 0U);
+
+  rig.apply(staticBatch(
+    now_ns, 10U, 8000000LL, {staticObstacle("A", 0.0, 0.0)}));
+  rig.apply(staticBatch(
+    now_ns, 11U, 5000000LL, {staticObstacle("B", 0.05, 0.0)}));
+  ASSERT_EQ(Peer::aliasTrackCount(rig.layer), 1U);
+  rig.layer.reset();
+  EXPECT_EQ(Peer::staticTrackCount(rig.layer), 0U);
+  EXPECT_EQ(Peer::aliasTrackCount(rig.layer), 0U);
+}
+
+TEST(CognitiveObstacleLayer, aliases_never_become_reassociation_targets)
+{
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  StaticReassociationTestRig rig;
+  const int64_t now_ns = rig.clock->now().nanoseconds();
+  rig.apply(staticBatch(
+    now_ns, 7U, 30000000LL, {staticObstacle("A", 0.0, 0.0, 0.10)}));
+  rig.apply(staticBatch(
+    now_ns, 8U, 20000000LL, {staticObstacle("B", 0.05, 0.0, 0.10)}));
+  ASSERT_EQ(Peer::staticTrack(rig.layer, "B")->reassociated_to_track_id, "A");
+
+  rig.apply(staticBatch(
+    now_ns, 9U, 10000000LL, {staticObstacle("C", 0.24, 0.0, 0.10)}));
+  ASSERT_EQ(Peer::staticTrackCount(rig.layer), 3U);
+  ASSERT_EQ(Peer::aliasTrackCount(rig.layer), 1U);
+  EXPECT_EQ(Peer::staticTrack(rig.layer, "B")->reassociated_to_track_id, "A");
+  EXPECT_TRUE(Peer::staticTrack(rig.layer, "C")->reassociated_to_track_id.empty());
+  EXPECT_EQ(Peer::appliedPromotedTrackCount(rig.layer), 2U);
+}
+
+TEST(CognitiveObstacleLayer, reassociation_is_batch_order_invariant_and_mutually_unique)
+{
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  const auto run_one_old_two_new = [](bool reverse) {
+      StaticReassociationTestRig rig;
+      const int64_t now_ns = rig.clock->now().nanoseconds();
+      rig.apply(staticBatch(
+        now_ns, 7U, 30000000LL, {staticObstacle("A", 0.0, 0.0)}));
+      std::vector<bio_nav_interfaces::msg::CognitiveObstacle> new_obstacles{
+        staticObstacle("B", -0.05, 0.0), staticObstacle("C", 0.05, 0.0)};
+      if (reverse) {
+        std::reverse(new_obstacles.begin(), new_obstacles.end());
+      }
+      rig.apply(staticBatch(now_ns, 8U, 10000000LL, new_obstacles));
+      return Peer::staticTracks(rig.layer);
+    };
+
+  const auto forward = run_one_old_two_new(false);
+  const auto reverse = run_one_old_two_new(true);
+  ASSERT_EQ(forward.size(), 3U);
+  ASSERT_EQ(reverse.size(), forward.size());
+  for (size_t index = 0; index < forward.size(); ++index) {
+    EXPECT_EQ(reverse[index].key_track_id, forward[index].key_track_id);
+    EXPECT_DOUBLE_EQ(reverse[index].map_x, forward[index].map_x);
+    EXPECT_DOUBLE_EQ(reverse[index].anchor_map_x, forward[index].anchor_map_x);
+    EXPECT_EQ(reverse[index].rehit_count, forward[index].rehit_count);
+  }
+
+  const auto run_duplicate_id = [](bool reverse) {
+      StaticReassociationTestRig rig;
+      const int64_t now_ns = rig.clock->now().nanoseconds();
+      std::vector<bio_nav_interfaces::msg::CognitiveObstacle> duplicates{
+        staticObstacle("duplicate", 0.10, 0.0),
+        staticObstacle("duplicate", -0.10, 0.0)};
+      if (reverse) {
+        std::reverse(duplicates.begin(), duplicates.end());
+      }
+      rig.apply(staticBatch(now_ns, 7U, 10000000LL, duplicates));
+      return Peer::staticTracks(rig.layer);
+    };
+  const auto duplicate_forward = run_duplicate_id(false);
+  const auto duplicate_reverse = run_duplicate_id(true);
+  ASSERT_EQ(duplicate_forward.size(), 1U);
+  ASSERT_EQ(duplicate_reverse.size(), 1U);
+  EXPECT_DOUBLE_EQ(duplicate_forward.front().map_x, -0.10);
+  EXPECT_DOUBLE_EQ(duplicate_reverse.front().map_x, -0.10);
+
+  StaticReassociationTestRig two_old_rig;
+  const int64_t now_ns = two_old_rig.clock->now().nanoseconds();
+  two_old_rig.apply(staticBatch(
+    now_ns, 7U, 30000000LL,
+      {staticObstacle("A", -0.05, 0.0), staticObstacle("B", 0.05, 0.0)}));
+  two_old_rig.apply(staticBatch(
+    now_ns, 8U, 10000000LL, {staticObstacle("C", 0.0, 0.0)}));
+  EXPECT_EQ(Peer::staticTrackCount(two_old_rig.layer), 3U);
+}
+
+TEST(CognitiveObstacleLayer, observed_old_and_separated_static_obstacles_do_not_merge)
+{
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  StaticReassociationTestRig rig;
+  const int64_t now_ns = rig.clock->now().nanoseconds();
+  rig.apply(staticBatch(
+    now_ns, 7U, 30000000LL, {staticObstacle("A", 0.0, 0.0, 0.08)}));
+  rig.apply(staticBatch(
+    now_ns, 8U, 20000000LL,
+      {staticObstacle("A", 0.0, 0.0, 0.08),
+        staticObstacle("B", 0.15, 0.0, 0.08)}));
+  EXPECT_EQ(Peer::staticTrackCount(rig.layer), 2U);
+
+  StaticReassociationTestRig separated_rig;
+  const int64_t separated_now_ns = separated_rig.clock->now().nanoseconds();
+  separated_rig.apply(staticBatch(
+    separated_now_ns, 7U, 30000000LL,
+      {staticObstacle("A", -0.30, 0.0, 0.20)}));
+  separated_rig.apply(staticBatch(
+    separated_now_ns, 8U, 10000000LL,
+      {staticObstacle("B", 0.15, 0.0, 0.20)}));
+  EXPECT_EQ(Peer::staticTrackCount(separated_rig.layer), 2U);
+}
+
+TEST(CognitiveObstacleLayer, reassociation_age_and_replacement_refresh_obey_horizons)
+{
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  StaticReassociationTestRig old_rig;
+  const int64_t old_now_ns = old_rig.clock->now().nanoseconds();
+  old_rig.apply(staticBatch(
+    old_now_ns, 7U, 30000000LL, {staticObstacle("A", 0.0, 0.0)}));
+  Peer::ageStaticTracks(old_rig.layer, 2100000000LL);
+  old_rig.apply(staticBatch(
+    old_now_ns, 8U, 10000000LL, {staticObstacle("B", 0.05, 0.0)}));
+  EXPECT_EQ(Peer::staticTrackCount(old_rig.layer), 2U);
+
+  StaticReassociationTestRig ttl_rig;
+  Peer::setTrackTtl(ttl_rig.layer, 5.0);
+  const int64_t ttl_now_ns = ttl_rig.clock->now().nanoseconds();
+  ttl_rig.apply(staticBatch(
+    ttl_now_ns, 7U, 30000000LL, {staticObstacle("A", 0.0, 0.0)}));
+  Peer::ageStaticTracks(ttl_rig.layer, 1000000000LL);
+  ttl_rig.apply(staticBatch(
+    ttl_now_ns, 8U, 20000000LL, {staticObstacle("B", 0.05, 0.0)}));
+  ASSERT_EQ(Peer::staticTrackCount(ttl_rig.layer), 2U);
+  ASSERT_EQ(Peer::aliasTrackCount(ttl_rig.layer), 1U);
+  EXPECT_EQ(Peer::staticTracks(ttl_rig.layer).front().key_track_id, "A");
+
+  auto empty = staticBatch(
+    ttl_now_ns, 9U, 10000000LL, {staticObstacle("unused", 0.0, 0.0)});
+  empty.obstacles.clear();
+  Peer::ageStaticTracks(ttl_rig.layer, 4000000000LL);
+  ttl_rig.apply(empty);
+  EXPECT_EQ(Peer::staticTrackCount(ttl_rig.layer), 2U);
+  Peer::ageStaticTracks(ttl_rig.layer, 2000000000LL);
+  empty.sequence = 10U;
+  ttl_rig.apply(empty);
+  EXPECT_EQ(Peer::staticTrackCount(ttl_rig.layer), 0U);
+}
+
+TEST(CognitiveObstacleLayer, only_independently_promoted_depth_static_ids_reassociate)
+{
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  StaticReassociationTestRig rig;
+  const int64_t now_ns = rig.clock->now().nanoseconds();
+  rig.apply(staticBatch(
+    now_ns, 7U, 40000000LL, {staticObstacle("A", 0.0, 0.0)}));
+
+  rig.apply(staticBatch(
+    now_ns, 8U, 30000000LL, {staticObstacle("B", 0.05, 0.0, 0.06, 1U)}));
+  auto tracks = Peer::staticTracks(rig.layer);
+  ASSERT_EQ(tracks.size(), 2U);
+  EXPECT_TRUE(tracks[0].promoted);
+  EXPECT_FALSE(tracks[1].promoted);
+
+  auto fresh_dynamic = obstacleFixture();
+  fresh_dynamic.sequence = 9U;
+  fresh_dynamic.obstacles = {staticObstacle("dynamic", 0.04, 0.0)};
+  fresh_dynamic.obstacles[0].motion_class =
+    bio_nav_interfaces::msg::CognitiveObstacle::MOTION_DYNAMIC;
+  fresh_dynamic.obstacles[0].static_confirmed = false;
+  retimeFreshObstacle(fresh_dynamic, now_ns - 10000000LL);
+  rig.apply(fresh_dynamic);
+  EXPECT_EQ(Peer::staticTrackCount(rig.layer), 2U);
+
+  auto wrong_validation = staticBatch(
+    now_ns, 10U, 5000000LL, {staticObstacle("wrong-validation", 0.03, 0.0)});
+  wrong_validation.validation_sensor_mask = 0U;
+  rig.apply(wrong_validation);
+  EXPECT_EQ(Peer::staticTrackCount(rig.layer), 2U);
+}
+
+TEST(CognitiveObstacleLayer, nonfinite_transforms_are_rejected_and_huge_radius_is_bounded)
+{
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  StaticReassociationTestRig nonfinite_rig;
+  const int64_t now_ns = nonfinite_rig.clock->now().nanoseconds();
+  auto nan_radius = staticObstacle("nan-radius", 0.0, 0.0);
+  nan_radius.radius_m = std::numeric_limits<double>::quiet_NaN();
+  nonfinite_rig.apply(staticBatch(
+    now_ns, 6U, 30000000LL, {nan_radius}));
+  EXPECT_EQ(Peer::staticTrackCount(nonfinite_rig.layer), 0U);
+
+  auto nonfinite_target = staticObstacle(
+    "overflow", std::numeric_limits<double>::max(), 0.0);
+  const auto overflow_message = staticBatch(
+    now_ns, 7U, 20000000LL, {nonfinite_target});
+  nonfinite_rig.apply(
+    overflow_message, true, std::numeric_limits<double>::max());
+  EXPECT_EQ(Peer::staticTrackCount(nonfinite_rig.layer), 0U);
+
+  StaticReassociationTestRig huge_rig;
+  const int64_t huge_now_ns = huge_rig.clock->now().nanoseconds();
+  auto huge = staticObstacle("huge", 0.0, 0.0);
+  huge.radius_m = std::numeric_limits<double>::max();
+  huge_rig.apply(staticBatch(
+    huge_now_ns, 7U, 10000000LL, {huge}));
+  EXPECT_EQ(Peer::staticTrackCount(huge_rig.layer), 1U);
+  EXPECT_EQ(huge_rig.privateCost(-0.79, -0.79), nav2_costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_EQ(huge_rig.privateCost(0.79, 0.79), nav2_costmap_2d::LETHAL_OBSTACLE);
 }
 
 TEST(CognitiveObstacleLayer, static_latch_key_clears_for_each_identity_rollover)
