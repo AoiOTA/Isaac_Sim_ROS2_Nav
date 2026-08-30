@@ -249,6 +249,16 @@ public:
     }
   }
 
+  static double trackTtl(const CognitiveObstacleLayer & layer)
+  {
+    return layer.track_ttl_s_;
+  }
+
+  static void setTrackTtl(CognitiveObstacleLayer & layer, double track_ttl_s)
+  {
+    layer.track_ttl_s_ = track_ttl_s;
+  }
+
   static void offer(
     CognitiveObstacleLayer & layer,
     const bio_nav_interfaces::msg::CognitiveObstacleArray & message)
@@ -1534,6 +1544,13 @@ TEST(CognitiveObstacleLayer, rejected_or_soft_candidates_never_create_a_lethal_l
   EXPECT_EQ(Peer::promotedStaticTrackCount(soft_layer), 0U);
 }
 
+TEST(CognitiveObstacleLayer, static_track_ttl_defaults_to_ninety_seconds)
+{
+  bio_nav_fusion::CognitiveObstacleLayer layer;
+  EXPECT_DOUBLE_EQ(
+    bio_nav_fusion::CognitiveObstacleLayerTestPeer::trackTtl(layer), 90.0);
+}
+
 TEST(CognitiveObstacleLayer, static_track_ttl_expires_silenced_track_and_frees_cells)
 {
   using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
@@ -1548,6 +1565,7 @@ TEST(CognitiveObstacleLayer, static_track_ttl_expires_silenced_track_and_frees_c
   CognitiveObstacleLayerHarness layer;
   layer.bind(layered_costmap, tf_buffer, clock);
   layer.resizeMap(80U, 80U, 0.05, -2.0, -2.0);
+  Peer::setTrackTtl(layer, 5.0);
 
   const int64_t now_ns = clock->now().nanoseconds();
   const int64_t source_ns = now_ns - 1000000000LL;
@@ -1611,6 +1629,7 @@ TEST(CognitiveObstacleLayer, static_track_ttl_survives_while_reports_continue)
   CognitiveObstacleLayerHarness layer;
   layer.bind(layered_costmap, tf_buffer, clock);
   layer.resizeMap(80U, 80U, 0.05, -2.0, -2.0);
+  Peer::setTrackTtl(layer, 5.0);
 
   const int64_t now_ns = clock->now().nanoseconds();
   const int64_t source_ns = now_ns - 1000000000LL;
@@ -1688,6 +1707,7 @@ TEST(CognitiveObstacleLayer, unpromoted_static_track_expires_with_ttl)
   CognitiveObstacleLayerHarness layer;
   layer.bind(layered_costmap, tf_buffer, clock);
   layer.resizeMap(80U, 80U, 0.05, -2.0, -2.0);
+  Peer::setTrackTtl(layer, 5.0);
 
   const int64_t now_ns = clock->now().nanoseconds();
   const int64_t source_ns = now_ns - 1000000000LL;
@@ -1738,6 +1758,7 @@ TEST(CognitiveObstacleLayer, update_bounds_stops_touching_after_static_track_ttl
   CognitiveObstacleLayerHarness layer;
   layer.bind(layered_costmap, tf_buffer, clock);
   layer.resizeMap(80U, 80U, 0.05, -2.0, -2.0);
+  Peer::setTrackTtl(layer, 5.0);
 
   const int64_t now_ns = clock->now().nanoseconds();
   const int64_t source_ns = now_ns - 1000000000LL;

@@ -7,6 +7,7 @@ import pytest
 import robot_experiments.experiment_runner as experiment_runner_module
 from robot_experiments.experiment_runner import (
     _edge_prior_statistics,
+    _parse_obstacle_completion,
     _record_tracked_route_length,
     _result_with_terminal_zero,
     _strict_success_from_leg_count,
@@ -45,6 +46,208 @@ def test_edge_prior_statistics_preserve_nonzero_learned_cost_evidence():
         "maximum_cost_delta_m": pytest.approx(0.55),
         "maximum_learned_risk": pytest.approx(1.0),
     }
+
+
+def test_obstacle_completion_requires_the_exact_selected_actor_set():
+    payload = json.dumps({"group": "G2", "retired": ["dynamic_box"]})
+    assert _parse_obstacle_completion(
+        payload,
+        expected_group="G2",
+        expected_ids={"dynamic_box"},
+    ) == ("dynamic_box",)
+
+    with pytest.raises(RuntimeError, match="retired IDs mismatch"):
+        _parse_obstacle_completion(
+            json.dumps({"group": "G2", "retired": []}),
+            expected_group="G2",
+            expected_ids={"dynamic_box"},
+        )
+
+
+def test_dynamic_retirement_clearance_requires_fresh_empty_source_and_two_zero_consumers():
+    def stamp(value):
+        return SimpleNamespace(sec=int(value), nanosec=0)
+
+    runner = object.__new__(ExperimentRunner)
+    runner._obstacle_state_stamp_s = 11.0
+    runner._obstacle_state = {
+        "obstacles": [{"id": "dynamic_box", "state": "retired"}],
+        "events": [],
+    }
+    runner._latest_cognitive_obstacles = SimpleNamespace(
+        sequence=9,
+        reset_epoch=2,
+        recurrent_session_id="session-2",
+        map_version="map-v1",
+        header=SimpleNamespace(stamp=stamp(11.0)),
+        validation_stamp=stamp(11.0),
+        obstacles=[],
+    )
+    zero_status = lambda consumer: SimpleNamespace(
+        consumer=consumer,
+        mode="active",
+        applied=False,
+        active_cell_count=0,
+        fallback_reason="rejection_reason=no_costmap_cells",
+        maximum_cost=0,
+        raised_cell_count=0,
+        maximum_cost_increase=0,
+        source_sequence=9,
+        reset_epoch=2,
+        recurrent_session_id="session-2",
+        map_version="map-v1",
+        stamp=stamp(11.0),
+    )
+    runner._latest_cognitive_layer_statuses = {
+        "/global_costmap/global_costmap:cognitive_obstacle_layer": zero_status(
+            "global"
+        ),
+        "/local_costmap/local_costmap:cognitive_obstacle_layer": zero_status(
+            "local"
+        ),
+    }
+
+    assert runner._dynamic_retirement_clearance_observed(
+        {"dynamic_box"}, 10.0, 8, {"global": 8, "local": 8}
+    )
+    runner._latest_cognitive_obstacles.obstacles = [object()]
+    assert not runner._dynamic_retirement_clearance_observed(
+        {"dynamic_box"}, 10.0, 8, {"global": 8, "local": 8}
+    )
+
+
+def test_dynamic_retirement_clearance_rejects_stale_or_mismatched_evidence():
+    def stamp(value):
+        return SimpleNamespace(sec=int(value), nanosec=0)
+
+    source = SimpleNamespace(
+        sequence=9,
+        reset_epoch=2,
+        recurrent_session_id="session-2",
+        map_version="map-v1",
+        header=SimpleNamespace(stamp=stamp(11.0)),
+        validation_stamp=stamp(11.0),
+        obstacles=[],
+    )
+    status = SimpleNamespace(
+        mode="active",
+        applied=False,
+        active_cell_count=0,
+        fallback_reason="rejection_reason=no_costmap_cells",
+        maximum_cost=0,
+        raised_cell_count=0,
+        maximum_cost_increase=0,
+        source_sequence=9,
+        reset_epoch=2,
+        recurrent_session_id="session-2",
+        map_version="map-v1",
+        stamp=stamp(11.0),
+    )
+    runner = object.__new__(ExperimentRunner)
+    runner._obstacle_state_stamp_s = 11.0
+    runner._obstacle_state = {
+        "obstacles": [{"id": "dynamic_box", "state": "retired"}],
+        "events": [],
+    }
+    runner._latest_cognitive_obstacles = source
+    runner._latest_cognitive_layer_statuses = {
+        "/global_costmap/global_costmap:cognitive_obstacle_layer": status,
+    }
+
+    assert not runner._dynamic_retirement_clearance_observed(
+        {"dynamic_box"}, 10.0, 8, {"global": 8, "local": 8}
+    )
+    runner._latest_cognitive_layer_statuses[
+        "/local_costmap/local_costmap:cognitive_obstacle_layer"
+    ] = SimpleNamespace(**vars(status))
+    source.sequence = 8
+    assert not runner._dynamic_retirement_clearance_observed(
+        {"dynamic_box"}, 10.0, 8, {"global": 8, "local": 8}
+    )
+    source.sequence = 9
+    runner._latest_cognitive_layer_statuses[
+        "/local_costmap/local_costmap:cognitive_obstacle_layer"
+    ].reset_epoch = 1
+    assert not runner._dynamic_retirement_clearance_observed(
+        {"dynamic_box"}, 10.0, 8, {"global": 8, "local": 8}
+    )
+    runner._latest_cognitive_layer_statuses[
+        "/local_costmap/local_costmap:cognitive_obstacle_layer"
+    ].reset_epoch = 2
+    runner._latest_cognitive_layer_statuses[
+        "/local_costmap/local_costmap:cognitive_obstacle_layer"
+    ].fallback_reason = "rejection_reason=offered"
+    assert not runner._dynamic_retirement_clearance_observed(
+        {"dynamic_box"}, 10.0, 8, {"global": 8, "local": 8}
+    )
+
+
+def test_completion_clears_both_costmaps_before_returning():
+    class Future:
+        @staticmethod
+        def result():
+            return SimpleNamespace(
+                success=True,
+                message=json.dumps(
+                    {
+                        "group": "G2",
+                        "retired": ["v6_dynamic_low_box_solo"],
+                    }
+                ),
+            )
+
+    class Client:
+        @staticmethod
+        def wait_for_service(*, timeout_sec):
+            return timeout_sec > 0.0
+
+        @staticmethod
+        def call_async(_request):
+            return Future()
+
+    runner = object.__new__(ExperimentRunner)
+    runner._scenario = SimpleNamespace(
+        scenario_type="dynamic",
+        map_version="v6_kujiale_isaacgen_v1",
+    )
+    runner._nav2_profile = "v6_low_obstacle_isolation"
+    runner._selected_dynamic_trajectories = lambda: (
+        {"id": "v6_dynamic_low_box_solo", "trigger_group": "G2"},
+    )
+    runner._selected_dynamic_groups_for_goal = lambda _goal_id: ["G2"]
+    runner._obstacle_complete_clients = {"G2": Client()}
+    runner._service_timeout_sec = 1.0
+    runner._wait_future = lambda _future, _deadline: True
+    runner._latest_cognitive_obstacles = SimpleNamespace(sequence=8)
+    runner._latest_cognitive_layer_statuses = {}
+    runner._clock_seconds = lambda: 10.0
+    cleared = []
+    runner._clear_navigation_costmaps = lambda: cleared.append(True)
+    runner._dynamic_retirement_clearance_observed = (
+        lambda retired, _barrier, source_cursor, _status_cursors: (
+            retired == {"v6_dynamic_low_box_solo"} and source_cursor == 8
+        )
+    )
+    runner._wait_until = lambda predicate, _timeout: predicate()
+
+    assert runner._complete_obstacle_group("G2") == (
+        "v6_dynamic_low_box_solo",
+    )
+    assert cleared == [True]
+
+    runner._wait_until = lambda _predicate, _timeout: False
+    with pytest.raises(RuntimeError, match="did not clear"):
+        runner._complete_obstacle_group("G2")
+
+
+def test_noncanonical_dynamic_completion_does_not_enter_cognitive_clearance_gate():
+    runner = object.__new__(ExperimentRunner)
+    runner._nav2_profile = "dynamic_avoidance"
+    runner._scenario = SimpleNamespace(
+        scenario_type="dynamic",
+        map_version="other-map",
+    )
+    assert not runner._requires_dynamic_retirement_clearance({"dynamic_box"})
 
 
 def test_strict_success_counts_single_goal_when_route_is_omitted():

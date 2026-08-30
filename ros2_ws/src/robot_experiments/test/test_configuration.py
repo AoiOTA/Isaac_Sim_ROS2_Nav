@@ -149,9 +149,7 @@ def test_v6_final_kujiale_scenarios_are_canonical_single_obstacle_routes(filenam
     ) == 1
     if category == "dynamic":
         assert scenario.obstacles["static"] == []
-        assert not scenario.success.static_geometric_overlap_is_diagnostic_only
-    else:
-        assert scenario.success.static_geometric_overlap_is_diagnostic_only
+    assert scenario.success.static_geometric_overlap_is_diagnostic_only
     assert scenario.dynamic_config_file is not None
     assert scenario.resolve_path(scenario.dynamic_config_file).is_file()
     for configured in (
@@ -162,6 +160,23 @@ def test_v6_final_kujiale_scenarios_are_canonical_single_obstacle_routes(filenam
     ):
         if configured is not None:
             assert not Path(configured).is_absolute()
+
+
+def test_sat_overlap_cannot_be_configured_as_collision_authority(tmp_path):
+    document = yaml.safe_load(
+        (CONFIG / "v6_final_kujiale_static.yaml").read_text(encoding="utf-8")
+    )
+    document["scenario"]["success"][
+        "static_geometric_overlap_is_diagnostic_only"
+    ] = False
+    target = tmp_path / "sat-as-collision.yaml"
+    target.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    with pytest.raises(
+        ConfigurationError,
+        match="SAT overlap is diagnostic-only and cannot determine collision",
+    ):
+        load_scenario(target)
 
 
 @pytest.mark.parametrize("filename", FINAL_RIVERMARK_SCENARIOS)

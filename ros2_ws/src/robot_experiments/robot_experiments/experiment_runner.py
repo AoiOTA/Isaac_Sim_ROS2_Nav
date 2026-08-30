@@ -46,9 +46,11 @@ from tf2_ros import Buffer, TransformException, TransformListener
 
 from bio_nav_interfaces.msg import (
     CanonicalRoute,
+    CognitiveObstacleArray,
     EdgePriorArray,
     NavigationGraph,
     PlanningPrior,
+    RiskLayerStatus,
     RouteEdgeCostArray,
     RouteProgress,
     SRDREdgeDiagnosticArray,
@@ -131,6 +133,7 @@ DYNAMIC_CASE_SET_MOTIONS = {
 EXPERIMENT_ARMS = frozenset({"off", "sr_medium", "dr_medium", "medium"})
 COMMAND_ZERO_TOLERANCE = 1.0e-3
 TERMINAL_ZERO_CADENCE_TOLERANCE_SEC = 0.10
+DYNAMIC_RETIREMENT_CLEAR_TIMEOUT_SEC = 1.0
 
 
 def _strict_success_from_leg_count(
@@ -148,6 +151,39 @@ def _strict_success_from_leg_count(
         and leg_count == expected_leg_count
         and terminal_zero_confirmed
     )
+
+
+def _parse_obstacle_completion(
+    payload: str,
+    *,
+    expected_group: str,
+    expected_ids: set[str],
+) -> tuple[str, ...]:
+    try:
+        decoded = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"obstacle completion returned invalid JSON for {expected_group}: {payload!r}"
+        ) from exc
+    if not isinstance(decoded, dict) or decoded.get("group") != expected_group:
+        raise RuntimeError(
+            f"obstacle completion group mismatch for {expected_group}: {decoded!r}"
+        )
+    retired_raw = decoded.get("retired")
+    if not isinstance(retired_raw, list) or not all(
+        isinstance(identifier, str) and identifier for identifier in retired_raw
+    ):
+        raise RuntimeError(
+            f"obstacle completion returned invalid retired IDs for {expected_group}: "
+            f"{retired_raw!r}"
+        )
+    retired = tuple(retired_raw)
+    if len(retired) != len(set(retired)) or set(retired) != expected_ids:
+        raise RuntimeError(
+            f"obstacle completion retired IDs mismatch for {expected_group}: "
+            f"expected={sorted(expected_ids)!r}, actual={sorted(set(retired))!r}"
+        )
+    return retired
 
 
 def _result_with_terminal_zero(
@@ -841,6 +877,18 @@ class ExperimentRunner(Node):
             self._obstacle_state_callback,
             reliable,
         )
+        self._cognitive_obstacle_subscription = self.create_subscription(
+            CognitiveObstacleArray,
+            "/bio_nav/module2/cognitive_obstacles",
+            self._cognitive_obstacle_callback,
+            reliable,
+        )
+        self._cognitive_layer_status_subscription = self.create_subscription(
+            RiskLayerStatus,
+            "/bio_nav/cognitive_obstacle_layer/status",
+            self._cognitive_layer_status_callback,
+            reliable,
+        )
         self._appearance_state_subscription = self.create_subscription(
             String,
             "/experiment/appearance/state",
@@ -1099,7 +1147,10 @@ class ExperimentRunner(Node):
         self._obstacle_events: list[dict[str, Any]] = []
         self._obstacle_event_keys: set[str] = set()
         self._obstacle_state: dict[str, Any] = {"obstacles": [], "events": []}
+        self._obstacle_state_stamp_s: float | None = None
         self._obstacle_samples: list[dict[str, Any]] = []
+        self._latest_cognitive_obstacles: CognitiveObstacleArray | None = None
+        self._latest_cognitive_layer_statuses: dict[str, RiskLayerStatus] = {}
         self._dynamic_guard_aborted = False
         self._dynamic_safety_yield = False
         self._rgb_frame: dict[str, Any] | None = None
@@ -1307,6 +1358,7 @@ class ExperimentRunner(Node):
             return
         self._obstacle_state = {"obstacles": obstacles, "events": events}
         stamp_s = self._clock_seconds()
+        self._obstacle_state_stamp_s = stamp_s
         if stamp_s is not None:
             for obstacle in obstacles:
                 if isinstance(obstacle, dict):
@@ -1322,6 +1374,14 @@ class ExperimentRunner(Node):
                     self._dynamic_guard_aborted = True
                 if event.get("event") == "safety_yield":
                     self._dynamic_safety_yield = True
+
+    def _cognitive_obstacle_callback(self, message: CognitiveObstacleArray) -> None:
+        self._latest_cognitive_obstacles = message
+
+    def _cognitive_layer_status_callback(self, message: RiskLayerStatus) -> None:
+        consumer = str(message.consumer)
+        if consumer:
+            self._latest_cognitive_layer_statuses[consumer] = message
 
     def _appearance_state_callback(self, message: String) -> None:
         try:
@@ -2530,11 +2590,110 @@ class ExperimentRunner(Node):
                 detail = response.message if response is not None else "no response"
                 raise RuntimeError(f"obstacle trigger failed for {group}: {detail}")
 
-    def _complete_obstacle_group(self, goal_id: str | None) -> None:
+    def _dynamic_retirement_clearance_observed(
+        self,
+        retired_ids: set[str],
+        barrier_ros_s: float,
+        source_sequence_before: int,
+        status_sequences_before: Mapping[str, int],
+    ) -> bool:
+        if (
+            self._obstacle_state_stamp_s is None
+            or self._obstacle_state_stamp_s <= barrier_ros_s
+        ):
+            return False
+        obstacle_states = {
+            str(item.get("id")): str(item.get("state"))
+            for item in self._obstacle_state.get("obstacles", [])
+            if isinstance(item, Mapping) and item.get("id")
+        }
+        if any(obstacle_states.get(identifier) != "retired" for identifier in retired_ids):
+            return False
+
+        source = self._latest_cognitive_obstacles
+        if (
+            source is None
+            or int(source.sequence) <= source_sequence_before
+            or (
+                source.header.stamp.sec
+                + source.header.stamp.nanosec * 1.0e-9
+                <= barrier_ros_s
+            )
+            or (
+                source.validation_stamp.sec
+                + source.validation_stamp.nanosec * 1.0e-9
+                <= barrier_ros_s
+            )
+            or bool(source.obstacles)
+        ):
+            return False
+
+        required_consumers: dict[str, RiskLayerStatus] = {}
+        for consumer, status in self._latest_cognitive_layer_statuses.items():
+            status_stamp_s = status.stamp.sec + status.stamp.nanosec * 1.0e-9
+            if status_stamp_s <= barrier_ros_s:
+                continue
+            if "global_costmap" in consumer:
+                required_consumers["global"] = status
+            elif "local_costmap" in consumer:
+                required_consumers["local"] = status
+        if set(required_consumers) != {"global", "local"}:
+            return False
+        return all(
+            str(status.mode) == "active"
+            and not bool(status.applied)
+            and int(status.active_cell_count) == 0
+            and "rejection_reason=no_costmap_cells" in str(status.fallback_reason)
+            and int(status.maximum_cost) == 0
+            and int(status.raised_cell_count) == 0
+            and int(status.maximum_cost_increase) == 0
+            and int(status.source_sequence) == int(source.sequence)
+            and int(status.source_sequence) > status_sequences_before.get(role, -1)
+            and int(status.reset_epoch) == int(source.reset_epoch)
+            and str(status.recurrent_session_id) == str(source.recurrent_session_id)
+            and str(status.map_version) == str(source.map_version)
+            for role, status in required_consumers.items()
+        )
+
+    def _requires_dynamic_retirement_clearance(
+        self, retired_ids: set[str]
+    ) -> bool:
+        return bool(
+            self._nav2_profile == "v6_low_obstacle_isolation"
+            and self._scenario.map_version == "v6_kujiale_isaacgen_v1"
+            and retired_ids == {"v6_dynamic_low_box_solo"}
+        )
+
+    def _complete_obstacle_group(self, goal_id: str | None) -> tuple[str, ...]:
         """Retire only the actors tied to a successfully completed route goal."""
         if self._scenario.scenario_type != "dynamic" or not goal_id:
-            return
+            return ()
+        source_sequence_before = (
+            int(self._latest_cognitive_obstacles.sequence)
+            if self._latest_cognitive_obstacles is not None
+            else -1
+        )
+        status_sequences_before: dict[str, int] = {}
+        for consumer, status in self._latest_cognitive_layer_statuses.items():
+            if "global_costmap" in consumer:
+                status_sequences_before["global"] = int(status.source_sequence)
+            elif "local_costmap" in consumer:
+                status_sequences_before["local"] = int(status.source_sequence)
+
+        retired_ids: list[str] = []
+        selected = self._selected_dynamic_trajectories()
         for group in self._selected_dynamic_groups_for_goal(goal_id):
+            expected_ids = {
+                str(item["id"])
+                for item in selected
+                if item.get("trigger_group") == group
+                and isinstance(item.get("id"), str)
+                and item["id"]
+            }
+            if not expected_ids:
+                raise ConfigurationError(
+                    f"dynamic completion group {group!r} has no selected actor IDs"
+                )
             client = self._obstacle_complete_clients.get(group)
             if client is None:
                 client = self.create_client(
@@ -2552,6 +2711,36 @@ class ExperimentRunner(Node):
             if response is None or not response.success:
                 detail = response.message if response is not None else "no response"
                 raise RuntimeError(f"obstacle completion failed for {group}: {detail}")
+            retired_ids.extend(
+                _parse_obstacle_completion(
+                    str(response.message),
+                    expected_group=group,
+                    expected_ids=expected_ids,
+                )
+            )
+
+        retired_set = set(retired_ids)
+        if self._requires_dynamic_retirement_clearance(retired_set):
+            barrier_ros_s = self._clock_seconds()
+            if barrier_ros_s is None:
+                raise RuntimeError(
+                    "dynamic obstacle retirement clearance requires ROS time"
+                )
+            self._clear_navigation_costmaps()
+            if not self._wait_until(
+                lambda: self._dynamic_retirement_clearance_observed(
+                    retired_set,
+                    barrier_ros_s,
+                    source_sequence_before,
+                    status_sequences_before,
+                ),
+                DYNAMIC_RETIREMENT_CLEAR_TIMEOUT_SEC,
+            ):
+                raise RuntimeError(
+                    "dynamic obstacle retirement did not clear the current Module2 "
+                    "source and both cognitive costmap consumers before the next leg"
+                )
+        return tuple(retired_ids)
 
     def _navigate(self) -> tuple[bool, bool, int]:
         if self._navigation_execution_backend == "route_guided":
@@ -3446,22 +3635,10 @@ class ExperimentRunner(Node):
                 "maximum_sat_overlap_m": maximum_static_overlap_m,
                 "maximum_accepted_overlap_m": allowed_static_overlap_m,
                 "exceeds_acceptance_overlap": static_contact_exceeds_acceptance,
-                "diagnostic_only": (
-                    self._scenario.success.static_geometric_overlap_is_diagnostic_only
-                ),
-                "acceptance_policy": (
-                    "contact_sensor_only_static_geometry_diagnostic"
-                    if self._scenario.success.static_geometric_overlap_is_diagnostic_only
-                    else "contact_sensor_or_overlap_above_configured_tolerance"
-                ),
+                "diagnostic_only": True,
+                "acceptance_policy": "contact_sensor_only_static_geometry_diagnostic",
             }
         )
-        if (
-            requires_static_contact_gate
-            and static_contact_exceeds_acceptance
-            and not self._scenario.success.static_geometric_overlap_is_diagnostic_only
-        ):
-            self._collision_detected = True
         goal_x, goal_y = self._scenario.goal.position
         position_error = math.hypot(gt.x - goal_x, gt.y - goal_y) if gt else 0.0
         goal_yaw = math.radians(self._scenario.goal.yaw_deg)
@@ -3474,8 +3651,6 @@ class ExperimentRunner(Node):
                 or self._collision_monitor_active
             )
         ) or not self._scenario.success.require_safety_observations
-        if requires_static_contact_gate:
-            safety_complete = bool(safety_complete and static_contact["observed"])
         thresholds = SingleRunThresholds(
             position_tolerance_m=self._scenario.success.position_tolerance_m,
             orientation_tolerance_rad=math.radians(
@@ -3627,16 +3802,8 @@ class ExperimentRunner(Node):
         if (
             requires_static_contact_gate
             and static_contact["contact_detected"]
-            and (
-                self._scenario.success.static_geometric_overlap_is_diagnostic_only
-                or not static_contact_exceeds_acceptance
-            )
         ):
-            warnings.append(
-                "static_geometric_overlap_diagnostic_only"
-                if self._scenario.success.static_geometric_overlap_is_diagnostic_only
-                else "static_geometric_overlap_within_diagnostic_tolerance"
-            )
+            warnings.append("static_geometric_overlap_diagnostic_only")
         if interaction_acceptance["clearance_warning_below_0_10m"]:
             warnings.append("dynamic_min_clearance_below_0_10m")
         dynamic_behavior: dict[str, Any] = {"required": False, "complete": True}

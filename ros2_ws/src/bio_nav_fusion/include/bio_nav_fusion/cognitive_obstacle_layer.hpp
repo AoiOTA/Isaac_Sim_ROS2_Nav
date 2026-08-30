@@ -174,7 +174,7 @@ private:
   std::string consumer_id_;
   std::string obstacle_topic_{"/bio_nav/module2/cognitive_obstacles"};
   double maximum_age_s_{0.5};
-  double track_ttl_s_{5.0};
+  double track_ttl_s_{90.0};
   double maximum_ood_probability_{0.2};
   int maximum_soft_cost_{80};
   double collision_min_height_m_{0.02};

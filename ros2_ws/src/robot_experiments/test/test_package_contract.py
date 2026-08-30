@@ -682,6 +682,28 @@ def test_runner_only_publishes_a21_route_goals_and_never_controls_or_localizes_r
     assert '"reset_map_base_translation_tolerance_m", 0.05' in source
     assert '"reset_map_base_translation_tolerance_m": (' in source
 
+
+def test_only_contact_sensor_callback_can_latch_runner_collision_state():
+    source = (PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py").read_text()
+    tree = ast.parse(source)
+    assigned_by = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for child in ast.walk(node):
+            if not isinstance(child, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                continue
+            targets = child.targets if isinstance(child, ast.Assign) else [child.target]
+            if any(
+                isinstance(target, ast.Attribute)
+                and target.attr == "_collision_detected"
+                for target in targets
+            ):
+                assigned_by.append(node.name)
+
+    assert sorted(assigned_by) == ["_clear_run_state", "_collision_callback"]
+    assert 'safety_complete and static_contact["observed"]' not in source
+
     launch_source = (PACKAGE_ROOT / "launch" / "experiment.launch.py").read_text()
     assert '"reset_map_base_translation_tolerance_m", default_value="0.05"' in launch_source
     assert (

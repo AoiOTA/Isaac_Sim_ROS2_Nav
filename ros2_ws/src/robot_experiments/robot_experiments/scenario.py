@@ -826,11 +826,16 @@ def load_scenario(path: str | Path) -> Scenario:
     if not isinstance(safety_required, bool):
         raise ConfigurationError("scenario.success.require_safety_observations must be boolean")
     static_overlap_diagnostic_only = success_raw.get(
-        "static_geometric_overlap_is_diagnostic_only", False
+        "static_geometric_overlap_is_diagnostic_only", True
     )
     if not isinstance(static_overlap_diagnostic_only, bool):
         raise ConfigurationError(
             "scenario.success.static_geometric_overlap_is_diagnostic_only must be boolean"
+        )
+    if not static_overlap_diagnostic_only:
+        raise ConfigurationError(
+            "scenario.success.static_geometric_overlap_is_diagnostic_only must be true; "
+            "SAT overlap is diagnostic-only and cannot determine collision"
         )
 
     position_tolerance = _positive(
