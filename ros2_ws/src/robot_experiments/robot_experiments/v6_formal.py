@@ -1689,14 +1689,30 @@ def load_indoor_campaign_manifest(
         if len({name for name, _value in pairs}) != len(pairs):
             raise V6ContractError("indoor runner_arguments contains duplicate names")
         argument_map = dict(pairs)
-        if argument_map.get("navigation_execution_backend") != "route_guided":
-            raise V6ContractError("indoor campaign must freeze route_guided execution")
-        if argument_map.get("require_module2_planning_ready") != "true":
-            raise V6ContractError("indoor campaign must require Module2 planning readiness")
+        expected_stable_arguments = {
+            "nav2_profile": "v6_low_obstacle_isolation",
+            "nav2_config_file": str(_canonical_nav2_config()),
+            "spawn_poses_file": str(_canonical_indoor_spawn_manifest()),
+            "navigation_execution_backend": "route_guided",
+            "require_module2_planning_ready": "true",
+            "module2_planning_ready_timeout_sec": "120.0",
+            "clear_slam_localization_buffer": "false",
+            "reset_map_base_translation_tolerance_m": "0.1",
+        }
+        if argument_map != expected_stable_arguments:
+            raise V6ContractError(
+                "indoor runner_arguments must match the exact audited stable T3 contract"
+            )
         _effective_indoor_spawn_manifest(arguments)
         scenario_configs[condition_id] = _scenario_runtime_config_paths(
             scenario, arguments
-        )
+        ) | {
+            (
+                Path(__file__).resolve().parents[1]
+                / "launch"
+                / "experiment.launch.py"
+            ).resolve()
+        }
         conditions.append(
             FormalCondition(
                 condition_id=condition_id,
@@ -2639,6 +2655,9 @@ def _build_indoor_pilot_manifest(
             f"spawn_poses_file:={_canonical_indoor_spawn_manifest()}",
             "navigation_execution_backend:=route_guided",
             "require_module2_planning_ready:=true",
+            "module2_planning_ready_timeout_sec:=120.0",
+            "clear_slam_localization_buffer:=false",
+            "reset_map_base_translation_tolerance_m:=0.1",
         ]
         condition_rows.append({
             "id": condition_id,
@@ -2650,7 +2669,15 @@ def _build_indoor_pilot_manifest(
         scenario_entries[condition_id] = _frozen_file_entry(scenario_path)
         scenario_config_entries[condition_id] = [
             _frozen_file_entry(path)
-            for path in sorted(_scenario_runtime_config_paths(scenario, runner_arguments))
+            for path in sorted(
+                _scenario_runtime_config_paths(scenario, runner_arguments)
+                | {
+                    (
+                        module3_root
+                        / "ros2_ws/src/robot_experiments/launch/experiment.launch.py"
+                    ).resolve()
+                }
+            )
         ]
         static_ids, dynamic_ids = INDOOR_EXPECTED_OBSTACLES[condition_id]
         if scenario.dynamic_config_file is None:

@@ -776,6 +776,19 @@ def _mock_validator_promotion(monkeypatch):
     )
 
 
+def _expected_indoor_stable_arguments():
+    return [
+        "nav2_profile:=v6_low_obstacle_isolation",
+        f"nav2_config_file:={v6_formal_module._canonical_nav2_config()}",
+        f"spawn_poses_file:={v6_formal_module._canonical_indoor_spawn_manifest()}",
+        "navigation_execution_backend:=route_guided",
+        "require_module2_planning_ready:=true",
+        "module2_planning_ready_timeout_sec:=120.0",
+        "clear_slam_localization_buffer:=false",
+        "reset_map_base_translation_tolerance_m:=0.1",
+    ]
+
+
 def _write_indoor_pilot_inputs(tmp_path: Path, monkeypatch):
     _mock_validator_promotion(monkeypatch)
     pilot_manifest, aggregate_path, _reference = _write_sufficient_pilot_inputs(
@@ -789,9 +802,12 @@ def _write_indoor_pilot_inputs(tmp_path: Path, monkeypatch):
         for condition_id in v6_formal_module.INDOOR_CONDITION_IDS
     ]
     for row in pilot["conditions"]:
-        row["runner_arguments"].append(
-            f"spawn_poses_file:={v6_formal_module._canonical_indoor_spawn_manifest()}"
-        )
+        row["runner_arguments"].extend([
+            f"spawn_poses_file:={v6_formal_module._canonical_indoor_spawn_manifest()}",
+            "module2_planning_ready_timeout_sec:=120.0",
+            "clear_slam_localization_buffer:=false",
+            "reset_map_base_translation_tolerance_m:=0.1",
+        ])
     pilot["freeze"]["scenarios"] = {
         condition_id: pilot["freeze"]["scenarios"][condition_id]
         for condition_id in v6_formal_module.INDOOR_CONDITION_IDS
@@ -800,6 +816,13 @@ def _write_indoor_pilot_inputs(tmp_path: Path, monkeypatch):
         condition_id: pilot["freeze"]["scenario_configs"][condition_id]
         for condition_id in v6_formal_module.INDOOR_CONDITION_IDS
     }
+    experiment_launch = REPO / "ros2_ws/src/robot_experiments/launch/experiment.launch.py"
+    experiment_launch_entry = {
+        "path": str(experiment_launch.resolve()),
+        "sha256": hashlib.sha256(experiment_launch.read_bytes()).hexdigest(),
+    }
+    for rows in pilot["freeze"]["scenario_configs"].values():
+        rows.append(dict(experiment_launch_entry))
     pilot["freeze"]["frozen_assets"] = {
         name: pilot["freeze"]["frozen_assets"][name]
         for name in v6_formal_module.INDOOR_FROZEN_ASSET_KEYS
@@ -1880,6 +1903,7 @@ def test_indoor_pilot_aggregate_publishes_only_nine_indoor_runs(
     assert result["formal_qualification"] == NOT_QUALIFIED
     assert result["strict_successes"] == 9
     aggregate = json.loads(aggregate_output.read_text())
+    pilot_manifest = json.loads(manifest_output.read_text())
     assert aggregate["schema_version"] == v6_formal_module.INDOOR_PILOT_AGGREGATE_SCHEMA
     assert aggregate["validator_only_head_promotion"]["schema"] == (
         "bio_nav.v6_validator_only_head_promotion.v1"
@@ -1891,6 +1915,22 @@ def test_indoor_pilot_aggregate_publishes_only_nine_indoor_runs(
         v6_formal_module.INDOOR_CONDITION_IDS
     )
     assert sum(len(row["episodes"]) for row in aggregate["conditions"]) == 9
+    assert all(
+        row["runner_arguments"] == _expected_indoor_stable_arguments()
+        for row in pilot_manifest["conditions"]
+    )
+    experiment_launch = (
+        REPO / "ros2_ws/src/robot_experiments/launch/experiment.launch.py"
+    ).resolve()
+    assert hashlib.sha256(experiment_launch.read_bytes()).hexdigest() == (
+        "e11de8da7b00e75d1ad99ec09adf74aeccd8471b3e28c5a653a10c01d0a1bef5"
+    )
+    for rows in pilot_manifest["freeze"]["scenario_configs"].values():
+        launch_rows = [row for row in rows if row["path"] == str(experiment_launch)]
+        assert launch_rows == [{
+            "path": str(experiment_launch),
+            "sha256": "e11de8da7b00e75d1ad99ec09adf74aeccd8471b3e28c5a653a10c01d0a1bef5",
+        }]
 
 
 def test_indoor_pilot_aggregate_rejects_non_indoor_root(tmp_path, monkeypatch):
@@ -2145,7 +2185,114 @@ def test_indoor_freezer_requires_unique_canonical_v6_spawn_override(
     pilot_manifest.write_text(json.dumps(pilot), encoding="utf-8")
     monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
 
-    with pytest.raises(V6ContractError, match="spawn_poses_file|duplicate"):
+    with pytest.raises(V6ContractError, match="spawn_poses_file|duplicate|audited stable"):
+        freeze_indoor_campaign_from_pilot(
+            pilot_manifest_path=pilot_manifest,
+            pilot_aggregate_path=aggregate,
+            output_manifest_path=tmp_path / "indoor.json",
+            indoor_output_root=tmp_path / "nas" / "indoor-60",
+        )
+
+
+@pytest.mark.parametrize(
+    "stable_key",
+    [
+        "nav2_profile", "nav2_config_file", "spawn_poses_file",
+        "navigation_execution_backend", "require_module2_planning_ready",
+        "module2_planning_ready_timeout_sec", "clear_slam_localization_buffer",
+        "reset_map_base_translation_tolerance_m",
+    ],
+)
+@pytest.mark.parametrize("mutation", ["missing", "wrong", "duplicate"])
+def test_indoor_freezer_requires_each_exact_audited_stable_t3_argument(
+    tmp_path, monkeypatch, stable_key, mutation
+):
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
+    pilot = json.loads(pilot_manifest.read_text())
+    arguments = pilot["conditions"][0]["runner_arguments"]
+    index = next(
+        i for i, value in enumerate(arguments) if value.startswith(f"{stable_key}:=")
+    )
+    if mutation == "missing":
+        arguments.pop(index)
+    elif mutation == "wrong":
+        arguments[index] = f"{stable_key}:=wrong"
+    else:
+        arguments.append(arguments[index])
+    pilot_manifest.write_text(json.dumps(pilot), encoding="utf-8")
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+
+    with pytest.raises(V6ContractError, match="audited stable|duplicate"):
+        freeze_indoor_campaign_from_pilot(
+            pilot_manifest_path=pilot_manifest,
+            pilot_aggregate_path=aggregate,
+            output_manifest_path=tmp_path / "indoor.json",
+            indoor_output_root=tmp_path / "nas" / "indoor-60",
+        )
+
+
+def test_indoor_freezer_rejects_extra_unaudited_stable_t3_argument(
+    tmp_path, monkeypatch
+):
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
+    pilot = json.loads(pilot_manifest.read_text())
+    pilot["conditions"][0]["runner_arguments"].append("extra_stable_override:=true")
+    pilot_manifest.write_text(json.dumps(pilot), encoding="utf-8")
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+
+    with pytest.raises(V6ContractError, match="audited stable"):
+        freeze_indoor_campaign_from_pilot(
+            pilot_manifest_path=pilot_manifest,
+            pilot_aggregate_path=aggregate,
+            output_manifest_path=tmp_path / "indoor.json",
+            indoor_output_root=tmp_path / "nas" / "indoor-60",
+        )
+
+
+def test_indoor_freezer_rejects_failed_clear_slam_true_default_regression(
+    tmp_path, monkeypatch
+):
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
+    pilot = json.loads(pilot_manifest.read_text())
+    arguments = pilot["conditions"][0]["runner_arguments"]
+    index = arguments.index("clear_slam_localization_buffer:=false")
+    arguments[index] = "clear_slam_localization_buffer:=true"
+    pilot_manifest.write_text(json.dumps(pilot), encoding="utf-8")
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+
+    with pytest.raises(V6ContractError, match="audited stable"):
+        freeze_indoor_campaign_from_pilot(
+            pilot_manifest_path=pilot_manifest,
+            pilot_aggregate_path=aggregate,
+            output_manifest_path=tmp_path / "indoor.json",
+            indoor_output_root=tmp_path / "nas" / "indoor-60",
+        )
+
+
+@pytest.mark.parametrize("mutation", ["missing", "wrong_sha", "wrong_path"])
+def test_indoor_freezer_requires_frozen_experiment_launch_source(
+    tmp_path, monkeypatch, mutation
+):
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
+    pilot = json.loads(pilot_manifest.read_text())
+    rows = pilot["freeze"]["scenario_configs"]["indoor_static"]
+    index = next(
+        i for i, row in enumerate(rows)
+        if row["path"].endswith("/launch/experiment.launch.py")
+    )
+    if mutation == "missing":
+        rows.pop(index)
+    elif mutation == "wrong_sha":
+        rows[index]["sha256"] = "0" * 64
+    else:
+        rows[index]["path"] = str(REPO / "ros2_ws/src/robot_experiments/launch/wrong.py")
+    pilot_manifest.write_text(json.dumps(pilot), encoding="utf-8")
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+
+    with pytest.raises(
+        V6ContractError,
+        match="scenario config set mismatch|sha256|frozen file|readable file",
+    ):
         freeze_indoor_campaign_from_pilot(
             pilot_manifest_path=pilot_manifest,
             pilot_aggregate_path=aggregate,
@@ -2834,11 +2981,26 @@ def test_indoor_execution_dispatches_exactly_one_episode(tmp_path, monkeypatch):
     )
 
     assert len(calls) == 1
-    assert "run_indices:=1" in calls[0][0]
+    command = calls[0][0]
+    assert "run_indices:=1" in command
     assert (
         f"spawn_poses_file:={v6_formal_module._canonical_indoor_spawn_manifest()}"
-        in calls[0][0]
+        in command
     )
+    named_arguments = [item for item in command if ":=" in item]
+    names = [item.split(":=", 1)[0] for item in named_arguments]
+    stable_names = {
+        item.split(":=", 1)[0] for item in _expected_indoor_stable_arguments()
+    }
+    dynamic_names = {
+        "record_evidence", "record_bag", "fail_stop", "run_indices", "resume",
+        "condition_stack_id", "stack_session_id", "formal_freeze_digest",
+        "condition_stack_contract_path",
+    }
+    assert set(names) == stable_names | dynamic_names
+    assert all(names.count(name) == 1 for name in stable_names | dynamic_names)
+    assert command.count(str(campaign.conditions[0].scenario_file)) == 1
+    assert command.count(str(campaign.conditions[0].output_directory)) == 1
     assert result["present_episodes"] == 1
     assert result["formal_qualification"] == NOT_QUALIFIED
 
