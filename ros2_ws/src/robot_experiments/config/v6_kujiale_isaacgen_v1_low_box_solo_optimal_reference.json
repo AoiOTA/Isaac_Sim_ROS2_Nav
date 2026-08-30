@@ -1,0 +1,115 @@
+{
+  "algorithm": {
+    "generator": "robot_experiments/kujiale_reference.py",
+    "generator_sha256": "f5097c4bba5b0bb4ea209e1827e6783965ded996c0f7786e70745ddc3daef834",
+    "heading_bins": 16,
+    "motion_primitives": [
+      "in_place_rotation",
+      "forward_swept_translation"
+    ],
+    "name": "footprint_aware_se2_state_lattice_astar",
+    "occupied_and_unknown_blocked": true,
+    "optimal_path": "robot_experiments/optimal_path.py",
+    "optimal_path_sha256": "d114eed35ec4ff25798d2e0b210decf527286cff20dc3a1b9c3252d7bc7ae95d",
+    "reported_length": "translation_only"
+  },
+  "campaign": "v6_final_kujiale_static",
+  "converged": true,
+  "convergence_percent": 0.6209745711819254,
+  "convergence_requirement_percent": 1.0,
+  "footprint": {
+    "padding_m": 0.005,
+    "vertices": [
+      [
+        -0.23,
+        -0.21
+      ],
+      [
+        0.255,
+        -0.21
+      ],
+      [
+        0.255,
+        0.21
+      ],
+      [
+        -0.23,
+        0.21
+      ]
+    ]
+  },
+  "goal_acceptance": {
+    "orientation_handling": "all collision-free terminal headings; rotations are checked but have zero reported translation length",
+    "position_tolerance_m": 0.25
+  },
+  "legs": [
+    {
+      "id": "G2",
+      "length_m_0_025": 10.537985442732897,
+      "length_m_0_05": 10.529351941404517
+    },
+    {
+      "id": "G3",
+      "length_m_0_025": 10.78216914575332,
+      "length_m_0_05": 10.83656792780947
+    },
+    {
+      "id": "G4",
+      "length_m_0_025": 4.132842967431046,
+      "length_m_0_05": 4.1740451483622305
+    },
+    {
+      "id": "G5",
+      "length_m_0_025": 2.9988808306217427,
+      "length_m_0_05": 3.0590169943749443
+    },
+    {
+      "id": "G1",
+      "length_m_0_025": 6.822221102501058,
+      "length_m_0_05": 6.894160665129249
+    }
+  ],
+  "map": {
+    "id": "v6_kujiale_isaacgen_v1",
+    "image": "v6_kujiale_isaacgen_v1.pgm",
+    "image_sha256": "2e116d2bac23ef59dcf7156fa57a25e9ad43c2916fa56ebb02e09d9c5ff3fddc",
+    "native_resolution_m": 0.05,
+    "yaml": "v6_kujiale_isaacgen_v1.yaml",
+    "yaml_sha256": "c9dc85aa3f80107a5116eeb974688b35aac26f122f6c94d646e9360e99f97ce8"
+  },
+  "scenario": {
+    "file": "v6_final_kujiale_static.yaml",
+    "id": "v6_final_kujiale_static",
+    "obstacle_file": "v6_kujiale_low_obstacles_frozen.yaml",
+    "obstacle_id": "v6_low_box_solo",
+    "obstacle_layout_id": "kujiale_v6_low_obstacles_indoor_center_connected_r3_20260829",
+    "obstacle_sha256": "2416acc83a189d52309884318dc51b7346a542e5527b7d608ce5243f072e34a2",
+    "sha256": "7a80fd5ade227d1ef937949488c1f5a3a3e315d2af85aa316b2edae96b87fcdd",
+    "spawn_file": "kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml",
+    "spawn_pose_name": "long_route_start_g1",
+    "spawn_sha256": "df06635cf706f407f5d58e8ebcf7788b0bea3fe1914589e768ade754a0098d70"
+  },
+  "schema_version": 1,
+  "static_obstacle_polygons": [
+    [
+      [
+        -0.9,
+        -0.5
+      ],
+      [
+        -0.6,
+        -0.5
+      ],
+      [
+        -0.6,
+        -0.2
+      ],
+      [
+        -0.9,
+        -0.2
+      ]
+    ]
+  ],
+  "total_length_m_0_025": 35.27409948904006,
+  "total_length_m_0_05": 35.493142677080414
+}

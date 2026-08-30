@@ -369,12 +369,20 @@ def test_v6_pilot_kujiale_static_hotreset_matches_final_contract():
     assert {
         key: value
         for key, value in pilot_scenario.items()
-        if key not in {"id", "runs"}
+        if key not in {"id", "runs", "configs"}
     } == {
         key: value
         for key, value in final_scenario.items()
-        if key not in {"id", "runs"}
+        if key not in {"id", "runs", "configs"}
     }
+    assert pilot_scenario["configs"] == {
+        key: value
+        for key, value in final_scenario["configs"].items()
+        if key != "optimal_reference"
+    }
+    assert final.optimal_reference_file == (
+        "v6_kujiale_isaacgen_v1_low_box_solo_optimal_reference.json"
+    )
     assert pilot.timeout_sec == final.timeout_sec
     assert pilot.leg_timeout_sec == final.leg_timeout_sec
     assert pilot.dynamic_config_file == final.dynamic_config_file
