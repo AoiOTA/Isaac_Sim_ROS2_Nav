@@ -59,21 +59,37 @@ low-obstacle profile does not use the raw RGB-D voxel writer.
   is fixed by `e3c4385` (`track_ttl_s`) and validated live on d220: dynamic
   rep01-03 all pass, layer status shows zero applied cells from the retire
   event onward, and both costmap instances log the TTL expiry;
+- **regression found in the pilot rerun on `e3c4385`**: static 3/3, dynamic
+  3/3, but appearance 1/3 — the 5.0 s TTL is shorter than the static box's
+  worst sighting gap (24.1 s on the G3 approach), so rep03 ended in a real
+  contact (Isaac contact sensor fired) and rep01 in a collision-monitor stop
+  with no contact. Contact judgments use the Isaac contact sensor only; SAT
+  overlap is diagnostic-only. The revised design (not yet implemented): TTL
+  default 90 s as leak backstop + runner clears both costmaps right after a
+  dynamic group retires at leg success (the layer's `reset()` already calls
+  `clearStaticTracks()`);
 - sufficient Pilot: `0/43`;
 - formal campaign: `0/120`;
 - the previous indoor static20 stress run is excluded from both counts.
 
 ## Resume point
 
-Finish the per-condition pilot rerun on the fixed runtime (3 reps each of
-static, dynamic, appearance; one fresh cold stack per condition; fresh
-domain/root/socket; headless Isaac; per-rep dispatch with the canonical
-runner arguments `run_indices:=N resume:=false
+Implement the TTL revision first (see the evidence bullet above): in
+`bio_nav_fusion` raise the `track_ttl_s` default to 90.0 (leak backstop) and
+keep the layer tests pinned to an explicit TTL; in `robot_experiments` make
+`_complete_obstacle_group` report actual retirements and, on dynamic leg
+success with at least one retirement, clear both costmaps via the existing
+`_costmap_clear_clients` before the next leg. Rebuild both packages in the
+scrubbed environment of Integration `docs/RUNBOOK.md` section 1 (never with an
+inherited polluted shell — the prefix-chain pollution incident is recorded in
+Integration `docs/CURRENT_STATE.md`), run both packages' tests, then rerun the
+per-condition pilot (static/dynamic/appearance x3, fresh cold stack per
+condition, canonical runner arguments `run_indices:=N resume:=false
 clear_slam_localization_buffer:=false
 reset_map_base_translation_tolerance_m:=0.1
-navigation_execution_backend:=route_guided`). Confirm static and appearance
-are unaffected by the `track_ttl_s` change and that dynamic no longer shows
-the ghost family, then report for a counted-rerun decision.
+navigation_execution_backend:=route_guided`). Appearance must reach 3/3 with
+zero contact-sensor events before any counted rerun; then report for a
+counted-rerun decision.
 
 Do not relaunch Rivermark until the user resumes outdoor work. When resumed,
 run the load-halving cold-start A/B per Integration `docs/CURRENT_STATE.md`.
