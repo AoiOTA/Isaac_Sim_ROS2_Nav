@@ -300,22 +300,39 @@ def test_run_passes_single_gpu_launch_contract_to_simulation_app(monkeypatch):
     assert captured == _simulation_app_config(_config(), disable_dlss=True)
 
 
-def test_main_passes_disable_dlss_directly_to_run(monkeypatch):
+@pytest.mark.parametrize(
+    ("argv", "expected_localization_owner"),
+    (
+        (["--disable-dlss"], "auto"),
+        (["--disable-dlss", "--localization-owner", "ideal"], "ideal"),
+    ),
+)
+def test_main_passes_runtime_contract_directly_to_run(
+    monkeypatch, argv, expected_localization_owner
+):
     selected_pose = SimpleNamespace(map=SimpleNamespace(calibrated=True))
     captured = {}
 
     monkeypatch.setattr(
         navigation_sim, "load_project_config", lambda _path: _config())
+
+    def fake_validate_configuration(
+        _config, _profile, *, localization_owner
+    ):
+        captured["localization_owner"] = localization_owner
+        return selected_pose, object(), object()
+
     monkeypatch.setattr(
-        navigation_sim,
-        "validate_configuration",
-        lambda _config, _profile: (selected_pose, object(), object()),
+        navigation_sim, "validate_configuration", fake_validate_configuration
     )
 
     def fake_run(*_args, **kwargs):
-        captured.update(kwargs)
+        captured["run_kwargs"] = kwargs
 
     monkeypatch.setattr(navigation_sim, "run", fake_run)
 
-    assert navigation_sim.main(["--disable-dlss"]) == 0
-    assert captured == {"disable_dlss": True}
+    assert navigation_sim.main(argv) == 0
+    assert captured == {
+        "localization_owner": expected_localization_owner,
+        "run_kwargs": {"disable_dlss": True},
+    }
