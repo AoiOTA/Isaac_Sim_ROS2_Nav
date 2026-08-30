@@ -12,11 +12,12 @@ only the Module3 boundary needed to avoid launching a stale runtime.
   `/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3`
 - branch: `v6-compute-amcl-dual-odom`
 - reviewed runtime commit:
-  `7ad02f894aee3034295d324040bb64c27f4148a8`
+  `e3c4385d8a50d78d1fb41f5a1ceca7bfd0f6c83d`
 
-This documentation commit descends that runtime implementation. Before any
-run, verify local HEAD, upstream, and the remote branch agree and tracked files
-are clean.
+This documentation update descends that runtime implementation, which adds
+the cognitive-obstacle-layer `track_ttl_s` ghost purge on top of `7ad02f8`.
+Before any run, verify local HEAD, upstream, and the remote branch agree and
+tracked files are clean.
 
 ## Active ownership
 
@@ -47,39 +48,34 @@ low-obstacle profile does not use the raw RGB-D voxel writer.
 - d211 proved T2 cannot start first because its startup reset needs the ROS
   wheel/EKF reset services;
 - d210 and d208 failed before READY with Isaac/RTX GPU faults;
-- the DLSS-disabled candidate is reviewed, pushed, and startup-enforced
-  (`5004ee5`) but has not been run live;
-- indoor d214 canonical stability pilot passed 3/3 on the route_guided chain
-  (0.11-0.13 m final error, zero recoveries); two earlier d214 reps dispatched
-  with the wrong `navigate_to_pose` backend are operator error, not evidence;
-  the d212 batch (12 static reps) had two genuine product failures (rep04
-  edge-28 low-geometry stall, rep11 G4 doorway MPPI patience abort);
+- the DLSS-disabled candidate ran live: d218 held 30 min stable (GPU question
+  passed), but the identical d219 cold start crashed 71 s into startup with
+  Xid 109 / CTX_SWITCH_TIMEOUT after foliage point-instancer warnings — DLSS
+  is not the root cause; outdoor escalation (load-halving A/B) is chosen and
+  parked until the user resumes outdoor work;
+- indoor d215 formal 3x20 on `7ad02f8`: static 19/20, dynamic 16/20,
+  appearance 20/20 (55/60);
+- the dynamic ghost family (costmap LETHAL persisting after the box retires)
+  is fixed by `e3c4385` (`track_ttl_s`) and validated live on d220: dynamic
+  rep01-03 all pass, layer status shows zero applied cells from the retire
+  event onward, and both costmap instances log the TTL expiry;
 - sufficient Pilot: `0/43`;
 - formal campaign: `0/120`;
 - the previous indoor static20 stress run is excluded from both counts.
 
 ## Resume point
 
-Run the formal indoor 3x20 first (static, dynamic, appearance; seeds
-8601-8620), one fresh cold stack per condition, fresh domain/root/socket,
-headless Isaac, per-rep dispatch with the canonical runner arguments
-(`run_indices:=N resume:=false clear_slam_localization_buffer:=false
+Finish the per-condition pilot rerun on the fixed runtime (3 reps each of
+static, dynamic, appearance; one fresh cold stack per condition; fresh
+domain/root/socket; headless Isaac; per-rep dispatch with the canonical
+runner arguments `run_indices:=N resume:=false
+clear_slam_localization_buffer:=false
 reset_map_base_translation_tolerance_m:=0.1
-navigation_execution_backend:=route_guided`). G4 doorway stalls are a known
-sporadic mode on marginal geometry; log and continue, do not hot-fix
-mid-campaign.
+navigation_execution_backend:=route_guided`). Confirm static and appearance
+are unaffected by the `track_ttl_s` change and that dynamic no longer shows
+the ghost family, then report for a counted-rerun decision.
 
-Only after the indoor campaign, run the Rivermark startup-only discriminator:
-on a fresh domain/root/socket, start T1 then T2 with the current wrappers and
-do not start T3. The startup-only discriminator must prove:
-
-- no DLSS internal-upscale warning;
-- no GPU page fault, Xid 109, or device lost;
-- Isaac and Nav2 READY;
-- RGB, depth, CameraInfo, scan, ComputeOdom, GT, fixed TF, Module2, and catalog
-  are current and correctly identified.
-
-If it passes, clean up and use another fresh root for outdoor static rep1--3.
-If it fails, preserve the logs and stop the unchanged launch. See Integration
-`docs/CURRENT_STATE.md` for exact commits, asset paths, invalid roots, Pilot
-matrix, and the rest of the plan.
+Do not relaunch Rivermark until the user resumes outdoor work. When resumed,
+run the load-halving cold-start A/B per Integration `docs/CURRENT_STATE.md`.
+See that file for exact commits, asset paths, invalid roots, Pilot matrix,
+and the rest of the plan.
