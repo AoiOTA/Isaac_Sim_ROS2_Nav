@@ -212,6 +212,7 @@ def _write_formal_run(
     valid: bool = True,
     stack_session_id: str = "a" * 64,
     collision_detected: bool = False,
+    route_completion_count: int = 5,
 ) -> Path:
     identity = condition.episode_identities[run_index - 1]
     seed = identity["seed"]
@@ -292,6 +293,13 @@ def _write_formal_run(
     for topic, message in messages.items():
         writer.write(topic, serialize_message(message), stamp)
         stamp += 1
+    for _index in range(route_completion_count - 1):
+        writer.write(
+            "/bio_nav/route_goal_complete",
+            serialize_message(Bool(data=True)),
+            stamp,
+        )
+        stamp += 1
     writer.write("/cmd_vel_sim", serialize_message(Twist()), stamp)
     writer.write("/cmd_vel_sim", serialize_message(Twist()), stamp + 1)
     del writer
@@ -351,6 +359,7 @@ def _write_formal_run(
         "reset_receipt": {"generation": run_index},
         "reset_receipt_confirmed": True,
         "physical_collision_free": True,
+        "isaac_contact_sensor_collision_detected": False,
         "contact_sensor_evidence_confirmed": True,
         "fixed_map_to_odom_evidence_confirmed": True,
         "localization_node_ownership": {
@@ -501,7 +510,10 @@ def _live_stack_contract(
 
 
 def _write_sufficient_pilot_inputs(
-    tmp_path: Path, *, first_collision: bool = False
+    tmp_path: Path,
+    *,
+    first_collision: bool = False,
+    first_route_completion_count: int = 5,
 ):
     (tmp_path / "nas").mkdir(exist_ok=True)
     raw = _formal_raw(tmp_path)
@@ -546,6 +558,11 @@ def _write_sufficient_pilot_inputs(
                     first_collision
                     and condition.condition_id == "indoor_static"
                     and rep == 1
+                ),
+                route_completion_count=(
+                    first_route_completion_count
+                    if condition.condition_id == "indoor_static" and rep == 1
+                    else 5
                 ),
             )
             manifest_path = root / "run_manifest.json"
@@ -858,6 +875,7 @@ def test_sufficient_pilot_freezer_writes_not_authorized_formal_manifest(
         ("sequence", "stack episode sequence/T2 receipt mismatch"),
         ("counts", "primary evidence failed"),
         ("collision", "primary evidence failed"),
+        ("completion", "primary evidence failed"),
         ("boundary", "cold/hot episode order mismatch"),
         ("order", "condition order/identity mismatch"),
     ],
@@ -866,7 +884,9 @@ def test_sufficient_pilot_freezer_fails_closed_and_writes_nothing(
     tmp_path, monkeypatch, fault, message
 ):
     pilot_manifest, aggregate_path, _reference = _write_sufficient_pilot_inputs(
-        tmp_path, first_collision=(fault == "collision")
+        tmp_path,
+        first_collision=(fault == "collision"),
+        first_route_completion_count=(1 if fault == "completion" else 5),
     )
     aggregate = json.loads(aggregate_path.read_text())
     first_episode = aggregate["conditions"][0]["episodes"][0]
@@ -909,7 +929,7 @@ def test_sufficient_pilot_freezer_fails_closed_and_writes_nothing(
         metadata["rosbag2_bagfile_information"]["message_count"] += 1
         metadata_path.write_text(yaml.safe_dump(metadata), encoding="utf-8")
         _refresh_checksums(metadata_path.parents[1])
-    elif fault == "collision":
+    elif fault in {"collision", "completion"}:
         pass
     else:
         aggregate["conditions"][0], aggregate["conditions"][1] = (
@@ -1471,6 +1491,34 @@ def test_formal_checksum_requires_core_and_mcap_coverage(tmp_path):
     _refresh_checksums(root)
 
     assert not v6_formal_module._checksums_verified(root)
+
+
+def test_primary_mcap_reader_normalizes_metadata_zero_message_topics(tmp_path):
+    campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
+    root = _write_formal_run(
+        campaign.conditions[0],
+        1,
+        strict_success=True,
+        formal_freeze_digest=campaign.freeze_digest,
+    )
+    metadata_path = root / "telemetry" / "metadata.yaml"
+    metadata = yaml.safe_load(metadata_path.read_text())
+    metadata["rosbag2_bagfile_information"]["topics_with_message_count"].append({
+        "topic_metadata": {
+            "name": "/recorded_but_unused",
+                "type": "std_msgs/msg/String",
+                "serialization_format": "cdr",
+                "offered_qos_profiles": [],
+                "type_description_hash": "",
+        },
+        "message_count": 0,
+    })
+    metadata_path.write_text(yaml.safe_dump(metadata), encoding="utf-8")
+
+    inventory = experiment_runner_module._mcap_inventory_evidence(root)
+
+    assert inventory["passed"] is True
+    assert inventory["topic_counts"]["/recorded_but_unused"] == 0
 
 
 def test_formal_checksum_rejects_unlisted_regular_file(tmp_path):

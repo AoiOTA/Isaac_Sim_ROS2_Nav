@@ -397,6 +397,9 @@ def test_experiment_launch_forwards_condition_stack_attestation():
         assert f'LaunchConfiguration("{name}")' in launch
         assert f'self.declare_parameter("{name}"' in runner
     assert '"condition_stack_attestation": condition_stack_attestation' in runner
+    assert runner.index("self._reset_simulation(") < runner.index(
+        "self._begin_run_evidence(run_index, seed)"
+    ) < runner.index("self._claim_stack_episode_sequence(")
 
 
 def test_experiment_telemetry_records_the_complete_nearfield_safety_chain():

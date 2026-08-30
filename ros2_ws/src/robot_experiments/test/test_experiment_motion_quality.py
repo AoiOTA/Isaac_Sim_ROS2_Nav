@@ -1533,6 +1533,24 @@ def test_checksum_finalization_updates_summary_and_covers_final_bytes(tmp_path):
     assert stored_summary["checksums_verified"] is True
     assert ExperimentRunner._checksums_are_verified(root)
 
+    (root / "unlisted-required.json").write_text("{}\n", encoding="utf-8")
+    assert not ExperimentRunner._checksums_are_verified(root)
+
+
+def test_shared_checksum_verifier_rejects_missing_inventory_entry(tmp_path):
+    root = tmp_path / "run"
+    root.mkdir()
+    first = root / "run_summary.json"
+    second = root / "run_manifest.json"
+    first.write_text("{}\n", encoding="utf-8")
+    second.write_text("{}\n", encoding="utf-8")
+    (root / "checksums.sha256").write_text(
+        f"{hashlib.sha256(first.read_bytes()).hexdigest()}  {first.name}\n",
+        encoding="utf-8",
+    )
+
+    assert not ExperimentRunner._checksums_are_verified(root)
+
 
 def test_checksum_finalization_covers_final_acceptance_summary_and_manifest(tmp_path):
     root = tmp_path / "run-0001-seed-19301"

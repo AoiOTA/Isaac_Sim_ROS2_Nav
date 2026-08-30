@@ -424,7 +424,14 @@ def _mcap_inventory_evidence(root: Path) -> dict[str, Any]:
         and isinstance(row.get("topic_metadata"), Mapping)
         and isinstance(row["topic_metadata"].get("name"), str)
     }
-    if actual_counts != reported_counts or sum(actual_counts.values()) != message_count:
+    normalized_actual_counts = {
+        topic: actual_counts.get(topic, 0) for topic in reported_counts
+    }
+    if (
+        set(actual_counts) - set(reported_counts)
+        or normalized_actual_counts != reported_counts
+        or sum(actual_counts.values()) != message_count
+    ):
         return {"passed": False, "error": "mcap_record_count_mismatch"}
     return {
         "passed": True,
@@ -433,7 +440,7 @@ def _mcap_inventory_evidence(root: Path) -> dict[str, Any]:
         "message_count": message_count,
         "files": files,
         "topic_types": topic_types,
-        "topic_counts": actual_counts,
+        "topic_counts": normalized_actual_counts,
         "semantic": {
             "collision_true_count": collision_true,
             "route_complete_true_count": route_complete_true,
@@ -494,7 +501,7 @@ def validate_recorded_run_evidence(
         semantic = inventory["semantic"]
         if semantic["collision_true_count"] != 0:
             reasons.append("recorded_contact_detected")
-        if semantic["route_complete_true_count"] < 1:
+        if semantic["route_complete_true_count"] != expected_leg_count:
             reasons.append("recorded_navigation_completion_missing")
         if (
             semantic["terminal_zero_count"] < 2
@@ -521,7 +528,7 @@ def validate_recorded_run_evidence(
     if summary.get("navigation_contract_success") is not navigation_success:
         reasons.append("navigation_contract_mismatch")
     collision_seen = manifest.get("observability", {}).get("collision_status_seen") is True
-    collision_free = manifest.get("isaac_contact_sensor_collision_detected") is False
+    collision_free = summary.get("isaac_contact_sensor_collision_detected") is False
     if not collision_seen or not collision_free or summary.get("physical_collision_free") is not True:
         reasons.append("contact_sensor_acceptance_failed")
     ownership = summary.get("localization_node_ownership", {})
@@ -5478,6 +5485,17 @@ class ExperimentRunner(Node):
         except OSError:
             return False
         if not entries or any(len(item) != 2 or len(item[0]) != 64 for item in entries):
+            return False
+        covered = {relative for _digest, relative in entries}
+        actual_regular_files = {
+            str(path.relative_to(root))
+            for path in root.rglob("*")
+            if path.is_file()
+            and not path.is_symlink()
+            and path.name != "checksums.sha256"
+            and not path.name.startswith(".")
+        }
+        if covered != actual_regular_files:
             return False
         for digest, relative in entries:
             candidate = root / relative
