@@ -138,6 +138,160 @@ TERMINAL_ZERO_CADENCE_TOLERANCE_SEC = 0.10
 # without relaxing any source-stamp, sequence, identity, or zero-cell gate.
 DYNAMIC_RETIREMENT_CLEAR_TIMEOUT_SEC = 2.0
 
+COMMON_REQUIRED_RECORDED_TOPICS = (
+    "/clock",
+    "/ground_truth/odom",
+    "/odom",
+    "/bio_nav/module1/odom",
+    "/tf",
+    "/cmd_vel_sim",
+    "/bio_nav/navigation_graph",
+    "/bio_nav/canonical_route",
+    "/bio_nav/route_progress",
+    "/simulation/collision",
+)
+SCENE_REQUIRED_RECORDED_TOPICS = {
+    "indoor": ("/amcl_pose",),
+    # Outdoor localization is a fixed map->odom owner.  AMCL is deliberately
+    # not a required source for this scene.  The runner's fresh transform
+    # observation, rather than /tf_static, proves map->odom availability.
+    "outdoor": (),
+}
+
+
+def _evidence_scene(scenario_id: str, map_version: str) -> str:
+    identity = f"{scenario_id} {map_version}".lower()
+    return "outdoor" if "rivermark" in identity else "indoor"
+
+
+def _mcap_required_topic_coverage(
+    metadata_path: Path,
+    *,
+    scene: str,
+    recorder_error: str | None = None,
+) -> dict[str, Any]:
+    """Read rosbag metadata and require only contract-critical topic samples."""
+
+    if scene not in SCENE_REQUIRED_RECORDED_TOPICS:
+        raise ValueError(f"unsupported evidence scene: {scene}")
+    required_topics = tuple(
+        dict.fromkeys(
+            COMMON_REQUIRED_RECORDED_TOPICS
+            + SCENE_REQUIRED_RECORDED_TOPICS[scene]
+        )
+    )
+    counts: dict[str, int] = {}
+    metadata_error: str | None = None
+    if not metadata_path.is_file():
+        metadata_error = "metadata_missing"
+    else:
+        try:
+            document = yaml.safe_load(metadata_path.read_text(encoding="utf-8"))
+            information = document.get("rosbag2_bagfile_information", {})
+            rows = information.get("topics_with_message_count", [])
+            if not isinstance(rows, list):
+                raise ValueError("topics_with_message_count must be a list")
+            for row in rows:
+                topic_metadata = row.get("topic_metadata", {})
+                name = topic_metadata.get("name")
+                count = row.get("message_count")
+                if (
+                    not isinstance(name, str)
+                    or not isinstance(count, int)
+                    or count < 0
+                ):
+                    raise ValueError("invalid topic metadata row")
+                counts[name] = counts.get(name, 0) + count
+        except (OSError, AttributeError, TypeError, ValueError, yaml.YAMLError) as exc:
+            metadata_error = f"metadata_invalid:{type(exc).__name__}:{exc}"
+    missing = [topic for topic in required_topics if topic not in counts]
+    empty = [topic for topic in required_topics if counts.get(topic) == 0]
+    return {
+        "scene": scene,
+        "metadata_path": str(metadata_path),
+        "metadata_present": metadata_path.is_file(),
+        "metadata_error": metadata_error,
+        "recorder_error": recorder_error,
+        "required_topics": list(required_topics),
+        "message_counts": {
+            topic: counts.get(topic, 0) for topic in required_topics
+        },
+        "missing_topics": missing,
+        "zero_message_topics": empty,
+        "passed": not recorder_error and not metadata_error and not missing and not empty,
+    }
+
+
+def _route_prior_application_evidence(
+    route_edge_costs: list[dict[str, Any]], *, required: bool
+) -> dict[str, Any]:
+    requested = 0
+    applied = 0
+    request_ids: set[int] = set()
+    for record in route_edge_costs:
+        try:
+            request_ids.add(int(record["request_id"]))
+        except (KeyError, TypeError, ValueError):
+            pass
+        edges = record.get("edges", [])
+        if not isinstance(edges, list):
+            continue
+        for edge in edges:
+            if not isinstance(edge, Mapping):
+                continue
+            requested_value = edge.get("requested_module2_delta_m")
+            applied_value = edge.get("applied_module2_delta_m")
+            if isinstance(requested_value, (int, float)) and requested_value > 0.0:
+                requested += 1
+            if isinstance(applied_value, (int, float)) and applied_value > 0.0:
+                applied += 1
+    return {
+        "required": required,
+        "positive_requested_count": requested,
+        "positive_applied_count": applied,
+        "request_ids": sorted(request_ids),
+        "confirmed": not required or (requested > 0 and applied > 0),
+    }
+
+
+def _episode_validity(summary: Mapping[str, Any]) -> dict[str, Any]:
+    reasons: list[str] = []
+    coverage = summary.get("required_topic_coverage", {})
+    route_prior = summary.get("route_prior_application", {})
+    if summary.get("terminal_zero_confirmed") is not True:
+        reasons.append("terminal_zero_not_confirmed")
+    if summary.get("contact_sensor_evidence_confirmed") is not True:
+        reasons.append("contact_sensor_evidence_missing")
+    if summary.get("fixed_map_to_odom_evidence_confirmed") is not True:
+        reasons.append("fixed_map_to_odom_evidence_missing")
+    if summary.get("data_complete") is not True:
+        reasons.append("data_incomplete")
+    if summary.get("checksums_verified") is not True:
+        reasons.append("checksums_unverified")
+    if isinstance(coverage, Mapping) and coverage.get("required") is True:
+        if coverage.get("passed") is not True:
+            reasons.append("required_topic_coverage_incomplete")
+    if isinstance(route_prior, Mapping) and route_prior.get("required") is True:
+        if route_prior.get("confirmed") is not True:
+            reasons.append("route_prior_application_unconfirmed")
+    reasons = list(dict.fromkeys(reasons))
+    return {
+        "valid": not reasons,
+        "status": "valid" if not reasons else "invalid",
+        "invalid_reasons": reasons,
+    }
+
+
+def _finalize_summary_acceptance(summary: dict[str, Any]) -> None:
+    validity = _episode_validity(summary)
+    summary["episode_validity"] = validity
+    summary["strict_success"] = bool(
+        summary.get("navigation_contract_success") is True
+        and summary.get("physical_collision_free") is True
+        and summary.get("route_prior_application_confirmed") is True
+        and validity["valid"]
+    )
+
 
 def _strict_success_from_leg_count(
     result: object,
@@ -4319,6 +4473,7 @@ class ExperimentRunner(Node):
         root.mkdir(parents=True, exist_ok=False)
         self._active_evidence_root = root
         self._bag_process = None
+        self._bag_recorder_error = None
         self._appearance_rgb_snapshot_complete = (
             self._write_appearance_rgb_snapshot(root)
             if self._scenario.appearance_config_file is not None
@@ -4328,6 +4483,7 @@ class ExperimentRunner(Node):
             return root
         ros2 = shutil.which("ros2")
         if ros2 is None:
+            self._bag_recorder_error = "ros2_not_found"
             return root
         topics = [
             "/clock", "/ground_truth/odom", "/odom", "/amcl_pose",
@@ -4360,20 +4516,31 @@ class ExperimentRunner(Node):
                 [ros2, "bag", "record", "--use-sim-time", "--storage", "mcap", "--storage-preset-profile", "zstd_fast", "--output", str(root / "telemetry"), *topics],
                 stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
             )
-        except OSError:
+        except OSError as exc:
+            self._bag_recorder_error = f"recorder_start_failed:{type(exc).__name__}:{exc}"
             log.close()
         return root
 
     def _stop_run_bag(self) -> bool:
         process = self._bag_process
         self._bag_process = None
+        forced_stop = False
         if process is not None and process.poll() is None:
             process.send_signal(signal.SIGINT)
             try:
                 process.wait(timeout=20.0)
             except subprocess.TimeoutExpired:
+                forced_stop = True
                 process.kill()
                 process.wait(timeout=5.0)
+        if forced_stop:
+            self._bag_recorder_error = "recorder_shutdown_timeout"
+        elif process is not None and process.returncode not in {0, -signal.SIGINT}:
+            self._bag_recorder_error = f"recorder_exit_code:{process.returncode}"
+        elif process is None and self._record_bag and not getattr(
+            self, "_bag_recorder_error", None
+        ):
+            self._bag_recorder_error = "recorder_not_started"
         root = self._active_evidence_root
         return bool(root and (root / "telemetry" / "metadata.yaml").is_file() and any((root / "telemetry").glob("*.mcap")))
 
@@ -4454,7 +4621,43 @@ class ExperimentRunner(Node):
         bag_complete: bool,
     ) -> dict[str, Any]:
         """Write the immutable per-run evidence set consumed by the campaign report."""
-        (root / "run_manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+        scene = _evidence_scene(
+            self._scenario.scenario_id, self._scenario.map_version
+        )
+        if self._record_bag:
+            required_topic_coverage = _mcap_required_topic_coverage(
+                root / "telemetry" / "metadata.yaml",
+                scene=scene,
+                recorder_error=getattr(self, "_bag_recorder_error", None),
+            )
+            required_topic_coverage["required"] = True
+        else:
+            required_topic_coverage = {
+                "scene": scene,
+                "required": False,
+                "passed": True,
+                "required_topics": [],
+                "message_counts": {},
+                "missing_topics": [],
+                "zero_message_topics": [],
+                "metadata_present": False,
+                "metadata_error": None,
+                "recorder_error": None,
+            }
+        route_prior_application = _route_prior_application_evidence(
+            list(manifest.get("route_edge_costs", [])),
+            required=bool(
+                getattr(self, "_require_module2_planning_ready", False)
+            ),
+        )
+        manifest["required_topic_coverage"] = required_topic_coverage
+        manifest["route_prior_application"] = route_prior_application
+        manifest["route_prior_application_confirmed"] = route_prior_application[
+            "confirmed"
+        ]
+        (root / "run_manifest.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+        )
         timeline = [
             {"event": "leg", **item}
             for item in self._leg_results
@@ -4500,6 +4703,7 @@ class ExperimentRunner(Node):
             }
         data_complete = (
             (bag_complete or not self._record_bag)
+            and required_topic_coverage["passed"]
             and depth_complete and scan_complete
             and safety_scan_complete and local_costmap_complete
             and global_costmap_complete
@@ -4512,7 +4716,7 @@ class ExperimentRunner(Node):
         # A route matrix dispatches one leg per declared route pose.  Focused
         # scenarios omit ``route`` and dispatch the single ``goal`` instead,
         # so their successful one-leg evidence must not be compared with 0.
-        strict_success = _strict_success_from_leg_count(
+        navigation_contract_success = _strict_success_from_leg_count(
             manifest.get("result"),
             len(legs),
             len(self._scenario.route),
@@ -4531,13 +4735,22 @@ class ExperimentRunner(Node):
             "navigation_execution_backend": manifest.get(
                 "navigation_execution_backend"
             ),
-            "strict_success": strict_success,
+            "navigation_contract_success": navigation_contract_success,
+            "strict_success": False,
             "terminal_zero_confirmed": manifest.get(
                 "terminal_zero_confirmed"
             ),
             "terminal_zero_reason": manifest.get("terminal_zero_reason"),
             "terminal_zero_timing": manifest.get("terminal_zero_timing", {}),
             "physical_collision_free": not self._collision_detected,
+            "contact_sensor_evidence_confirmed": bool(
+                manifest.get("observability", {}).get("collision_status_seen")
+            ),
+            "fixed_map_to_odom_evidence_confirmed": bool(
+                scene != "outdoor"
+                or manifest.get("observability", {}).get("map_to_odom_seen")
+                is True
+            ),
             "isaac_contact_sensor_collision_detected": (
                 self._isaac_contact_sensor_collision_detected
             ),
@@ -4546,6 +4759,11 @@ class ExperimentRunner(Node):
             ),
             "data_complete": data_complete,
             "checksums_verified": False,
+            "required_topic_coverage": required_topic_coverage,
+            "route_prior_application": route_prior_application,
+            "route_prior_application_confirmed": route_prior_application[
+                "confirmed"
+            ],
             "evidence": {
                 "mcap_zstd": bag_complete,
                 "mcap_required": self._record_bag,
@@ -4585,6 +4803,11 @@ class ExperimentRunner(Node):
             "warning_reason": str(manifest.get("warning_reason", "")),
             "legs": legs,
         }
+        _finalize_summary_acceptance(summary)
+        manifest["episode_validity"] = dict(summary["episode_validity"])
+        (root / "run_manifest.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+        )
         (root / "run_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
         try:
             final_trial_metric_gate = self._final_trial_metric_gate(
@@ -4604,11 +4827,15 @@ class ExperimentRunner(Node):
         (root / "run_summary.json").write_text(
             json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
         )
-        self._finalize_checksums(root, summary)
+        self._finalize_checksums(root, summary, manifest)
         return summary
 
     @staticmethod
-    def _finalize_checksums(root: Path, summary: dict[str, Any]) -> None:
+    def _finalize_checksums(
+        root: Path,
+        summary: dict[str, Any],
+        manifest: dict[str, Any] | None = None,
+    ) -> None:
         def inventory() -> list[str]:
             return [
                 f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(root)}"
@@ -4628,6 +4855,21 @@ class ExperimentRunner(Node):
             hashlib.sha256((root / relative).read_bytes()).hexdigest() == digest
             for digest, relative in (line.split("  ", 1) for line in checksums)
         )
+        _finalize_summary_acceptance(summary)
+        if manifest is not None:
+            manifest["required_topic_coverage"] = summary[
+                "required_topic_coverage"
+            ]
+            manifest["route_prior_application"] = summary[
+                "route_prior_application"
+            ]
+            manifest["route_prior_application_confirmed"] = summary[
+                "route_prior_application_confirmed"
+            ]
+            manifest["episode_validity"] = dict(summary["episode_validity"])
+            (root / "run_manifest.json").write_text(
+                json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+            )
         (root / "run_summary.json").write_text(
             json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
         )
@@ -4718,6 +4960,7 @@ class ExperimentRunner(Node):
                 manifest.get("result") != "success"
                 or manifest.get("terminal_zero_confirmed") is not True
                 or summary.get("strict_success") is not True
+                or summary.get("episode_validity", {}).get("valid") is not True
             ):
                 return None
         return manifest
@@ -4872,6 +5115,7 @@ class ExperimentRunner(Node):
             if self._fail_stop and not (
                 run_summary is not None
                 and run_summary.get("strict_success") is True
+                and run_summary.get("episode_validity", {}).get("valid") is True
                 and run_summary.get("physical_collision_free") is True
                 and run_summary.get("data_complete") is True
                 and run_summary.get("checksums_verified") is True

@@ -6,14 +6,18 @@ from types import SimpleNamespace
 
 import pytest
 from nav2_msgs.msg import CollisionMonitorState
+import yaml
 
 import robot_experiments.experiment_runner as experiment_runner_module
 from robot_experiments.attempt31_rivermark_qualification import _rate_group
 from robot_experiments.experiment_runner import (
     _edge_prior_statistics,
+    _episode_validity,
+    _mcap_required_topic_coverage,
     _parse_obstacle_completion,
     _record_tracked_route_length,
     _result_with_terminal_zero,
+    _route_prior_application_evidence,
     _strict_success_from_leg_count,
     CommandSample,
     ExperimentRunner,
@@ -50,6 +54,115 @@ def test_edge_prior_statistics_preserve_nonzero_learned_cost_evidence():
         "maximum_cost_delta_m": pytest.approx(0.55),
         "maximum_learned_risk": pytest.approx(1.0),
     }
+
+
+def _write_mcap_metadata(path: Path, topic_counts: dict[str, int]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        yaml.safe_dump({
+            "rosbag2_bagfile_information": {
+                "topics_with_message_count": [
+                    {
+                        "topic_metadata": {"name": topic},
+                        "message_count": count,
+                    }
+                    for topic, count in topic_counts.items()
+                ]
+            }
+        }),
+        encoding="utf-8",
+    )
+
+
+def test_required_topic_coverage_is_scene_aware_and_requires_messages(tmp_path):
+    common = {
+        topic: 1
+        for topic in experiment_runner_module.COMMON_REQUIRED_RECORDED_TOPICS
+    }
+    metadata = tmp_path / "telemetry" / "metadata.yaml"
+    _write_mcap_metadata(metadata, {**common, "/amcl_pose": 3})
+
+    indoor = _mcap_required_topic_coverage(metadata, scene="indoor")
+    outdoor = _mcap_required_topic_coverage(metadata, scene="outdoor")
+
+    assert indoor["passed"]
+    assert "/amcl_pose" in indoor["required_topics"]
+    assert "/amcl_pose" not in outdoor["required_topics"]
+    assert "/tf_static" not in outdoor["required_topics"]
+    assert outdoor["passed"]
+
+
+def test_required_topic_coverage_marks_recorder_errors_invalid(tmp_path):
+    metadata = tmp_path / "metadata.yaml"
+    counts = {
+        topic: 1
+        for topic in (
+            *experiment_runner_module.COMMON_REQUIRED_RECORDED_TOPICS,
+        )
+    }
+    _write_mcap_metadata(metadata, counts)
+
+    coverage = _mcap_required_topic_coverage(
+        metadata, scene="outdoor", recorder_error="recorder_exit_code:1"
+    )
+
+    assert not coverage["passed"]
+    assert coverage["recorder_error"] == "recorder_exit_code:1"
+
+
+def test_m3_route_prior_requires_positive_requested_and_applied_costs():
+    records = [{
+        "request_id": 7,
+        "edges": [
+            {
+                "requested_module2_delta_m": 0.5,
+                "applied_module2_delta_m": 0.0,
+            },
+            {
+                "requested_module2_delta_m": 0.2,
+                "applied_module2_delta_m": 0.2,
+            },
+        ],
+    }]
+
+    confirmed = _route_prior_application_evidence(records, required=True)
+    missing = _route_prior_application_evidence([], required=True)
+    not_required = _route_prior_application_evidence([], required=False)
+
+    assert confirmed["positive_requested_count"] == 2
+    assert confirmed["positive_applied_count"] == 1
+    assert confirmed["confirmed"]
+    assert not missing["confirmed"]
+    assert not_required["confirmed"]
+
+
+def test_episode_validity_separates_missing_evidence_from_product_failure():
+    valid_product_failure = {
+        "terminal_zero_confirmed": True,
+        "contact_sensor_evidence_confirmed": True,
+        "fixed_map_to_odom_evidence_confirmed": True,
+        "data_complete": True,
+        "checksums_verified": True,
+        "required_topic_coverage": {"required": True, "passed": True},
+        "route_prior_application": {"required": True, "confirmed": True},
+        "navigation_contract_success": False,
+    }
+    invalid = dict(valid_product_failure, checksums_verified=False)
+
+    assert _episode_validity(valid_product_failure)["valid"]
+    assert _episode_validity(invalid) == {
+        "valid": False,
+        "status": "invalid",
+        "invalid_reasons": ["checksums_unverified"],
+    }
+
+    missing_outdoor_tf = dict(
+        valid_product_failure,
+        fixed_map_to_odom_evidence_confirmed=False,
+    )
+    assert _episode_validity(missing_outdoor_tf)["invalid_reasons"] == [
+        "fixed_map_to_odom_evidence_missing"
+    ]
 
 
 def test_obstacle_completion_requires_the_exact_selected_actor_set():
@@ -1209,6 +1322,40 @@ def test_checksum_finalization_updates_summary_and_covers_final_bytes(tmp_path):
     assert summary["checksums_verified"] is True
     assert stored_summary["checksums_verified"] is True
     assert ExperimentRunner._checksums_are_verified(root)
+
+
+def test_checksum_finalization_covers_final_acceptance_summary_and_manifest(tmp_path):
+    root = tmp_path / "run-0001-seed-19301"
+    root.mkdir()
+    summary = {
+        "navigation_contract_success": True,
+        "strict_success": False,
+        "terminal_zero_confirmed": True,
+        "physical_collision_free": True,
+        "contact_sensor_evidence_confirmed": True,
+        "fixed_map_to_odom_evidence_confirmed": True,
+        "data_complete": True,
+        "checksums_verified": False,
+        "required_topic_coverage": {"required": True, "passed": True},
+        "route_prior_application": {"required": True, "confirmed": True},
+        "route_prior_application_confirmed": True,
+    }
+    manifest = {}
+    (root / "run_summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    (root / "run_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    ExperimentRunner._finalize_checksums(root, summary, manifest)
+
+    assert summary["strict_success"] is True
+    assert summary["episode_validity"]["valid"] is True
+    assert manifest["episode_validity"]["valid"] is True
+    assert ExperimentRunner._checksums_are_verified(root)
+    entries = dict(
+        line.split("  ", 1)
+        for line in (root / "checksums.sha256").read_text().splitlines()
+    )
+    for filename in ("run_summary.json", "run_manifest.json"):
+        assert entries[hashlib.sha256((root / filename).read_bytes()).hexdigest()] == filename
 
 
 def test_g5_g1_crossing_requires_left_side_pass_while_actor_exists():
