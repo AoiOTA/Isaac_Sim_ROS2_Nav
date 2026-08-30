@@ -4,7 +4,8 @@ set -Eeuo pipefail
 usage() {
   echo "usage: $0 --pilot [--dispatch-pilot] MANIFEST [runner arguments...]" >&2
   echo "       $0 --formal MANIFEST" >&2
-  echo "       $0 --formal --execute-formal --condition-stack-id ID MANIFEST" >&2
+  echo "       $0 --formal --execute-formal --condition-stack-id ID" >&2
+  echo "          --condition-stack-contract PATH MANIFEST" >&2
 }
 
 mode="${1:-}"
@@ -21,13 +22,18 @@ if [[ "$mode" == "--pilot" && "${1:-}" == "--dispatch-pilot" ]]; then
   pilot_dispatch=(--dispatch-pilot)
   shift
 elif [[ "$mode" == "--formal" && "${1:-}" == "--execute-formal" ]]; then
-  [[ "${2:-}" == "--condition-stack-id" && -n "${3:-}" ]] || {
+  [[ "${2:-}" == "--condition-stack-id" && -n "${3:-}" \
+      && "${4:-}" == "--condition-stack-contract" && -n "${5:-}" ]] || {
     usage
-    echo "STOP: formal execution requires --condition-stack-id ID" >&2
+    echo "STOP: formal execution requires stack ID and contract path" >&2
     exit 2
   }
-  formal_execute=(--execute-formal --condition-stack-id "$3")
-  shift 3
+  formal_execute=(
+    --execute-formal
+    --condition-stack-id "$3"
+    --condition-stack-contract "$5"
+  )
+  shift 5
 fi
 
 manifest="${1:-}"

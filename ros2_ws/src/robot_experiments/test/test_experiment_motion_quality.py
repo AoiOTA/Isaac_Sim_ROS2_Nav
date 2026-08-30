@@ -77,21 +77,42 @@ def _write_mcap_metadata(path: Path, topic_counts: dict[str, int]) -> None:
 def test_required_topic_coverage_is_scene_aware_and_requires_messages(tmp_path):
     common = {
         topic: 1
-        for topic in experiment_runner_module.COMMON_REQUIRED_RECORDED_TOPICS
+        for topic in (
+            *experiment_runner_module.COMMON_REQUIRED_RECORDED_TOPICS,
+            *experiment_runner_module.ROUTE_GUIDED_REQUIRED_RECORDED_TOPICS,
+        )
     }
     metadata = tmp_path / "telemetry" / "metadata.yaml"
     _write_mcap_metadata(metadata, {**common, "/amcl_pose": 3})
 
-    indoor = _mcap_required_topic_coverage(metadata, scene="indoor")
-    outdoor = _mcap_required_topic_coverage(metadata, scene="outdoor")
+    indoor = _mcap_required_topic_coverage(
+        metadata, scene="indoor", route_guided=True
+    )
+    outdoor_with_amcl = _mcap_required_topic_coverage(
+        metadata, scene="outdoor", route_guided=True
+    )
+    _write_mcap_metadata(metadata, common)
+    outdoor = _mcap_required_topic_coverage(
+        metadata, scene="outdoor", route_guided=True
+    )
 
     assert indoor["passed"]
-    assert "/simulation/reset_event" in indoor["required_topics"]
+    assert "/simulation/reset_event" not in indoor["required_topics"]
     assert "/simulation/reset_stop_gate/status" in indoor["required_topics"]
+    assert "/bio_nav/canonical_route" in indoor["required_topics"]
     assert "/amcl_pose" in indoor["required_topics"]
     assert "/amcl_pose" not in outdoor["required_topics"]
     assert "/tf_static" not in outdoor["required_topics"]
+    assert outdoor_with_amcl["observed_forbidden_topics"] == ["/amcl_pose"]
+    assert not outdoor_with_amcl["passed"]
     assert outdoor["passed"]
+
+    direct = _mcap_required_topic_coverage(
+        metadata, scene="outdoor", route_guided=False
+    )
+    assert "/bio_nav/navigation_graph" not in direct["required_topics"]
+    assert "/bio_nav/canonical_route" not in direct["required_topics"]
+    assert "/bio_nav/route_progress" not in direct["required_topics"]
 
 
 def test_required_topic_coverage_marks_recorder_errors_invalid(tmp_path):
@@ -141,6 +162,8 @@ def test_m3_route_prior_requires_positive_requested_and_applied_costs():
 def test_episode_validity_separates_missing_evidence_from_product_failure():
     valid_product_failure = {
         "terminal_zero_confirmed": True,
+        "reset_receipt": {"generation": 1},
+        "reset_receipt_confirmed": True,
         "contact_sensor_evidence_confirmed": True,
         "fixed_map_to_odom_evidence_confirmed": True,
         "data_complete": True,
@@ -1003,7 +1026,7 @@ def test_g2_g3_exit_rejects_a_following_gap_beyond_the_calibrated_window():
     assert not metrics["complete"]
 
 
-def test_terminal_zero_failure_is_retried_when_successful_resume_is_required(tmp_path):
+def test_valid_product_failure_is_preserved_and_blocks_successful_resume(tmp_path):
     root = tmp_path / "run-0002-seed-7301"
     root.mkdir()
     manifest = {
@@ -1012,15 +1035,17 @@ def test_terminal_zero_failure_is_retried_when_successful_resume_is_required(tmp
         "condition_id": "dynamic_appearance",
         "appearance": {"profile_id": "dim_warm"},
         "dynamic_selection": {"case_id": "full_route_three_stage", "variant_id": "v1"},
-        "result": "success",
-        "terminal_zero_confirmed": False,
-        "terminal_zero_reason": "terminal_zero_timeout",
+        "result": "failure",
+        "terminal_zero_confirmed": True,
+        "terminal_zero_reason": "terminal_zero_confirmed",
     }
     summary = {
         "data_complete": True,
         "checksums_verified": True,
         "strict_success": False,
-        "terminal_zero_confirmed": False,
+        "terminal_zero_confirmed": True,
+        "episode_validity": {"valid": True},
+        "final_trial_metric_gate": {"passed": True},
     }
     (root / "run_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     (root / "run_summary.json").write_text(json.dumps(summary), encoding="utf-8")
@@ -1041,7 +1066,8 @@ def test_terminal_zero_failure_is_retried_when_successful_resume_is_required(tmp
     runner._require_successful_resume = False
     assert runner._completed_resume_manifest(root, 2, selection) == manifest
     runner._require_successful_resume = True
-    assert runner._completed_resume_manifest(root, 2, selection) is None
+    with pytest.raises(ConfigurationError, match="immutable valid product failure"):
+        runner._completed_resume_manifest(root, 2, selection)
 
 
 def _static_sat_evidence_run(
@@ -1051,6 +1077,8 @@ def _static_sat_evidence_run(
     contact_sensor_collision: bool,
     nav2_succeeded: bool = True,
     collision_monitor_stop: bool = False,
+    condition_stack_id: str = "",
+    stack_session_id: str = "",
 ):
     scenario = load_scenario(
         Path(__file__).parents[1] / "config" / "static.yaml"
@@ -1132,7 +1160,9 @@ def _static_sat_evidence_run(
     runner._reset_map_base_translation_tolerance_m = 0.05
     runner._experiment_arm = ""
     runner._navigation_execution_backend = "navigate_to_pose"
-    runner._reset_receipt = {}
+    runner._condition_stack_id = condition_stack_id
+    runner._stack_session_id = stack_session_id
+    runner._reset_receipt = {"generation": 1}
     runner._record_bag = False
     runner._fail_stop_metric_contract = None
     if collision_monitor_stop:
@@ -1181,6 +1211,24 @@ def _static_sat_evidence_run(
         manifest, 7301, 2, root, bag_complete=False
     )
     return runner, manifest, summary, root
+
+
+def test_run_evidence_records_condition_stack_attestation(tmp_path):
+    session_id = "a" * 64
+    _runner, manifest, summary, _root = _static_sat_evidence_run(
+        tmp_path,
+        obstacle_position=None,
+        contact_sensor_collision=False,
+        condition_stack_id="indoor_static",
+        stack_session_id=session_id,
+    )
+
+    assert manifest["condition_stack_id"] == "indoor_static"
+    assert manifest["stack_session_id"] == session_id
+    assert manifest["condition_stack_attestation"]["confirmed"] is True
+    assert summary["condition_stack_id"] == "indoor_static"
+    assert summary["stack_session_id"] == session_id
+    assert summary["episode_validity"]["valid"] is True
 
 
 def test_sat_overlap_is_diagnostic_when_contact_sensor_is_clear(tmp_path):
@@ -1277,6 +1325,27 @@ def test_sat_diagnostic_presence_does_not_change_complete_resume_eligibility(
     assert runner._completed_resume_manifest(root, 2, selection) == manifest
 
 
+def test_successful_resume_blocks_failed_final_metric_gate(tmp_path):
+    runner, manifest, summary, root = _static_sat_evidence_run(
+        tmp_path,
+        obstacle_position=None,
+        contact_sensor_collision=False,
+    )
+    summary["final_trial_metric_gate"] = {"applicable": True, "passed": False}
+    ExperimentRunner._finalize_checksums(root, summary, manifest)
+    selection = SimpleNamespace(
+        seed=7301,
+        condition_id="static",
+        appearance_profile_id=None,
+        case_id=None,
+        variant_id=None,
+    )
+    runner._require_successful_resume = True
+
+    with pytest.raises(ConfigurationError, match="immutable valid product failure"):
+        runner._completed_resume_manifest(root, 2, selection)
+
+
 def test_sat_diagnostics_do_not_change_collision_rate_statistics():
     records = []
     for seed in range(20):
@@ -1333,6 +1402,8 @@ def test_checksum_finalization_covers_final_acceptance_summary_and_manifest(tmp_
         "navigation_contract_success": True,
         "strict_success": False,
         "terminal_zero_confirmed": True,
+        "reset_receipt": {"generation": 1},
+        "reset_receipt_confirmed": True,
         "physical_collision_free": True,
         "contact_sensor_evidence_confirmed": True,
         "fixed_map_to_odom_evidence_confirmed": True,

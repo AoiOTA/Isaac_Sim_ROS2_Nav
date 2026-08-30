@@ -384,6 +384,16 @@ def test_experiment_summary_requires_observed_executor_terminal_zero():
     assert 'self._mark_terminal_zero_barrier("navigate_action_return")' in source
 
 
+def test_experiment_launch_forwards_condition_stack_attestation():
+    runner = (PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py").read_text()
+    launch = (PACKAGE_ROOT / "launch" / "experiment.launch.py").read_text()
+    for name in ("condition_stack_id", "stack_session_id"):
+        assert f'DeclareLaunchArgument("{name}"' in launch
+        assert f'LaunchConfiguration("{name}")' in launch
+        assert f'self.declare_parameter("{name}"' in runner
+    assert '"condition_stack_attestation": condition_stack_attestation' in runner
+
+
 def test_experiment_telemetry_records_the_complete_nearfield_safety_chain():
     runner = (
         PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py"
@@ -629,7 +639,8 @@ def test_4x20_pilot_resume_requires_a_previous_success_and_preserves_formal_fail
     assert 'manifest.get("result") != "success"' in runner
     assert 'manifest.get("terminal_zero_confirmed") is not True' in runner
     assert 'summary.get("strict_success") is not True' in runner
-    assert "fully recorded *failed* pilot must be quarantined and retried" in runner
+    assert "a valid\n        # product failure blocks the campaign" in runner
+    assert "resume blocked by an immutable valid product failure" in runner
 
 
 def test_incremental_map_comparison_has_an_installed_cli():

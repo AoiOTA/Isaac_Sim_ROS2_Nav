@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import shlex
 import subprocess
@@ -210,6 +211,7 @@ class FormalCondition:
 class FormalCampaignManifest:
     path: Path
     authorization: str
+    runner_entrypoint: Path
     conditions: tuple[FormalCondition, ...]
 
 
@@ -224,6 +226,7 @@ def load_formal_campaign_manifest(path: str | Path) -> FormalCampaignManifest:
             "intended_use",
             "execution_authorization",
             "runs_per_condition",
+            "runner_entrypoint",
             "conditions",
         },
         "formal_manifest",
@@ -244,6 +247,14 @@ def load_formal_campaign_manifest(path: str | Path) -> FormalCampaignManifest:
         )
     if raw.get("runs_per_condition") != FORMAL_RUNS_PER_CONDITION:
         raise V6ContractError("runs_per_condition must be exactly 20")
+    runner_entrypoint = Path(str(raw.get("runner_entrypoint", ""))).expanduser()
+    if not runner_entrypoint.is_absolute():
+        runner_entrypoint = manifest_path.parent / runner_entrypoint
+    runner_entrypoint = runner_entrypoint.resolve()
+    if not runner_entrypoint.is_file() or not os.access(
+        runner_entrypoint, os.R_OK | os.X_OK
+    ):
+        raise V6ContractError("runner_entrypoint must be a readable executable file")
     condition_rows = raw.get("conditions")
     if not isinstance(condition_rows, list) or len(condition_rows) != len(
         FORMAL_CONDITION_IDS
@@ -365,10 +376,26 @@ def load_formal_campaign_manifest(path: str | Path) -> FormalCampaignManifest:
             "record_evidence",
             "record_bag",
             "fail_stop",
+            "condition_stack_id",
+            "stack_session_id",
         }
         if any(argument.split(":=", 1)[0] in reserved for argument in arguments):
             raise V6ContractError(
                 f"conditions[{index}].runner_arguments overrides dispatcher ownership"
+            )
+        argument_pairs = [argument.split(":=", 1) for argument in arguments]
+        if len({name for name, _value in argument_pairs}) != len(argument_pairs):
+            raise V6ContractError(
+                f"conditions[{index}].runner_arguments contains duplicate names"
+            )
+        argument_map = dict(argument_pairs)
+        if argument_map.get("navigation_execution_backend") != "route_guided":
+            raise V6ContractError(
+                f"conditions[{index}] must freeze route_guided execution"
+            )
+        if argument_map.get("require_module2_planning_ready") != "true":
+            raise V6ContractError(
+                f"conditions[{index}] must require Module2 planning readiness"
             )
         conditions.append(
             FormalCondition(
@@ -389,6 +416,7 @@ def load_formal_campaign_manifest(path: str | Path) -> FormalCampaignManifest:
     return FormalCampaignManifest(
         path=manifest_path,
         authorization=authorization,
+        runner_entrypoint=runner_entrypoint,
         conditions=tuple(conditions),
     )
 
@@ -407,6 +435,16 @@ def _checksums_verified(run_root: Path) -> bool:
         return False
     if not entries or any(len(entry) != 2 for entry in entries):
         return False
+    covered = {relative for _digest, relative in entries}
+    if not {
+        "run_summary.json",
+        "run_manifest.json",
+        "telemetry/metadata.yaml",
+    } <= covered or not any(
+        relative.startswith("telemetry/") and relative.endswith(".mcap")
+        for relative in covered
+    ):
+        return False
     for digest, relative in entries:
         candidate = run_root / relative
         try:
@@ -422,6 +460,86 @@ def _checksums_verified(run_root: Path) -> bool:
     return True
 
 
+STACK_CONTRACT_SCHEMA = "bio_nav.v6_stack_contract.v1"
+STACK_CONTRACT_KEYS = {
+    "schema",
+    "condition_id",
+    "scene",
+    "condition",
+    "arm",
+    "domain",
+    "startup_profile",
+    "pid",
+    "pgid",
+    "start_ticks",
+    "boot_id",
+    "stack_session_id",
+}
+
+
+def _stack_session_id(payload: Mapping[str, Any]) -> str:
+    basis = {key: payload[key] for key in STACK_CONTRACT_KEYS - {"stack_session_id"}}
+    canonical = json.dumps(basis, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def validate_condition_stack_contract(
+    path: str | Path, *, expected_condition_id: str
+) -> dict[str, Any]:
+    contract_path = Path(path).expanduser().resolve()
+    try:
+        payload = json.loads(contract_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise V6ContractError(f"condition stack contract is unreadable: {exc}") from exc
+    payload = dict(_mapping(payload, "condition_stack_contract"))
+    _require_exact_keys(payload, STACK_CONTRACT_KEYS, "condition_stack_contract")
+    if payload["schema"] != STACK_CONTRACT_SCHEMA:
+        raise V6ContractError("condition stack contract schema mismatch")
+    if payload["condition_id"] != expected_condition_id:
+        raise V6ContractError("condition stack contract condition mismatch")
+    if payload["condition_id"] != f"{payload['scene']}_{payload['condition']}":
+        raise V6ContractError("condition stack contract identity is inconsistent")
+    if payload["scene"] not in {"indoor", "outdoor"} or payload[
+        "condition"
+    ] not in {"static", "dynamic", "appearance"}:
+        raise V6ContractError("condition stack contract scene/condition is invalid")
+    if payload["arm"] not in {"M0", "M1", "M2", "M3"}:
+        raise V6ContractError("condition stack contract arm is invalid")
+    for name in ("pid", "pgid", "start_ticks"):
+        value = payload[name]
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise V6ContractError(f"condition stack contract {name} is invalid")
+    if (
+        isinstance(payload["domain"], bool)
+        or not isinstance(payload["domain"], int)
+        or not 0 <= payload["domain"] <= 232
+        or not isinstance(payload["startup_profile"], str)
+        or not payload["startup_profile"]
+    ):
+        raise V6ContractError("condition stack contract runtime identity is invalid")
+    try:
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        stat = Path(f"/proc/{payload['pid']}/stat").read_text().strip()
+    except OSError as exc:
+        raise V6ContractError("condition stack process is not live") from exc
+    try:
+        fields = stat.rsplit(")", 1)[1].split()
+        state = fields[0]
+        actual_pgid = int(fields[2])
+        actual_start_ticks = int(fields[19])
+    except (IndexError, ValueError) as exc:
+        raise V6ContractError("condition stack process identity is malformed") from exc
+    if state == "Z" or actual_pgid != payload["pgid"]:
+        raise V6ContractError("condition stack process group is stale")
+    if actual_start_ticks != payload["start_ticks"]:
+        raise V6ContractError("condition stack process start_ticks is stale")
+    if boot_id != payload["boot_id"]:
+        raise V6ContractError("condition stack boot_id is stale")
+    if payload["stack_session_id"] != _stack_session_id(payload):
+        raise V6ContractError("condition stack session digest mismatch")
+    return payload
+
+
 def evaluate_formal_campaign(
     manifest: FormalCampaignManifest,
 ) -> dict[str, Any]:
@@ -434,6 +552,9 @@ def evaluate_formal_campaign(
         runs: list[dict[str, Any]] = []
         next_run_index: int | None = None
         condition_blockers: list[str] = []
+        stack_session_ids: set[str] = set()
+        present_run_indices: set[int] = set()
+        reset_generations: dict[int, int] = {}
         for run_index, identity in enumerate(
             condition.episode_identities, start=1
         ):
@@ -451,6 +572,7 @@ def evaluate_formal_campaign(
                 )
                 continue
             total_present += 1
+            present_run_indices.add(run_index)
             summary_path = root / "run_summary.json"
             manifest_path = root / "run_manifest.json"
             try:
@@ -461,6 +583,31 @@ def evaluate_formal_campaign(
                 detail = f"{type(exc).__name__}:{exc}"
                 condition_blockers.append(f"run-{run_index}:invalid_evidence")
             else:
+                episode_stack_session = episode.get("stack_session_id")
+                summary_stack_session = summary.get("stack_session_id")
+                reset_receipt = episode.get("reset_receipt", {})
+                reset_generation = (
+                    reset_receipt.get("generation")
+                    if isinstance(reset_receipt, Mapping)
+                    else None
+                )
+                reset_identity_ok = bool(
+                    isinstance(reset_generation, int)
+                    and not isinstance(reset_generation, bool)
+                    and reset_generation > 0
+                )
+                if reset_identity_ok:
+                    reset_generations[run_index] = reset_generation
+                stack_identity_ok = bool(
+                    episode.get("condition_stack_id") == condition.condition_id
+                    and summary.get("condition_stack_id") == condition.condition_id
+                    and isinstance(episode_stack_session, str)
+                    and bool(episode_stack_session)
+                    and summary_stack_session == episode_stack_session
+                    and reset_identity_ok
+                )
+                if stack_identity_ok:
+                    stack_session_ids.add(episode_stack_session)
                 identity_ok = bool(
                     episode.get("run_index") == run_index
                     and episode.get("random_seed") == seed
@@ -473,11 +620,14 @@ def evaluate_formal_campaign(
                     == identity.get("dynamic_variant_id")
                     and episode.get("appearance", {}).get("profile_id")
                     == identity.get("appearance_profile_id")
+                    and stack_identity_ok
                 )
                 valid = bool(
                     identity_ok
                     and summary.get("episode_validity", {}).get("valid") is True
                     and summary.get("checksums_verified") is True
+                    and summary.get("final_trial_metric_gate", {}).get("passed")
+                    is True
                     and _checksums_verified(root)
                 )
                 strict = bool(valid and summary.get("strict_success") is True)
@@ -502,6 +652,18 @@ def evaluate_formal_campaign(
                     "root": str(root),
                 }
             )
+        if len(stack_session_ids) > 1:
+            condition_blockers.append("stack_session_mismatch")
+        if present_run_indices != set(reset_generations):
+            condition_blockers.append("reset_generation_missing")
+        elif present_run_indices:
+            ordered_indices = sorted(present_run_indices)
+            base_generation = reset_generations[ordered_indices[0]]
+            if ordered_indices != list(range(1, ordered_indices[-1] + 1)) or any(
+                reset_generations[index] != base_generation + index - 1
+                for index in ordered_indices
+            ):
+                condition_blockers.append("reset_generation_discontinuous")
         blockers.extend(
             f"{condition.condition_id}:{item}" for item in condition_blockers
         )
@@ -517,14 +679,27 @@ def evaluate_formal_campaign(
                 ),
                 "next_run_index": None if condition_blockers else next_run_index,
                 "blockers": condition_blockers,
+                "stack_session_id": (
+                    next(iter(stack_session_ids))
+                    if len(stack_session_ids) == 1
+                    else None
+                ),
+                "reset_generation_base": reset_generations.get(1),
                 "runs": runs,
             }
         )
     return {
         "schema_version": FORMAL_CAMPAIGN_SCHEMA_VERSION,
         "formal_qualification": (
-            "PASS" if total_strict == 120 and not blockers else "INCOMPLETE"
+            "PASS"
+            if (
+                manifest.authorization == FORMAL_EXECUTION_AUTHORIZED
+                and total_strict == 120
+                and not blockers
+            )
+            else "INCOMPLETE"
         ),
+        "execution_authorization": manifest.authorization,
         "expected_episodes": 120,
         "present_episodes": total_present,
         "valid_episodes": total_valid,
@@ -537,7 +712,7 @@ def evaluate_formal_campaign(
 def formal_dispatch_plan(
     manifest: FormalCampaignManifest, aggregate: Mapping[str, Any]
 ) -> list[dict[str, Any]]:
-    script = Path(__file__).resolve().parents[4] / "scripts" / "run_experiment.sh"
+    script = manifest.runner_entrypoint
     plans: list[dict[str, Any]] = []
     by_id = {row["id"]: row for row in aggregate["conditions"]}
     for condition in manifest.conditions:
@@ -566,6 +741,7 @@ def formal_dispatch_plan(
                 "stack_session": condition.condition_id,
                 "stack_boundary": "cold" if run_index == 1 else "hot_reset",
                 "requires_existing_condition_stack": True,
+                "condition_stack_contract_required": True,
                 "command": command,
                 "command_text": shlex.join(command),
             }
@@ -574,7 +750,10 @@ def formal_dispatch_plan(
 
 
 def execute_formal_campaign(
-    manifest: FormalCampaignManifest, *, condition_stack_id: str
+    manifest: FormalCampaignManifest,
+    *,
+    condition_stack_id: str,
+    condition_stack_contract: str | Path,
 ) -> dict[str, Any]:
     if manifest.authorization != FORMAL_EXECUTION_AUTHORIZED:
         raise V6ContractError(
@@ -602,10 +781,48 @@ def execute_formal_campaign(
     row = selected[0]
     if row["stack_session"] != condition_stack_id:
         raise V6ContractError("formal dispatch stack-session mismatch")
+    contract = validate_condition_stack_contract(
+        condition_stack_contract,
+        expected_condition_id=condition_stack_id,
+    )
+    expected_profile = (
+        "module2_causal_obstacle_outdoor"
+        if condition_stack_id.startswith("outdoor_")
+        else "module2_causal_obstacle_active"
+    )
+    if contract["arm"] != "M3" or contract["startup_profile"] != expected_profile:
+        raise V6ContractError("formal condition stack is not the M3 active profile")
+    if os.environ.get("ROS_DOMAIN_ID") != str(contract["domain"]):
+        raise V6ContractError("formal condition stack ROS domain mismatch")
+    before_completed = {
+        (condition["id"], run["run_index"], run["status"])
+        for condition in aggregate["conditions"]
+        for run in condition["runs"]
+        if run["status"] != "pending"
+    }
+    command = [
+        *row["command"],
+        f"condition_stack_id:={condition_stack_id}",
+        f"stack_session_id:={contract['stack_session_id']}",
+    ]
     # The caller owns the already-running matching T1/T2 stack.  Dispatch one
     # episode only, then return so a stack switch can never occur implicitly.
-    subprocess.run(row["command"], check=True)
-    return evaluate_formal_campaign(manifest)
+    subprocess.run(command, check=True)
+    after = evaluate_formal_campaign(manifest)
+    after_completed = {
+        (condition["id"], run["run_index"], run["status"])
+        for condition in after["conditions"]
+        for run in condition["runs"]
+        if run["status"] != "pending"
+    }
+    expected = {
+        (condition_stack_id, row["run_index"], "strict_success")
+    }
+    if before_completed - after_completed or after_completed - before_completed != expected:
+        raise V6ContractError(
+            "formal episode did not add exactly one strict-success target run"
+        )
+    return after
 
 
 def _mapping(value: Any, path: str) -> Mapping[str, Any]:
@@ -1974,6 +2191,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dispatch-pilot", action="store_true")
     parser.add_argument("--execute-formal", action="store_true")
     parser.add_argument("--condition-stack-id")
+    parser.add_argument("--condition-stack-contract")
     parser.add_argument("--output-jsonl")
     parser.add_argument("--readiness-timeout-sec", type=float, default=120.0)
     parser.add_argument("--reset-timeout-sec", type=float, default=120.0)
@@ -1989,18 +2207,25 @@ def cli(argv: list[str] | None = None) -> int:
                 raise V6ContractError(
                     "formal campaign manifest cannot use engineering-pilot options"
                 )
-            if args.execute_formal and not args.condition_stack_id:
+            if args.execute_formal and (
+                not args.condition_stack_id or not args.condition_stack_contract
+            ):
                 raise V6ContractError(
-                    "--execute-formal requires --condition-stack-id"
+                    "--execute-formal requires --condition-stack-id and "
+                    "--condition-stack-contract"
                 )
-            if not args.execute_formal and args.condition_stack_id:
+            if not args.execute_formal and (
+                args.condition_stack_id or args.condition_stack_contract
+            ):
                 raise V6ContractError(
-                    "--condition-stack-id requires --execute-formal"
+                    "condition stack options require --execute-formal"
                 )
             campaign = load_formal_campaign_manifest(args.formal_manifest)
             aggregate = (
                 execute_formal_campaign(
-                    campaign, condition_stack_id=args.condition_stack_id
+                    campaign,
+                    condition_stack_id=args.condition_stack_id,
+                    condition_stack_contract=args.condition_stack_contract,
                 )
                 if args.execute_formal
                 else evaluate_formal_campaign(campaign)
@@ -2023,7 +2248,11 @@ def cli(argv: list[str] | None = None) -> int:
                 )
             )
             return 0
-        if args.execute_formal or args.condition_stack_id:
+        if (
+            args.execute_formal
+            or args.condition_stack_id
+            or args.condition_stack_contract
+        ):
             raise V6ContractError(
                 "formal execution options require --formal-manifest"
             )

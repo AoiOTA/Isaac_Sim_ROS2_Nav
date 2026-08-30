@@ -1,7 +1,10 @@
 from collections import deque
+from dataclasses import replace
 import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -26,6 +29,7 @@ from robot_experiments.v6_formal import (
     formal_dispatch_plan,
     load_formal_campaign_manifest,
     load_manifest,
+    validate_condition_stack_contract,
 )
 
 
@@ -83,6 +87,7 @@ def _formal_raw(tmp_path: Path, *, authorization: str = "NOT_AUTHORIZED") -> dic
         "intended_use": "formal_qualification",
         "execution_authorization": authorization,
         "runs_per_condition": 20,
+        "runner_entrypoint": str(REPO / "scripts" / "run_experiment.sh"),
         "conditions": ordered,
     }
 
@@ -99,7 +104,12 @@ def _write_formal_manifest(
 
 
 def _write_formal_run(
-    condition, run_index: int, *, strict_success: bool, valid: bool = True
+    condition,
+    run_index: int,
+    *,
+    strict_success: bool,
+    valid: bool = True,
+    stack_session_id: str = "a" * 64,
 ) -> Path:
     identity = condition.episode_identities[run_index - 1]
     seed = identity["seed"]
@@ -113,6 +123,9 @@ def _write_formal_run(
         "strict_success": strict_success,
         "checksums_verified": True,
         "episode_validity": {"valid": valid},
+        "final_trial_metric_gate": {"passed": True},
+        "condition_stack_id": condition.condition_id,
+        "stack_session_id": stack_session_id,
     }
     episode = {
         "scenario_id": condition.scenario_id,
@@ -124,17 +137,62 @@ def _write_formal_run(
             "variant_id": identity["dynamic_variant_id"],
         },
         "appearance": {"profile_id": identity["appearance_profile_id"]},
+        "condition_stack_id": condition.condition_id,
+        "stack_session_id": stack_session_id,
+        "reset_receipt": {"generation": run_index},
     }
+    telemetry = root / "telemetry"
+    telemetry.mkdir()
+    (telemetry / "metadata.yaml").write_text("metadata\n", encoding="utf-8")
+    (telemetry / "telemetry_0.mcap").write_bytes(b"mcap")
     (root / "run_summary.json").write_text(json.dumps(summary), encoding="utf-8")
     (root / "run_manifest.json").write_text(json.dumps(episode), encoding="utf-8")
+    _refresh_checksums(root)
+    return root
+
+
+def _refresh_checksums(root: Path) -> None:
     entries = [
-        f"{hashlib.sha256(item.read_bytes()).hexdigest()}  {item.name}"
-        for item in sorted(root.iterdir())
+        f"{hashlib.sha256(item.read_bytes()).hexdigest()}  {item.relative_to(root)}"
+        for item in sorted(
+            path
+            for path in root.rglob("*")
+            if path.is_file() and path.name != "checksums.sha256"
+        )
     ]
     (root / "checksums.sha256").write_text(
         "\n".join(entries) + "\n", encoding="utf-8"
     )
-    return root
+
+
+def _live_stack_contract(
+    tmp_path: Path,
+    *,
+    condition_id: str = "indoor_static",
+    pid: int | None = None,
+    **overrides,
+) -> Path:
+    pid = os.getpid() if pid is None else pid
+    stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+    scene, condition = condition_id.split("_", 1)
+    payload = {
+        "schema": "bio_nav.v6_stack_contract.v1",
+        "condition_id": condition_id,
+        "scene": scene,
+        "condition": condition,
+        "arm": "M3",
+        "domain": 150,
+        "startup_profile": "module2_causal_obstacle_active",
+        "pid": pid,
+        "pgid": int(stat[2]),
+        "start_ticks": int(stat[19]),
+        "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+    }
+    payload.update(overrides)
+    payload["stack_session_id"] = v6_formal_module._stack_session_id(payload)
+    path = tmp_path / "stack.contract.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
 
 
 def ready_facts() -> ReadinessFacts:
@@ -271,6 +329,11 @@ def test_formal_manifest_dry_run_freezes_six_conditions_and_120_runs(
     assert len(payload["dispatch_plan"]) == 6
     assert all("run_indices:=1" in row["command"] for row in payload["dispatch_plan"])
     assert all(
+        row["command"][0] == str(REPO / "scripts" / "run_experiment.sh")
+        and row["condition_stack_contract_required"] is True
+        for row in payload["dispatch_plan"]
+    )
+    assert all(
         row["stack_boundary"] == "cold"
         and row["requires_existing_condition_stack"] is True
         for row in payload["dispatch_plan"]
@@ -294,6 +357,26 @@ def test_formal_manifest_dry_run_freezes_six_conditions_and_120_runs(
     }) == 20
 
 
+def test_formal_manifest_requires_source_runner_and_route_prior_contract(tmp_path):
+    raw = _formal_raw(tmp_path)
+    raw["runner_entrypoint"] = str(tmp_path / "missing-runner")
+    with pytest.raises(V6ContractError, match="runner_entrypoint"):
+        load_formal_campaign_manifest(_write_manifest(tmp_path, raw))
+
+    for argument, message in (
+        ("navigation_execution_backend:=navigate_to_pose", "route_guided"),
+        ("require_module2_planning_ready:=false", "planning readiness"),
+    ):
+        raw = _formal_raw(tmp_path)
+        name = argument.split(":=", 1)[0]
+        raw["conditions"][0]["runner_arguments"] = [
+            argument if item.startswith(f"{name}:=") else item
+            for item in raw["conditions"][0]["runner_arguments"]
+        ]
+        with pytest.raises(V6ContractError, match=message):
+            load_formal_campaign_manifest(_write_manifest(tmp_path, raw))
+
+
 def test_formal_execution_requires_flag_and_authorized_manifest(tmp_path, capsys):
     path = _write_formal_manifest(tmp_path)
 
@@ -306,6 +389,8 @@ def test_formal_execution_requires_flag_and_authorized_manifest(tmp_path, capsys
         "--execute-formal",
         "--condition-stack-id",
         "indoor_static",
+        "--condition-stack-contract",
+        "/missing/stack.contract.json",
     ]) == 2
     assert "manifest is NOT_AUTHORIZED" in capsys.readouterr().err
 
@@ -327,9 +412,52 @@ def test_formal_execution_rejects_wrong_stack_without_subprocess(
     )
 
     with pytest.raises(V6ContractError, match="unknown formal condition stack"):
-        execute_formal_campaign(campaign, condition_stack_id="wrong_stack")
+        execute_formal_campaign(
+            campaign,
+            condition_stack_id="wrong_stack",
+            condition_stack_contract="/missing/stack.contract.json",
+        )
 
     assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"boot_id": "stale-boot"}, "boot_id is stale"),
+        ({"start_ticks": 1}, "start_ticks is stale"),
+    ],
+)
+def test_stack_contract_rejects_stale_process_identity(
+    tmp_path, overrides, message
+):
+    contract = _live_stack_contract(tmp_path, **overrides)
+
+    with pytest.raises(V6ContractError, match=message):
+        validate_condition_stack_contract(
+            contract, expected_condition_id="indoor_static"
+        )
+
+
+def test_stack_contract_rejects_wrong_condition(tmp_path):
+    contract = _live_stack_contract(tmp_path)
+
+    with pytest.raises(V6ContractError, match="condition mismatch"):
+        validate_condition_stack_contract(
+            contract, expected_condition_id="outdoor_static"
+        )
+
+
+def test_stack_contract_rejects_dead_process(tmp_path):
+    process = subprocess.Popen(["sleep", "30"])
+    contract = _live_stack_contract(tmp_path, pid=process.pid)
+    process.terminate()
+    process.wait(timeout=5)
+
+    with pytest.raises(V6ContractError, match="process is not live"):
+        validate_condition_stack_contract(
+            contract, expected_condition_id="indoor_static"
+        )
 
 
 def test_formal_execution_dispatches_one_episode_and_returns(
@@ -338,27 +466,61 @@ def test_formal_execution_dispatches_one_episode_and_returns(
     campaign = load_formal_campaign_manifest(
         _write_formal_manifest(tmp_path, authorization="AUTHORIZED")
     )
+    contract = _live_stack_contract(tmp_path)
+    monkeypatch.setenv("ROS_DOMAIN_ID", "150")
+    contract_payload = json.loads(contract.read_text())
     calls = []
 
     def fake_run(command, *, check):
         calls.append((command, check))
+        _write_formal_run(
+            campaign.conditions[0],
+            1,
+            strict_success=True,
+            stack_session_id=contract_payload["stack_session_id"],
+        )
 
     monkeypatch.setattr(v6_formal_module.subprocess, "run", fake_run)
 
     aggregate = execute_formal_campaign(
-        campaign, condition_stack_id="indoor_static"
+        campaign,
+        condition_stack_id="indoor_static",
+        condition_stack_contract=contract,
     )
 
     assert len(calls) == 1
     assert calls[0][1] is True
     assert "run_indices:=1" in calls[0][0]
-    assert aggregate["present_episodes"] == 0
+    assert f"condition_stack_id:=indoor_static" in calls[0][0]
+    assert any(
+        argument == f"stack_session_id:={contract_payload['stack_session_id']}"
+        for argument in calls[0][0]
+    )
+    assert aggregate["present_episodes"] == 1
+
+
+def test_formal_execution_requires_exactly_one_new_strict_target(
+    tmp_path, monkeypatch
+):
+    campaign = load_formal_campaign_manifest(
+        _write_formal_manifest(tmp_path, authorization="AUTHORIZED")
+    )
+    contract = _live_stack_contract(tmp_path)
+    monkeypatch.setenv("ROS_DOMAIN_ID", "150")
+    monkeypatch.setattr(v6_formal_module.subprocess, "run", lambda *args, **kwargs: None)
+
+    with pytest.raises(V6ContractError, match="exactly one strict-success"):
+        execute_formal_campaign(
+            campaign,
+            condition_stack_id="indoor_static",
+            condition_stack_contract=contract,
+        )
 
 
 def test_formal_shell_requires_and_forwards_condition_stack_id():
     source = (REPO / "scripts" / "run_v6_formal_episode.sh").read_text()
-    assert "formal execution requires --condition-stack-id ID" in source
-    assert 'formal_execute=(--execute-formal --condition-stack-id "$3")' in source
+    assert "formal execution requires stack ID and contract path" in source
+    assert '--condition-stack-contract "$5"' in source
 
 
 def test_formal_aggregate_resumes_after_valid_strict_episode(tmp_path):
@@ -401,6 +563,86 @@ def test_formal_aggregate_stops_at_product_or_evidence_failure(
     assert aggregate["blockers"] == [
         f"{first.condition_id}:run-1:{expected_status}"
     ]
+
+
+def test_formal_aggregate_rejects_changed_stack_session(tmp_path):
+    campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
+    first = campaign.conditions[0]
+    _write_formal_run(first, 1, strict_success=True, stack_session_id="a" * 64)
+    _write_formal_run(first, 2, strict_success=True, stack_session_id="b" * 64)
+
+    aggregate = evaluate_formal_campaign(campaign)
+
+    assert aggregate["conditions"][0]["stack_session_id"] is None
+    assert "indoor_static:stack_session_mismatch" in aggregate["blockers"]
+
+
+@pytest.mark.parametrize("generation", [None, 1, 4])
+def test_formal_aggregate_requires_contiguous_reset_generation(
+    tmp_path, generation
+):
+    campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
+    first = campaign.conditions[0]
+    _write_formal_run(first, 1, strict_success=True)
+    root = _write_formal_run(first, 2, strict_success=True)
+    manifest_path = root / "run_manifest.json"
+    episode = json.loads(manifest_path.read_text())
+    if generation is None:
+        episode["reset_receipt"] = {}
+    else:
+        episode["reset_receipt"]["generation"] = generation
+    manifest_path.write_text(json.dumps(episode), encoding="utf-8")
+    _refresh_checksums(root)
+
+    aggregate = evaluate_formal_campaign(campaign)
+
+    expected = (
+        "reset_generation_missing"
+        if generation is None
+        else "reset_generation_discontinuous"
+    )
+    assert f"indoor_static:{expected}" in aggregate["blockers"]
+
+
+def test_formal_checksum_requires_core_and_mcap_coverage(tmp_path):
+    root = tmp_path / "run"
+    root.mkdir()
+    (root / "unrelated.txt").write_text("ok\n", encoding="utf-8")
+    _refresh_checksums(root)
+
+    assert not v6_formal_module._checksums_verified(root)
+
+
+def test_formal_aggregate_requires_final_metric_gate(tmp_path):
+    campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
+    first = campaign.conditions[0]
+    root = _write_formal_run(first, 1, strict_success=True)
+    summary_path = root / "run_summary.json"
+    summary = json.loads(summary_path.read_text())
+    summary["final_trial_metric_gate"]["passed"] = False
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    _refresh_checksums(root)
+
+    aggregate = evaluate_formal_campaign(campaign)
+
+    assert aggregate["conditions"][0]["runs"][0]["status"] == "invalid_evidence"
+
+
+def test_unauthorized_complete_campaign_never_reports_pass(tmp_path):
+    campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
+    for condition in campaign.conditions:
+        for run_index in range(1, 21):
+            _write_formal_run(condition, run_index, strict_success=True)
+
+    aggregate = evaluate_formal_campaign(campaign)
+
+    assert aggregate["strict_successes"] == 120
+    assert aggregate["execution_authorization"] == "NOT_AUTHORIZED"
+    assert aggregate["formal_qualification"] == "INCOMPLETE"
+    authorized = evaluate_formal_campaign(
+        replace(campaign, authorization="AUTHORIZED")
+    )
+    assert authorized["formal_qualification"] == "PASS"
 
 
 def test_runtime_contract_rejects_nonbaseline_navigation_features(tmp_path):

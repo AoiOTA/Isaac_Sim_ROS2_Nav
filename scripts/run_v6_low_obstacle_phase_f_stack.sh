@@ -127,6 +127,43 @@ write_process_identity() {
   mv -f "${prefix}.pgid.tmp" "${directory}/${name}.pgid"
 }
 
+write_stack_contract() {
+  local directory="$1" condition_id="$2" scene_name="$3" condition_name="$4"
+  local arm_name="$5" domain="$6" profile="$7" pid="$8" pgid="$9"
+  local start_ticks boot_id temporary
+  start_ticks="$(awk '{print $22}' "/proc/${pid}/stat")"
+  boot_id="$(< /proc/sys/kernel/random/boot_id)"
+  temporary="${directory}/.stack.contract.$$.tmp"
+  python3 - "${temporary}" "${condition_id}" "${scene_name}" \
+    "${condition_name}" "${arm_name}" "${domain}" "${profile}" \
+    "${pid}" "${pgid}" "${start_ticks}" "${boot_id}" <<'PY'
+import hashlib
+import json
+import os
+from pathlib import Path
+import sys
+
+target = Path(sys.argv[1])
+payload = {
+    "schema": "bio_nav.v6_stack_contract.v1",
+    "condition_id": sys.argv[2],
+    "scene": sys.argv[3],
+    "condition": sys.argv[4],
+    "arm": sys.argv[5],
+    "domain": int(sys.argv[6]),
+    "startup_profile": sys.argv[7],
+    "pid": int(sys.argv[8]),
+    "pgid": int(sys.argv[9]),
+    "start_ticks": int(sys.argv[10]),
+    "boot_id": sys.argv[11],
+}
+canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+payload["stack_session_id"] = hashlib.sha256(canonical.encode()).hexdigest()
+target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+os.replace(target, target.with_name("stack.contract.json"))
+PY
+}
+
 module2_recorded_process_running() {
   local directory="$1" name pid pgid
   for name in module2_server integration_bridge; do
@@ -460,9 +497,12 @@ startup_profile="estimated_shadow"
 if [[ "${arm}" =~ ^M[23]$ ]]; then
   startup_profile="module2_causal_obstacle_active"
 fi
+contract_scene="indoor"
 if [[ "${scene}" == "rivermark" ]]; then
+  contract_scene="outdoor"
   startup_profile="module2_causal_obstacle_outdoor"
 fi
+condition_id="${contract_scene}_${condition}"
 module2_asset_args=(
   --shadow-config configs/kujiale_0026_module1_visual_shadow_v310.yaml
 )
@@ -500,6 +540,8 @@ if [[ "${dry_run}" == true ]]; then
   fi
   printf 'cognitive_profile=%s\n' "${arm}"
   printf 'active_effect_scope=%s\n' "${dry_scope}"
+  printf 'condition_id=%s\n' "${condition_id}"
+  printf 'stack_contract=%s/stack.contract.json\n' "${run_dir}"
   printf 'cpg_navigation_writes=false\n'
   if [[ "${scene}" == "rivermark" ]]; then
     printf 'scene=rivermark\n'
@@ -735,7 +777,8 @@ shutdown() {
     rm -f "${run_dir}/${child_names[index]}.identity" \
       "${run_dir}/${child_names[index]}.pid" "${run_dir}/${child_names[index]}.pgid"
   done
-  rm -f "${run_dir}/stack.identity" "${run_dir}/stack.pid" "${run_dir}/stack.pgid"
+  rm -f "${run_dir}/stack.identity" "${run_dir}/stack.pid" \
+    "${run_dir}/stack.pgid" "${run_dir}/stack.contract.json"
   if [[ "${failed}" == true ]]; then
     echo "Phase-F stack cleanup left a tracked process group alive" >&2
     exit 1
@@ -753,6 +796,9 @@ stack_pgid="$(process_group_of_pid "$$")"
   exit 1
 }
 write_process_identity stack "${run_dir}" "$$" "${stack_pgid}"
+write_stack_contract "${run_dir}" "${condition_id}" "${contract_scene}" \
+  "${condition}" "${arm}" "${domain_id}" "${startup_profile}" \
+  "$$" "${stack_pgid}"
 
 module3_localization_args=()
 module3_route_args=(

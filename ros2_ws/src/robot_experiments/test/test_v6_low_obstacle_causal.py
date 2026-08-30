@@ -19,6 +19,7 @@ import pytest
 import yaml
 
 import robot_experiments.v6_low_obstacle_causal as causal
+import robot_experiments.v6_formal as v6_formal
 
 from robot_experiments.v6_low_obstacle_causal import (
     AdapterTemplates,
@@ -3647,6 +3648,27 @@ def test_phase_f_stack_localization_extension_forwards_exact_onebox_m3_argv(
         assert f"localization_candidate_manifest:={fake.candidate_manifest}" in bridge
     finally:
         _stop_fake_phase_f_stack(fake)
+
+
+def test_phase_f_stack_writes_live_deterministic_condition_contract(tmp_path):
+    fake = _start_fake_phase_f_stack(tmp_path, arm="M3")
+    contract_path = fake.run_dir / "stack.contract.json"
+    try:
+        payload = v6_formal.validate_condition_stack_contract(
+            contract_path, expected_condition_id="indoor_static"
+        )
+        assert set(payload) == v6_formal.STACK_CONTRACT_KEYS
+        assert payload["scene"] == "indoor"
+        assert payload["condition"] == "static"
+        assert payload["arm"] == "M3"
+        assert payload["domain"] == 150
+        assert payload["startup_profile"] == "module2_causal_obstacle_active"
+        assert payload["pid"] == fake.process.pid
+        assert payload["pgid"] == fake.process.pid
+        assert payload["stack_session_id"] == v6_formal._stack_session_id(payload)
+    finally:
+        _stop_fake_phase_f_stack(fake)
+    assert not contract_path.exists()
 
 
 def _stop_fake_phase_f_stack(fake: SimpleNamespace) -> None:

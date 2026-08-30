@@ -108,7 +108,7 @@ case "${BIO_NAV_REP}" in
   rep1) BIO_NAV_RUN_INDEX=1 ;;  # seed 8601, cold
   rep2) BIO_NAV_RUN_INDEX=2 ;;  # seed 8602, hot reset
   rep3) BIO_NAV_RUN_INDEX=3 ;;  # seed 8603, hot reset
-  *) echo "BIO_NAV_REP must be rep1, rep2, or rep3" >&2; return 2 ;;
+  *) echo "BIO_NAV_REP must be rep1, rep2, or rep3" >&2; exit 2 ;;
 esac
 test ! -e "${BIO_NAV_RUN_ROOT}/${BIO_NAV_REP}"
 
@@ -242,8 +242,10 @@ operator/startup runs separately and do not count them as Pilot episodes.
 The formal manifest contains exactly six ordered conditions and 20 run
 identities per condition. Repeated seeds across dynamic or appearance variants
 are valid; identity is the full run index, seed, case/variant, and appearance
-profile tuple. Dry-run also reports immutable-evidence aggregate state and the
-next resume point without starting ROS or Isaac:
+profile tuple. It also freezes the readable source-direct
+`scripts/run_experiment.sh` entrypoint. Dry-run reports immutable-evidence
+aggregate state and the next resume point without requiring a live stack or
+starting ROS or Isaac:
 
 ```bash
 ./scripts/run_v6_formal_episode.sh --formal /absolute/path/to/formal_manifest.yaml
@@ -257,6 +259,7 @@ both an `AUTHORIZED` manifest and the explicit command below:
 ```bash
 ./scripts/run_v6_formal_episode.sh --formal --execute-formal \
   --condition-stack-id indoor_static \
+  --condition-stack-contract "${BIO_NAV_RUN_ROOT}/runtime/stack.contract.json" \
   /absolute/path/to/formal_manifest.yaml
 ```
 

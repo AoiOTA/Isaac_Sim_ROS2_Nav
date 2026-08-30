@@ -145,12 +145,13 @@ COMMON_REQUIRED_RECORDED_TOPICS = (
     "/bio_nav/module1/odom",
     "/tf",
     "/cmd_vel_sim",
+    "/simulation/collision",
+    "/simulation/reset_stop_gate/status",
+)
+ROUTE_GUIDED_REQUIRED_RECORDED_TOPICS = (
     "/bio_nav/navigation_graph",
     "/bio_nav/canonical_route",
     "/bio_nav/route_progress",
-    "/simulation/collision",
-    "/simulation/reset_event",
-    "/simulation/reset_stop_gate/status",
 )
 SCENE_REQUIRED_RECORDED_TOPICS = {
     "indoor": ("/amcl_pose",),
@@ -158,6 +159,10 @@ SCENE_REQUIRED_RECORDED_TOPICS = {
     # not a required source for this scene.  The runner's fresh transform
     # observation, rather than /tf_static, proves map->odom availability.
     "outdoor": (),
+}
+SCENE_FORBIDDEN_RECORDED_TOPICS = {
+    "indoor": (),
+    "outdoor": ("/amcl_pose",),
 }
 
 
@@ -170,6 +175,7 @@ def _mcap_required_topic_coverage(
     metadata_path: Path,
     *,
     scene: str,
+    route_guided: bool = False,
     recorder_error: str | None = None,
 ) -> dict[str, Any]:
     """Read rosbag metadata and require only contract-critical topic samples."""
@@ -179,9 +185,11 @@ def _mcap_required_topic_coverage(
     required_topics = tuple(
         dict.fromkeys(
             COMMON_REQUIRED_RECORDED_TOPICS
+            + (ROUTE_GUIDED_REQUIRED_RECORDED_TOPICS if route_guided else ())
             + SCENE_REQUIRED_RECORDED_TOPICS[scene]
         )
     )
+    forbidden_topics = SCENE_FORBIDDEN_RECORDED_TOPICS[scene]
     counts: dict[str, int] = {}
     metadata_error: str | None = None
     if not metadata_path.is_file():
@@ -208,6 +216,9 @@ def _mcap_required_topic_coverage(
             metadata_error = f"metadata_invalid:{type(exc).__name__}:{exc}"
     missing = [topic for topic in required_topics if topic not in counts]
     empty = [topic for topic in required_topics if counts.get(topic) == 0]
+    observed_forbidden = [
+        topic for topic in forbidden_topics if counts.get(topic, 0) > 0
+    ]
     return {
         "scene": scene,
         "metadata_path": str(metadata_path),
@@ -220,7 +231,18 @@ def _mcap_required_topic_coverage(
         },
         "missing_topics": missing,
         "zero_message_topics": empty,
-        "passed": not recorder_error and not metadata_error and not missing and not empty,
+        "forbidden_topics": list(forbidden_topics),
+        "forbidden_message_counts": {
+            topic: counts.get(topic, 0) for topic in forbidden_topics
+        },
+        "observed_forbidden_topics": observed_forbidden,
+        "passed": bool(
+            not recorder_error
+            and not metadata_error
+            and not missing
+            and not empty
+            and not observed_forbidden
+        ),
     }
 
 
@@ -262,6 +284,13 @@ def _episode_validity(summary: Mapping[str, Any]) -> dict[str, Any]:
     route_prior = summary.get("route_prior_application", {})
     if summary.get("terminal_zero_confirmed") is not True:
         reasons.append("terminal_zero_not_confirmed")
+    reset_receipt = summary.get("reset_receipt", {})
+    if (
+        not isinstance(reset_receipt, Mapping)
+        or not reset_receipt
+        or summary.get("reset_receipt_confirmed") is not True
+    ):
+        reasons.append("reset_receipt_missing")
     if summary.get("contact_sensor_evidence_confirmed") is not True:
         reasons.append("contact_sensor_evidence_missing")
     if summary.get("fixed_map_to_odom_evidence_confirmed") is not True:
@@ -276,6 +305,10 @@ def _episode_validity(summary: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(route_prior, Mapping) and route_prior.get("required") is True:
         if route_prior.get("confirmed") is not True:
             reasons.append("route_prior_application_unconfirmed")
+    stack = summary.get("condition_stack_attestation", {})
+    if isinstance(stack, Mapping) and stack.get("required") is True:
+        if stack.get("confirmed") is not True:
+            reasons.append("condition_stack_attestation_missing")
     reasons = list(dict.fromkeys(reasons))
     return {
         "valid": not reasons,
@@ -640,6 +673,37 @@ class ExperimentRunner(Node):
         if not scenario_file:
             raise ConfigurationError("scenario_file is required")
         self._scenario: Scenario = load_scenario(scenario_file)
+        self._condition_stack_id = str(
+            self.declare_parameter("condition_stack_id", "").value
+        ).strip()
+        self._stack_session_id = str(
+            self.declare_parameter("stack_session_id", "").value
+        ).strip()
+        if bool(self._condition_stack_id) != bool(self._stack_session_id):
+            raise ConfigurationError(
+                "condition_stack_id and stack_session_id must be supplied together"
+            )
+        if self._condition_stack_id:
+            scene = _evidence_scene(
+                self._scenario.scenario_id, self._scenario.map_version
+            )
+            category = (
+                "appearance"
+                if self._scenario.appearance_config_file is not None
+                else self._scenario.scenario_type
+            )
+            expected_condition_stack_id = f"{scene}_{category}"
+            if self._condition_stack_id != expected_condition_stack_id:
+                raise ConfigurationError(
+                    "condition_stack_id does not match the scenario identity"
+                )
+            if len(self._stack_session_id) != 64 or any(
+                character not in "0123456789abcdef"
+                for character in self._stack_session_id
+            ):
+                raise ConfigurationError(
+                    "stack_session_id must be a lowercase SHA-256 digest"
+                )
         visual_case = str(self.declare_parameter("dynamic_case_id", "").value).strip()
         visual_variant = str(self.declare_parameter("dynamic_variant_id", "").value).strip()
         visual_seed = self.declare_parameter("dynamic_seed", 0).value
@@ -1401,6 +1465,8 @@ class ExperimentRunner(Node):
             "dynamic_variant_id": self._active_selection.variant_id,
             "experiment_arm": self._experiment_arm or None,
             "navigation_execution_backend": self._navigation_execution_backend,
+            "condition_stack_id": getattr(self, "_condition_stack_id", "") or None,
+            "stack_session_id": getattr(self, "_stack_session_id", "") or None,
             "wall_time_utc": datetime.now(timezone.utc).isoformat(),
             "wall_ns": time.time_ns(),
             "monotonic_ns": time.monotonic_ns(),
@@ -4163,6 +4229,8 @@ class ExperimentRunner(Node):
             # persist the value consumed by the installed runner.
             "experiment_arm": self._experiment_arm or None,
             "navigation_execution_backend": self._navigation_execution_backend,
+            "condition_stack_id": getattr(self, "_condition_stack_id", "") or None,
+            "stack_session_id": getattr(self, "_stack_session_id", "") or None,
             "optimal_reference_hash": self._optimal_reference_hash,
             "dynamic_runtime_contract": dict(
                 self._dynamic_runtime_contract
@@ -4630,6 +4698,9 @@ class ExperimentRunner(Node):
             required_topic_coverage = _mcap_required_topic_coverage(
                 root / "telemetry" / "metadata.yaml",
                 scene=scene,
+                route_guided=(
+                    self._navigation_execution_backend == "route_guided"
+                ),
                 recorder_error=getattr(self, "_bag_recorder_error", None),
             )
             required_topic_coverage["required"] = True
@@ -4645,6 +4716,9 @@ class ExperimentRunner(Node):
                 "metadata_present": False,
                 "metadata_error": None,
                 "recorder_error": None,
+                "forbidden_topics": [],
+                "forbidden_message_counts": {},
+                "observed_forbidden_topics": [],
             }
         route_prior_application = _route_prior_application_evidence(
             list(manifest.get("route_edge_costs", [])),
@@ -4657,6 +4731,15 @@ class ExperimentRunner(Node):
         manifest["route_prior_application_confirmed"] = route_prior_application[
             "confirmed"
         ]
+        condition_stack_id = getattr(self, "_condition_stack_id", "")
+        stack_session_id = getattr(self, "_stack_session_id", "")
+        condition_stack_attestation = {
+            "required": bool(condition_stack_id),
+            "condition_stack_id": condition_stack_id or None,
+            "stack_session_id": stack_session_id or None,
+            "confirmed": bool(condition_stack_id and stack_session_id),
+        }
+        manifest["condition_stack_attestation"] = condition_stack_attestation
         (root / "run_manifest.json").write_text(
             json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
         )
@@ -4744,6 +4827,8 @@ class ExperimentRunner(Node):
             ),
             "terminal_zero_reason": manifest.get("terminal_zero_reason"),
             "terminal_zero_timing": manifest.get("terminal_zero_timing", {}),
+            "reset_receipt": dict(manifest.get("reset_receipt", {})),
+            "reset_receipt_confirmed": bool(manifest.get("reset_receipt")),
             "physical_collision_free": not self._collision_detected,
             "contact_sensor_evidence_confirmed": bool(
                 manifest.get("observability", {}).get("collision_status_seen")
@@ -4766,6 +4851,9 @@ class ExperimentRunner(Node):
             "route_prior_application_confirmed": route_prior_application[
                 "confirmed"
             ],
+            "condition_stack_id": condition_stack_id or None,
+            "stack_session_id": stack_session_id or None,
+            "condition_stack_attestation": condition_stack_attestation,
             "evidence": {
                 "mcap_zstd": bag_complete,
                 "mcap_required": self._record_bag,
@@ -4933,6 +5021,8 @@ class ExperimentRunner(Node):
             and isinstance(manifest, dict)
         ):
             return None
+        if summary.get("episode_validity", {}).get("valid") is not True:
+            return None
         expected = {
             "random_seed": selection.seed,
             "run_index": run_index,
@@ -4953,18 +5043,22 @@ class ExperimentRunner(Node):
             or dynamic.get("variant_id") != selection.variant_id
         ):
             return None
-        # Formal campaign evidence is immutable whether it passed or failed.
-        # A pilot is different: it gates the remaining 40 rounds, therefore a
-        # fully recorded *failed* pilot must be quarantined and retried on a
-        # resume instead of repeatedly failing validation without doing work.
+        # Complete valid evidence is immutable whether it passed or failed.
+        # Successful-resume mode may skip only a passing episode; a valid
+        # product failure blocks the campaign, while only invalid/incomplete
+        # evidence returns None and is eligible for quarantine.
         if self._require_successful_resume:
+            final_metric_gate = summary.get("final_trial_metric_gate", {})
             if (
                 manifest.get("result") != "success"
                 or manifest.get("terminal_zero_confirmed") is not True
                 or summary.get("strict_success") is not True
-                or summary.get("episode_validity", {}).get("valid") is not True
+                or not isinstance(final_metric_gate, Mapping)
+                or final_metric_gate.get("passed") is not True
             ):
-                return None
+                raise ConfigurationError(
+                    "resume blocked by an immutable valid product failure"
+                )
         return manifest
 
     @staticmethod

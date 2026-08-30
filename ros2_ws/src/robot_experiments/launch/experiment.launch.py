@@ -47,6 +47,8 @@ def generate_launch_description():
             DeclareLaunchArgument("nav2_config_file", default_value=""),
             DeclareLaunchArgument("nav2_profile", default_value=""),
             DeclareLaunchArgument("experiment_arm", default_value=""),
+            DeclareLaunchArgument("condition_stack_id", default_value=""),
+            DeclareLaunchArgument("stack_session_id", default_value=""),
             DeclareLaunchArgument("dynamic_case_id", default_value=""),
             DeclareLaunchArgument("dynamic_variant_id", default_value=""),
             DeclareLaunchArgument("dynamic_seed", default_value="0"),
@@ -129,6 +131,14 @@ def generate_launch_description():
                         # YAML would otherwise coerce them to boolean false.
                         "experiment_arm": ParameterValue(
                             LaunchConfiguration("experiment_arm"), value_type=str
+                        ),
+                        "condition_stack_id": ParameterValue(
+                            LaunchConfiguration("condition_stack_id"),
+                            value_type=str,
+                        ),
+                        "stack_session_id": ParameterValue(
+                            LaunchConfiguration("stack_session_id"),
+                            value_type=str,
                         ),
                         "dynamic_case_id": LaunchConfiguration("dynamic_case_id"),
                         "dynamic_variant_id": LaunchConfiguration("dynamic_variant_id"),
