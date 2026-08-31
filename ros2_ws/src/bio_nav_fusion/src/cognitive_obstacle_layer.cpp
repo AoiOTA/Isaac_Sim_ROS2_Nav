@@ -197,7 +197,9 @@ void CognitiveObstacleLayer::deactivate()
 
 void CognitiveObstacleLayer::reset()
 {
+  std::lock_guard<std::mutex> status_lock(status_publication_mutex_);
   std::lock_guard<std::mutex> lock(mutex_);
+  ++state_generation_;
   latest_.reset();
   latest_admission_reason_.clear();
   accepted_.reset();
@@ -567,41 +569,45 @@ void CognitiveObstacleLayer::obstacleCallback(
   const bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr message)
 {
   const auto now = clock_->now();
-  std::string reason;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    const bool enforce_identity = identity_bound_;
-    reason = validateMessage(
-      *message, now.nanoseconds(), expected_, accepted_, maximum_age_s_,
-      maximum_ood_probability_, enforce_identity);
-    if (reason.empty()) {
-      if (!identity_bound_) {
-        expected_ = Identity{
-          message->reset_epoch, message->recurrent_session_id, message->map_version,
-          message->cognitive_tile_id, message->tile_revision, message->graph_revision,
-          message->model_id};
-        identity_bound_ = true;
-      }
-      latest_ = message;
-      latest_admission_reason_.clear();
-      recordAccepted(*message, accepted_);
-    } else {
-      latest_ = message;
-      latest_admission_reason_ = reason;
-      if (reason == "identity" && identityFieldsPresent(*message) &&
-        !sameIdentity(*message, expected_))
-      {
-        clearStaticTracks();
-        resetMaps();
-      }
-    }
-  }
-  addExtraBounds(-1000.0, -1000.0, 1000.0, 1000.0);
   const double age_s = static_cast<double>(
     now.nanoseconds() - stampNs(message->validation_stamp)) * 1.0e-9;
-  const std::string status_reason = reason.empty() ?
-    (mode_ == "shadow" ? "shadow" : "offered") : reason;
-  publishStatus(*message, false, status_reason, age_s);
+  std::string reason;
+  {
+    std::lock_guard<std::mutex> status_lock(status_publication_mutex_);
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      const bool enforce_identity = identity_bound_;
+      reason = validateMessage(
+        *message, now.nanoseconds(), expected_, accepted_, maximum_age_s_,
+        maximum_ood_probability_, enforce_identity);
+      ++state_generation_;
+      if (reason.empty()) {
+        if (!identity_bound_) {
+          expected_ = Identity{
+            message->reset_epoch, message->recurrent_session_id, message->map_version,
+            message->cognitive_tile_id, message->tile_revision, message->graph_revision,
+            message->model_id};
+          identity_bound_ = true;
+        }
+        latest_ = message;
+        latest_admission_reason_.clear();
+        recordAccepted(*message, accepted_);
+      } else {
+        latest_ = message;
+        latest_admission_reason_ = reason;
+        if (reason == "identity" && identityFieldsPresent(*message) &&
+          !sameIdentity(*message, expected_))
+        {
+          clearStaticTracks();
+          resetMaps();
+        }
+      }
+    }
+    const std::string status_reason = reason.empty() ?
+      (mode_ == "shadow" ? "shadow" : "offered") : reason;
+    publishStatus(*message, false, status_reason, age_s);
+  }
+  addExtraBounds(-1000.0, -1000.0, 1000.0, 1000.0);
 }
 
 void CognitiveObstacleLayer::updateBounds(
@@ -673,11 +679,13 @@ void CognitiveObstacleLayer::updateCosts(
   bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr message;
   Identity expected;
   std::string admission_reason;
+  uint64_t snapshot_generation = 0U;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     message = latest_;
     expected = expected_;
     admission_reason = latest_admission_reason_;
+    snapshot_generation = state_generation_;
   }
   const auto now = clock_->now();
   const AcceptanceCursor no_ordering_gate;
@@ -1060,12 +1068,28 @@ void CognitiveObstacleLayer::updateCosts(
     }
   }
   updateWithMax(master_grid, min_i, min_j, max_i, max_j);
-  const std::string reason = applicationReason(active_cells, raised_cells);
+  const bool healthy_empty_offer =
+    message && validation_reason.empty() && message->obstacles.empty() &&
+    applied_obstacles.empty() && !tf_failed && active_cells == 0U &&
+    raised_cells == 0U && masked_cells == 0U && maximum_cost == 0U &&
+    maximum_cost_increase == 0U;
+  const std::string reason = healthy_empty_offer ?
+    std::string("offered") : applicationReason(active_cells, raised_cells);
   const bool applied = reason.empty();
   if (message) {
     const double age_s = static_cast<double>(
       now.nanoseconds() - stampNs(message->validation_stamp)) * 1.0e-9;
     const std::string offer_reason = tf_failed ? tfFailureReason() : validation_reason;
+    if (before_update_status_publish_hook_) {
+      before_update_status_publish_hook_();
+    }
+    std::lock_guard<std::mutex> status_lock(status_publication_mutex_);
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (state_generation_ != snapshot_generation) {
+        return;
+      }
+    }
     publishStatus(
       *message, applied, offer_reason.empty() ? reason : offer_reason, age_s,
       active_cells, maximum_cost, raised_cells, masked_cells,

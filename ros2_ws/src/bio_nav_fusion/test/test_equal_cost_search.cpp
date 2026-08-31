@@ -1,10 +1,12 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <future>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <thread>
+#include <utility>
 
 #include "bio_nav_fusion/bio_nav_grid_based.hpp"
 #include "bio_nav_fusion/cognitive_obstacle_layer.hpp"
@@ -362,6 +364,12 @@ public:
   static std::string applicationReason(uint32_t active_cells, uint32_t raised_cells)
   {
     return CognitiveObstacleLayer::applicationReason(active_cells, raised_cells);
+  }
+
+  static void setBeforeUpdateStatusPublishHook(
+    CognitiveObstacleLayer & layer, std::function<void()> hook)
+  {
+    layer.before_update_status_publish_hook_ = std::move(hook);
   }
 };
 
@@ -1572,6 +1580,207 @@ TEST(CognitiveObstacleLayer, status_identity_and_age_follow_published_message)
   const double encoded_ms = std::stod(
     statuses.back().fallback_reason.substr(value_start, value_end - value_start));
   EXPECT_EQ(static_cast<int64_t>(std::llround(encoded_ms * 1000000.0)), 1234567890LL);
+}
+
+TEST(CognitiveObstacleLayer, healthy_empty_update_remains_offered_but_outside_candidate_rejects)
+{
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  using Status = bio_nav_interfaces::msg::RiskLayerStatus;
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  auto clock = std::make_shared<rclcpp::Clock>(RCL_SYSTEM_TIME);
+  tf2_ros::Buffer tf_buffer(clock);
+  nav2_costmap_2d::LayeredCostmap layered_costmap("map", true, false);
+  layered_costmap.resizeMap(80U, 80U, 0.05, -2.0, -2.0);
+  auto * master = layered_costmap.getCostmap();
+  CognitiveObstacleLayerHarness layer;
+  layer.bind(layered_costmap, tf_buffer, clock);
+  layer.resizeMap(80U, 80U, 0.05, -2.0, -2.0);
+
+  auto publisher_node = std::make_shared<rclcpp_lifecycle::LifecycleNode>(
+    "cognitive_obstacle_empty_status_publisher");
+  auto subscriber_node = std::make_shared<rclcpp::Node>(
+    "cognitive_obstacle_empty_status_subscriber");
+  const std::string topic = "/test/cognitive_obstacle_layer/empty_status";
+  std::vector<Status> statuses;
+  auto subscription = subscriber_node->create_subscription<Status>(
+    topic, rclcpp::QoS(10).reliable(),
+    [&statuses](const Status::SharedPtr status) {statuses.push_back(*status);});
+  (void)subscription;
+  Peer::configureStatusPublisher(layer, publisher_node, topic);
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(publisher_node->get_node_base_interface());
+  executor.add_node(subscriber_node);
+  const auto wait_for_status_count = [&](size_t expected) {
+      for (int attempt = 0; attempt < 100 && statuses.size() < expected; ++attempt) {
+        executor.spin_some();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      }
+      return statuses.size() >= expected;
+    };
+  for (int attempt = 0;
+    attempt < 100 && Peer::statusSubscriptionCount(layer) == 0U; ++attempt)
+  {
+    executor.spin_some();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_GT(Peer::statusSubscriptionCount(layer), 0U);
+
+  const int64_t now_ns = clock->now().nanoseconds();
+  auto empty = obstacleFixture();
+  retimeFreshObstacle(empty, now_ns - 20000000LL);
+  empty.obstacles.clear();
+  Peer::configureActive(layer, empty);
+  Peer::offer(layer, empty);
+  ASSERT_TRUE(wait_for_status_count(1U));
+  EXPECT_TRUE(statuses.back().offered);
+  EXPECT_FALSE(statuses.back().applied);
+  EXPECT_FALSE(statuses.back().rejected);
+  EXPECT_NE(
+    statuses.back().fallback_reason.find("rejection_reason=offered"),
+    std::string::npos);
+  master->resetMap(0U, 0U, 80U, 80U);
+  layer.updateCosts(*master, 0, 0, 80, 80);
+  ASSERT_TRUE(wait_for_status_count(2U));
+  const auto & empty_status = statuses.back();
+  EXPECT_TRUE(empty_status.offered);
+  EXPECT_FALSE(empty_status.applied);
+  EXPECT_FALSE(empty_status.rejected);
+  EXPECT_NE(
+    empty_status.fallback_reason.find("rejection_reason=offered"),
+    std::string::npos);
+  EXPECT_EQ(empty_status.active_cell_count, 0U);
+  EXPECT_EQ(empty_status.raised_cell_count, 0U);
+  EXPECT_EQ(empty_status.masked_by_existing_cost_count, 0U);
+  EXPECT_EQ(empty_status.maximum_cost, 0U);
+  EXPECT_EQ(empty_status.maximum_cost_increase, 0U);
+  EXPECT_EQ(empty_status.source_sequence, empty.sequence);
+  EXPECT_EQ(empty_status.reset_epoch, empty.reset_epoch);
+  EXPECT_EQ(empty_status.map_version, empty.map_version);
+  EXPECT_EQ(empty_status.risk_model_sha256, empty.risk_model_sha256);
+  EXPECT_EQ(
+    empty_status.qualification_receipt_sha256,
+    empty.qualification_receipt_sha256);
+  EXPECT_NEAR(
+    rclcpp::Time(empty_status.stamp).nanoseconds() -
+    static_cast<int64_t>(std::llround(empty_status.message_age_ms * 1.0e6)),
+    rclcpp::Time(empty.validation_stamp).nanoseconds(), 1000000LL);
+
+  auto outside = obstacleFixture();
+  outside.sequence = empty.sequence + 1U;
+  retimeFreshObstacle(outside, now_ns - 10000000LL);
+  outside.obstacles[0].pose_xy_m = {100.0, 100.0};
+  geometry_msgs::msg::TransformStamped transform;
+  transform.header.frame_id = "map";
+  transform.header.stamp = outside.validation_stamp;
+  transform.child_frame_id = outside.header.frame_id;
+  transform.transform.rotation.w = 1.0;
+  ASSERT_TRUE(tf_buffer.setTransform(transform, "healthy_empty_status_test"));
+  Peer::offer(layer, outside);
+  ASSERT_TRUE(wait_for_status_count(3U));
+  master->resetMap(0U, 0U, 80U, 80U);
+  layer.updateCosts(*master, 0, 0, 80, 80);
+  ASSERT_TRUE(wait_for_status_count(4U));
+  const auto & outside_status = statuses.back();
+  EXPECT_TRUE(outside_status.offered);
+  EXPECT_FALSE(outside_status.applied);
+  EXPECT_TRUE(outside_status.rejected);
+  EXPECT_NE(
+    outside_status.fallback_reason.find("rejection_reason=no_costmap_cells"),
+    std::string::npos);
+  EXPECT_EQ(outside_status.active_cell_count, 0U);
+  EXPECT_EQ(outside_status.raised_cell_count, 0U);
+}
+
+TEST(CognitiveObstacleLayer, superseded_update_status_cannot_publish_after_new_callback)
+{
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  using Status = bio_nav_interfaces::msg::RiskLayerStatus;
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  auto clock = std::make_shared<rclcpp::Clock>(RCL_SYSTEM_TIME);
+  tf2_ros::Buffer tf_buffer(clock);
+  nav2_costmap_2d::LayeredCostmap layered_costmap("map", true, false);
+  layered_costmap.resizeMap(80U, 80U, 0.05, -2.0, -2.0);
+  auto * master = layered_costmap.getCostmap();
+  CognitiveObstacleLayerHarness layer;
+  layer.bind(layered_costmap, tf_buffer, clock);
+  layer.resizeMap(80U, 80U, 0.05, -2.0, -2.0);
+
+  auto publisher_node = std::make_shared<rclcpp_lifecycle::LifecycleNode>(
+    "cognitive_obstacle_concurrent_status_publisher");
+  auto subscriber_node = std::make_shared<rclcpp::Node>(
+    "cognitive_obstacle_concurrent_status_subscriber");
+  const std::string topic = "/test/cognitive_obstacle_layer/concurrent_status";
+  std::vector<Status> statuses;
+  auto subscription = subscriber_node->create_subscription<Status>(
+    topic, rclcpp::QoS(10).reliable(),
+    [&statuses](const Status::SharedPtr status) {statuses.push_back(*status);});
+  (void)subscription;
+  Peer::configureStatusPublisher(layer, publisher_node, topic);
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(publisher_node->get_node_base_interface());
+  executor.add_node(subscriber_node);
+  const auto wait_for_status_count = [&](size_t expected) {
+      for (int attempt = 0; attempt < 100 && statuses.size() < expected; ++attempt) {
+        executor.spin_some();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      }
+      return statuses.size() >= expected;
+    };
+  for (int attempt = 0;
+    attempt < 100 && Peer::statusSubscriptionCount(layer) == 0U; ++attempt)
+  {
+    executor.spin_some();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_GT(Peer::statusSubscriptionCount(layer), 0U);
+
+  const int64_t now_ns = clock->now().nanoseconds();
+  auto first = obstacleFixture();
+  retimeFreshObstacle(first, now_ns - 20000000LL);
+  first.obstacles.clear();
+  Peer::configureActive(layer, first);
+  Peer::offer(layer, first);
+  ASSERT_TRUE(wait_for_status_count(1U));
+
+  std::promise<void> snapshot_ready;
+  auto snapshot_ready_future = snapshot_ready.get_future();
+  std::promise<void> resume_update;
+  auto resume_update_future = resume_update.get_future();
+  Peer::setBeforeUpdateStatusPublishHook(
+    layer,
+    [&snapshot_ready, &resume_update_future]() {
+      snapshot_ready.set_value();
+      resume_update_future.wait();
+    });
+  std::thread update_thread([&layer, master]() {
+      layer.updateCosts(*master, 0, 0, 80, 80);
+    });
+  snapshot_ready_future.wait();
+
+  auto second = obstacleFixture();
+  second.sequence = first.sequence + 1U;
+  retimeFreshObstacle(second, now_ns - 10000000LL);
+  second.obstacles.clear();
+  Peer::offer(layer, second);
+  resume_update.set_value();
+  update_thread.join();
+  Peer::setBeforeUpdateStatusPublishHook(layer, {});
+
+  ASSERT_TRUE(wait_for_status_count(2U));
+  for (int attempt = 0; attempt < 10; ++attempt) {
+    executor.spin_some();
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  ASSERT_EQ(statuses.size(), 2U);
+  EXPECT_EQ(statuses.front().source_sequence, first.sequence);
+  EXPECT_EQ(statuses.back().source_sequence, second.sequence);
+  EXPECT_EQ(statuses.back().recurrent_session_id, second.recurrent_session_id);
+  EXPECT_EQ(statuses.back().map_version, second.map_version);
+  EXPECT_FALSE(statuses.back().rejected);
 }
 
 TEST(CognitiveObstacleLayer, independent_static_rehits_promote_and_persist_until_reset)

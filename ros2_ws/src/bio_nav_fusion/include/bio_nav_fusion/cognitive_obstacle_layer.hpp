@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -169,6 +170,9 @@ private:
     uint8_t maximum_cost_increase = 0);
 
   std::mutex mutex_;
+  std::mutex status_publication_mutex_;
+  uint64_t state_generation_{0};
+  std::function<void()> before_update_status_publish_hook_;
   bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr latest_;
   std::string latest_admission_reason_;
   Identity expected_;
