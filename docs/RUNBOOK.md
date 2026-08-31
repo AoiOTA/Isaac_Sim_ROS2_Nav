@@ -7,11 +7,24 @@ before using it.
 
 ## Current user stop boundary
 
-The current authorized execution scope is indoor only: collect a fresh
-static/dynamic/appearance `3/3` Pilot, freeze that exact nine-episode evidence,
-then run the indoor static -> dynamic -> appearance `3x20` campaign. Outdoor
-engineering, six-condition sufficient-Pilot, and formal `120` execution remain
-stopped. Indoor success never authorizes or counts toward formal qualification.
+The current boundary is **STOP**. The final source tuple is Integration
+`50b4174133b78350fcff2c9f25dc882ef3148ed4`, Module2
+`2f584b00fe0ff89cca5063afbcdb544432a233ed`, and Module3
+`7ca46e639cb836a4b126d3a46c6d57d8f282a7c9`; it has code/test/build evidence
+but no current-head live result. Do not execute any command in this runbook
+without a new user instruction.
+
+Current counts are indoor Pilot `0/9`, indoor qualification `0/60`, current
+outdoor viewport startup A/B `0/6`, outdoor Pilot `0/9`, outdoor qualification
+`0/60`, and combined qualification `0/120`. Historical indoor `9/9` and
+descriptor-set startup evidence belong to older tuples and do not change these
+counts.
+
+After renewed authorization, resume only in this order: exact tuple and
+source/install provenance -> preflight/build -> one seed-`8601` indoor
+engineering rerun -> indoor `9/9` -> indoor `3x20` -> current outdoor startup
+A/B -> outdoor `9/9` -> outdoor `3x20` -> combine. Full formal execution remains
+`NOT_AUTHORIZED` until separately and explicitly authorized.
 
 ## 1. Clean shell and one underlay
 
@@ -87,7 +100,7 @@ Rivermark uses a 240 s fail-closed activation timeout because cold USD/RTX
 startup has exceeded 120 s. This is an upper bound, not a fixed sleep, and does
 not relax any readiness predicate.
 
-## 4. Indoor Pilot collection — current 3x3 input
+## 4. Indoor Pilot collection — FUTURE / CURRENTLY STOPPED
 
 Run static, dynamic, then appearance as three separate condition stacks. Each
 condition requires a fresh cold `rep1` followed by hot-reset `rep2` and `rep3`;
@@ -182,18 +195,20 @@ stack; changing the stack turns them into new cold runs and invalidates the
 three-repetition sequence. All three conditions must finish `3/3`; a valid
 product failure does not satisfy Pilot readiness.
 
-## 5. Outdoor Rivermark startup — PASSED FOR STATIC ENGINEERING
+## 5. Outdoor Rivermark startup — FUTURE CURRENT-TUPLE A/B / STOPPED
 
-The descriptor-set value `20000` is the sole current Rivermark setting. The
-authoritative campaign root is
+The descriptor-set value `20000` remains the configured Rivermark setting. The
+historical descriptor campaign root is
 `/mnt/nas_home/Bio_Nav_Data/experiments/pilots/v6_rivermark_descriptor_ab_33136fa2_20260830T105641Z`:
 A1/A2/A3 produced same-location pre-READY page faults and Xid 109, so A passed
 `0/3` at `33136fa2`; B1/B2/B3 ran `d62f482`, reported
 `requested=20000 applied=20000`, reached complete READY with fixed TF and no
 AMCL, held `603/604/603 s`, and passed `3/3` with zero kernel faults. The B tree
-is identical to integrated `7ba6816`, which current `bb4e78d` contains. This
-permits outdoor static engineering only and is not a driver or lower-level
-root-cause claim.
+is identical to integrated `7ba6816`. This is older-tuple startup evidence and
+is not a driver or lower-level root-cause claim. It does not satisfy the
+current six-run viewport startup A/B, whose count is `0/6`. Do not execute the
+commands below until the indoor half is qualified and a new user instruction
+authorizes the outdoor stage.
 
 Terminal T1:
 
@@ -237,8 +252,9 @@ of restarting it.
 
 After renewed authorization, Terminal T3 may run outdoor static engineering
 `3/3` only after T1/T2 meet the complete current startup contract above. This
-is not sufficient Pilot or formal execution; those counts remain `0/18` and
-`0/120`, and formal remains `NOT_AUTHORIZED`.
+is not Pilot or qualification execution; outdoor counts remain Pilot `0/9`
+and qualification `0/60`, combined qualification remains `0/120`, and Formal
+execution remains `NOT_AUTHORIZED`.
 
 `run_experiment.sh` otherwise falls back to the Kujiale spawn manifest, which
 does not define `rivermark_start`.
@@ -334,7 +350,7 @@ apps, and owned locks are gone. Never use global `pkill`.
 Preserve NAS logs and bags for any failure or invalid attempt. Record invalid
 operator/startup runs separately and do not count them as Pilot episodes.
 
-## 9. Indoor Pilot freeze and 3x20 campaign
+## 9. Indoor Pilot freeze and 3x20 campaign — FUTURE / STOPPED
 
 The indoor Pilot root must contain exactly `indoor_static`, `indoor_dynamic`,
 and `indoor_appearance`. Each condition contains cold `rep1` followed by hot
@@ -410,7 +426,10 @@ the separately completed outdoor `3x20`; do not rerun another `6x3` or `6x20`.
 
 ## 10. Six-condition Pilot, freezer, and formal dry-run — STOPPED
 
-Do not run this section at the current stop boundary. Only after all six future
+Do not run this section at the current stop boundary. The current resume path
+uses the split indoor/outdoor half tooling and combines already qualified
+halves; this older all-six aggregate path is not the next command. Only after
+all six future
 condition roots contain cold `rep1` plus hot `rep2`/`rep3`, with 18 strict
 successes and the required per-episode `stack_contract.json` snapshots, use the
 existing wrapper in this exact order. All paths must be absolute, under the NAS

@@ -1,94 +1,87 @@
 # Module3 current runtime handoff
 
-Date: 2026-08-30
+Date: 2026-08-31
 
-The authoritative cross-repository handoff is the
-[Integration current state](/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration/docs/CURRENT_STATE.md).
-This file records only the Module3 boundary needed to avoid launching stale or
-rejected runtime paths.
+The authoritative cross-repository state and stop boundary are in the
+Integration
+[`V6_INDOOR_TWO_PHASE_READINESS_STOP_HANDOFF_20260831.md`](/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration/docs/handoff/V6_INDOOR_TWO_PHASE_READINESS_STOP_HANDOFF_20260831.md).
+This file records the Module3 boundary only.
 
-## Runtime implementation
+## Stop and exact source state
+
+The current state is **SOURCE/TEST/BUILD CLOSED, LIVE NOT VERIFIED, STOP**.
+Do not start ROS, Nav2, Module2, rosbag, Isaac/GPU, seed `8601`, Pilot,
+qualification, outdoor startup A/B, or Formal execution without a new user
+instruction.
 
 - canonical worktree:
   `/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3`
 - branch: `v6-compute-amcl-dual-odom`
-- current runtime implementation commit:
-  `bb4e78daa2e97ca85d48a2bdd2591828eb826f99`
-- current cross-repository runtime tuple: Integration `493a65be`, Module2
-  `8928cd8f`, Module3 `bb4e78d`
-- indoor live-evidence commit: `350105e`
+- final runtime source commit:
+  `7ca46e639cb836a4b126d3a46c6d57d8f282a7c9`
+- final runtime source tree:
+  `b533b622814f88c97b52c64eddb9f56743046e38`
+- final source tuple: Integration `50b4174133b78350fcff2c9f25dc882ef3148ed4`,
+  Module2 `2f584b00fe0ff89cca5063afbcdb544432a233ed`, Module3
+  `7ca46e639cb836a4b126d3a46c6d57d8f282a7c9`
 
-The indoor runs at `350105e` must not be attributed to the current runtime
-tuple. Rivermark A controls ran `33136fa2`; B ran `d62f482`, whose source tree is
-identical to integrated descriptor candidate `7ba6816` in current `bb4e78d`.
-The documentation-only commits that record this handoff are not runtime
-implementation commits. Before any run, verify that local HEAD, upstream, and
-remote agree and that tracked files are clean.
+At documentation time the branch was local-ahead and not pushed. Historical
+untracked `ros2_ws/build*`, `install*`, and `log*` trees remain preserved and
+are not source evidence. Before any future run, require live upstream/remote
+checks, tracked-clean source, and package/module provenance from the exact
+source tuple.
 
-## Active ownership and scene contracts
+## Implemented Module3 closure
 
-Indoor Kujiale:
+The current source contains:
 
-- Compute Odometry owns `/odom` and `odom -> base_link`;
-- AMCL owns `map -> odom`;
-- Module1 wheel+IMU EKF publishes `/bio_nav/module1/odom` without TF;
-- static and appearance use the low obstacle;
-- dynamic uses the LiDAR-visible G2 crossing actor and therefore does not prove
-  sub-LiDAR dynamic-obstacle perception.
+- fail-fast navigation governance and owner-visible callback/runner failures;
+- the static odometry endpoint timing correction;
+- fail-closed cognitive episode evidence and MCAP rereading;
+- required ResetStopGate, planning-chain identity, generation/session,
+  map/content namespace, and immutable episode-receipt bindings;
+- a two-phase cognitive readiness contract: current Module2 periodic health
+  plus global/local layer admission are required before dispatch, while the
+  MPPI critic is proven after dispatch and before the first non-zero command;
+- current-episode post-dispatch critic evidence is reread from the production
+  MCAP rather than inferred from a pre-dispatch score that cannot yet exist;
+- live `/proc` viewport producer argv attestation, viewport A/B arm support,
+  critical-child manifests, and owned process-group cleanup;
+- split indoor/outdoor half-Pilot and half-qualification aggregation/freezing,
+  with later six-condition combination and no double counting.
 
-Outdoor Rivermark:
+ContactSensor `/simulation/collision` remains the only physical-contact truth.
+SAT/AABB/geometric overlap is diagnostic only. Collision Monitor stop,
+navigation failure, invalid infrastructure/evidence, and physical contact keep
+separate result semantics.
 
-- Compute Odometry owns `/odom` and `odom -> base_link`;
-- AMCL is absent;
-- `ideal_localization_tf` alone publishes calibrated fixed `map -> odom`;
-- the original `rivermark_selected` map and 30-tile catalog remain active;
-- RGB-D remains `320x180 @ 10 Hz`, Rivermark alone uses DLSS-off, and the sole
-  Rivermark wrapper fixes `--rtx-descriptor-sets 20000`.
+## Evidence boundary
 
-Both scenes keep Module1, Module2 obstacle output, GVG, SR/DR RoutePrior,
-cognitive obstacle layers, and `CognitiveRiskCritic` active in the M3 arm. The
-raw RGB-D voxel writer is not active.
+Final source validation reported `476 passed` plus a separate `59 passed`, an
+isolated affected build PASS, and `74` C++ tests PASS. Earlier readiness review
+findings drove the recovery, but no fresh independent review of final
+`7ca46e6` was performed. These are code/test/build claims, not live, Pilot, or
+Formal qualification.
 
-## Current behavior and indoor evidence
+The only current-cycle live attempt used the older tuple Integration `d9bd139`,
+Module2 `2f584b0`, Module3 `e1d9e30`, seed `8601`. It stopped invalid before
+route dispatch; ContactSensor remained false and no Xid was observed. Its root
+is
+`/mnt/nas_home/Bio_Nav_Data/experiments/engineering/v6_indoor_seed8601_matched_control_d9bd139_e1d9e30_20260831T1328Z`.
+It is not a product result and is not evidence for final `7ca46e6`.
 
-- SAT overlap is permanently diagnostic-only. Only Isaac ContactSensor
-  `/simulation/collision` determines physical collision; Collision Monitor
-  stops remain independent navigation/safety failures.
-- `CognitiveObstacleLayer.track_ttl_s` defaults to 90 s so static/appearance
-  tracks survive the observed 24.1 s sighting gap.
-- G2 completion reports actual actor retirements, requires the actor to be
-  retired/invisible/collision-disabled, clears both global and local costmaps,
-  and waits for fresh empty Module2 and layer status before G3.
-- Current `bb4e78d` implements condition-stack attestation, immutable
-  per-episode `stack_contract.json` snapshots, and the six-root sufficient-Pilot
-  aggregate generator/freezer input path. This tooling has code/focused-test
-  evidence only and has not produced Pilot or formal results.
-- At `350105e`, focused LiDAR-visible retirement passed `2/2`; dynamic and
-  appearance engineering closure passed `3/3` each. Static has only a fresh
-  `1/1` smoke; its earlier `3/3` evidence ran an older commit and cannot be
-  attributed to the current baseline, whose planned static `3/3` remains
-  unmet. These are engineering runs, not sufficient Pilot or formal
-  qualification.
+Current counts are: indoor Pilot `0/9`, indoor qualification `0/60`, current
+outdoor viewport startup A/B `0/6`, outdoor Pilot `0/9`, outdoor qualification
+`0/60`, combined qualification `0/120`. Historical indoor `9/9` and historical
+descriptor-set startup results cannot be back-labelled to this source tuple.
 
-Exact roots and evidence boundaries are in the
-[Integration experiment ledger](/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration/docs/handoff/EXPERIMENT_LEDGER.md#2026-08-30--v6-dynamic-retirement-indoor-closure-and-rivermark-candidate-verdict).
+## Next eligible command order
 
-## Outdoor startup verdict and resume point
-
-The authoritative descriptor campaign root is
-`/mnt/nas_home/Bio_Nav_Data/experiments/pilots/v6_rivermark_descriptor_ab_33136fa2_20260830T105641Z`.
-All valid A1/A2/A3 control runs page-faulted at the same location before READY,
-so A passed `0/3`; A ran `33136fa2`. B1/B2/B3 ran `d62f482` and each reported
-`RTX_DESCRIPTOR_SETS requested=20000 applied=20000`, reached READY with all
-required topics, fixed TF, and no AMCL, then held for `603/604/603 s` with zero
-kernel faults. B passed `3/3`; its source tree is identical to integrated
-`7ba6816`, which current `bb4e78d` contains. Descriptor sets `20000` is promoted
-as the only Rivermark startup setting.
-
-This is startup engineering evidence, not a driver or lower-level root-cause
-claim. The rejected PointInstancer filter remains retired. Outdoor static
-engineering `3/3` is the next eligible engineering stage, but the current user
-stop boundary is immediately after publishing Module3: do not run it now. The
-sufficient Pilot remains `0/18`, formal remains `0/120`, and formal execution
-remains `NOT_AUTHORIZED`. The [Module3 runbook](RUNBOOK.md) records the future
-procedure without authorizing execution.
+Only after a new user instruction: verify the exact tuple and source/install
+provenance, run preflight/build checks, then rerun one seed-`8601` indoor
+engineering attempt. Only a valid PASS may unlock indoor `9/9`, then indoor
+`3x20`; subsequently run current outdoor startup A/B, outdoor `9/9`, outdoor
+`3x20`, and combine the two qualified halves. Full formal execution remains
+`NOT_AUTHORIZED` until its separate explicit authorization contract is met.
+The detailed commands are retained in [RUNBOOK.md](RUNBOOK.md); their presence
+does not authorize execution.
