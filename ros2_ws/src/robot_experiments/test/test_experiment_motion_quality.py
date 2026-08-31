@@ -707,6 +707,9 @@ def _publish_cognitive_sample(
         "healthy": True,
     }
     runner._latest_planning_prior_readiness = dict(planning)
+    runner._planning_prior_callback_count = (
+        getattr(runner, "_planning_prior_callback_count", 0) + 1
+    )
     planning_key = (epoch, session, map_version, sequence)
     if (
         not planning_after_source
@@ -1333,20 +1336,8 @@ def test_previous_cognitive_session_baseline_rejects_missing_or_mismatch():
         )
 
 
-def test_next_reset_uses_latched_periodic_planning_session_baseline(monkeypatch):
-    runner = _cognitive_admission_runner()
-    for sequence in (1, 2, 3):
-        _publish_cognitive_sample(
-            runner, sequence, roles=("global_layer", "local_layer")
-        )
-    runner._wait_for_cognitive_admission_ready()
-    receipt = runner._cognitive_admission_ready_receipt
-    assert receipt["periodic_planning_health"]["recurrent_session_id"] == (
-        "session-2"
-    )
-
-    runner._latest_planning_prior_readiness = None
-    runner._latest_cognitive_obstacles = None
+def _configure_successful_reset(runner, monkeypatch, *, generation=3):
+    reset_calls = []
     runner._localization_seed_epoch = 1
     runner._cancel_stale_navigation_goal = lambda: None
     runner._clear_localization_buffer = lambda: None
@@ -1358,7 +1349,7 @@ def test_next_reset_uses_latched_periodic_planning_session_baseline(monkeypatch)
     future = SimpleNamespace(result=lambda: response)
     runner._reset_client = SimpleNamespace(
         wait_for_service=lambda **_kwargs: True,
-        call_async=lambda _request: future,
+        call_async=lambda _request: (reset_calls.append("reset"), future)[1],
     )
     runner._service_timeout_sec = 0.1
     runner._reset_service_name = "/simulation/reset"
@@ -1376,11 +1367,147 @@ def test_next_reset_uses_latched_periodic_planning_session_baseline(monkeypatch)
     monkeypatch.setattr(
         experiment_runner_module,
         "parse_reset_receipt",
-        lambda *_args, **_kwargs: {"generation": 3},
+        lambda *_args, **_kwargs: {"generation": generation},
     )
+    return reset_calls
+
+
+def _cold_planning_baseline(**overrides):
+    baseline = {
+        "stamp_s": 20.0,
+        "sequence": 1,
+        "reset_epoch": 1,
+        "recurrent_session_id": "cold-session-1",
+        "accepted": True,
+        "source_physical_graph_id": (
+            f"{SEMANTIC_NAVIGATION_MAP_VERSION}:gvg_v1"
+        ),
+        "source_physical_graph_revision": 1,
+        "topology_revision": 1,
+    }
+    baseline.update(overrides)
+    return baseline
+
+
+def test_cold_baseline_arrives_before_first_reset_and_becomes_forbidden_session(
+    monkeypatch,
+):
+    runner = _cognitive_admission_runner()
+    runner._latest_planning_prior_readiness = None
+    runner._planning_prior_callback_count = 0
+    runner._module2_planning_ready_timeout_sec = 1.0
+    runner._clock_seconds = lambda: 20.0
+    reset_calls = []
+
+    def wait_for_baseline(predicate, _timeout):
+        assert reset_calls == []
+        assert predicate() is False
+        runner._latest_planning_prior_readiness = _cold_planning_baseline()
+        runner._planning_prior_callback_count = 1
+        return predicate()
+
+    runner._wait_until = wait_for_baseline
+    assert runner._wait_for_cold_planning_baseline(1) == "cold-session-1"
+    assert reset_calls == []
+
+    reset_calls = _configure_successful_reset(runner, monkeypatch, generation=2)
+    runner._cognitive_admission_ready_receipt = None
+    runner._latest_cognitive_obstacles = None
+    runner._reset_simulation(8601)
+
+    assert reset_calls == ["reset"]
+    assert runner._cognitive_admission_forbidden_recurrent_session_id == (
+        "cold-session-1"
+    )
+
+
+def test_cold_baseline_rechecks_current_graph_before_reset(monkeypatch):
+    runner = _cognitive_admission_runner()
+    runner._latest_planning_prior_readiness = _cold_planning_baseline()
+    runner._planning_prior_callback_count = 1
+    runner._module2_planning_ready_timeout_sec = 1.0
+    runner._clock_seconds = lambda: 20.0
+    runner._navigation_graph_callback(SimpleNamespace(
+        graph_id=f"{SEMANTIC_NAVIGATION_MAP_VERSION}:gvg_v1",
+        revision=2,
+        map_version=SEMANTIC_NAVIGATION_MAP_VERSION,
+        edges=[],
+    ))
+    reset_calls = []
+
+    def wait_for_current_graph_baseline(predicate, _timeout):
+        assert reset_calls == []
+        assert predicate() is False
+        runner._latest_planning_prior_readiness = _cold_planning_baseline(
+            recurrent_session_id="cold-session-2",
+            source_physical_graph_revision=2,
+            topology_revision=2,
+        )
+        runner._planning_prior_callback_count = 2
+        return predicate()
+
+    runner._wait_until = wait_for_current_graph_baseline
+    assert runner._wait_for_cold_planning_baseline(1) == "cold-session-2"
+    assert reset_calls == []
+
+    reset_calls = _configure_successful_reset(runner, monkeypatch, generation=2)
+    runner._cognitive_admission_ready_receipt = None
+    runner._latest_cognitive_obstacles = None
+    runner._reset_simulation(8601)
+
+    assert reset_calls == ["reset"]
+    assert runner._cognitive_admission_forbidden_recurrent_session_id == (
+        "cold-session-2"
+    )
+
+
+@pytest.mark.parametrize(
+    "planning",
+    (
+        None,
+        _cold_planning_baseline(reset_epoch=2),
+        _cold_planning_baseline(stamp_s=10.0),
+        _cold_planning_baseline(sequence=0),
+        _cold_planning_baseline(recurrent_session_id=""),
+    ),
+)
+def test_cold_baseline_timeout_never_calls_reset(planning):
+    runner = _cognitive_admission_runner()
+    runner._latest_planning_prior_readiness = planning
+    runner._planning_prior_callback_count = 0 if planning is None else 1
+    runner._module2_planning_ready_timeout_sec = 1.0
+    runner._clock_seconds = lambda: 20.0
+    runner._wait_until = lambda predicate, _timeout: predicate()
+    reset_calls = []
+    runner._reset_client = SimpleNamespace(
+        call_async=lambda _request: reset_calls.append("reset")
+    )
+
+    with pytest.raises(TimeoutError, match="cold planning baseline timed out"):
+        runner._wait_for_cold_planning_baseline(1)
+
+    assert reset_calls == []
+
+
+def test_next_reset_uses_latched_periodic_planning_session_baseline(monkeypatch):
+    runner = _cognitive_admission_runner()
+    for sequence in (1, 2, 3):
+        _publish_cognitive_sample(
+            runner, sequence, roles=("global_layer", "local_layer")
+        )
+    runner._wait_for_cognitive_admission_ready()
+    receipt = runner._cognitive_admission_ready_receipt
+    assert receipt["periodic_planning_health"]["recurrent_session_id"] == (
+        "session-2"
+    )
+
+    runner._latest_planning_prior_readiness = None
+    runner._latest_cognitive_obstacles = None
+    reset_calls = _configure_successful_reset(runner, monkeypatch)
 
     runner._reset_simulation(8601)
 
+    assert reset_calls == ["reset"]
     assert runner._cognitive_admission_forbidden_recurrent_session_id == (
         "session-2"
     )
@@ -2181,6 +2308,11 @@ def test_recorder_ready_barrier_discards_all_pre_record_readiness():
 
 def test_run_all_starts_and_fences_recorder_before_readiness_wait():
     source = Path(experiment_runner_module.__file__).read_text()
+    run_all = source.index("def run_all(self)")
+    cold_baseline = source.index(
+        "self._wait_for_cold_planning_baseline(", run_all
+    )
+    reset = source.index("self._reset_simulation(", cold_baseline)
     begin = source.index("root = self._begin_run_evidence(run_index, seed)")
     recorder_ready = source.index("self._wait_for_bag_recorder_ready()", begin)
     restart = source.index(
@@ -2188,7 +2320,10 @@ def test_run_all_starts_and_fences_recorder_before_readiness_wait():
     )
     planning_wait = source.index("self._planning_prior_ready_streak >= 5", restart)
     cognitive_wait = source.index("self._wait_for_cognitive_admission_ready()", planning_wait)
-    assert begin < recorder_ready < restart < planning_wait < cognitive_wait
+    assert (
+        cold_baseline < reset < begin < recorder_ready < restart
+        < planning_wait < cognitive_wait
+    )
 
 
 def test_run_all_clears_pre_recorder_streak_before_planning_wait(
@@ -2218,8 +2353,8 @@ def test_run_all_clears_pre_recorder_streak_before_planning_wait(
     runner._resume = False
     runner._navigation_execution_backend = "navigate_to_pose"
     runner._require_module2_planning_ready = True
-    runner._module2_planning_ready_timeout_sec = 0.1
-    runner._reset_stop_gate_status = SimpleNamespace(generation=1)
+    runner._module2_planning_ready_timeout_sec = 2.0
+    runner._reset_stop_gate_status = SimpleNamespace(generation=2)
     runner._active_evidence_root = None
     runner._output_directory = tmp_path
     runner._fail_stop = False

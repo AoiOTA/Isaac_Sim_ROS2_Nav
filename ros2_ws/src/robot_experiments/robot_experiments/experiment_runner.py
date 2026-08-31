@@ -3759,6 +3759,7 @@ class ExperimentRunner(Node):
         self._module2_prior_responses: list[dict[str, Any]] = []
         self._planning_prior_samples: list[dict[str, Any]] = []
         self._latest_planning_prior_readiness: dict[str, Any] | None = None
+        self._planning_prior_callback_count = 0
         self._planning_prior_ready_streak = 0
         self._planning_prior_last_readiness_sequence = -1
         self._planning_prior_readiness_identity: tuple[int, str, str] | None = None
@@ -5003,6 +5004,9 @@ class ExperimentRunner(Node):
             "risk_healthy": bool(message.risk_healthy),
             "risk_rejection_mask": int(message.risk_rejection_mask),
         }
+        self._planning_prior_callback_count = (
+            getattr(self, "_planning_prior_callback_count", 0) + 1
+        )
         planning_accepted = bool(
             int(message.sequence) > 0
             and str(message.recurrent_session_id)
@@ -6720,6 +6724,72 @@ class ExperimentRunner(Node):
                 f"generation={generation}"
             )
         self._reset_stop_gate_release_confirmed_generation = generation
+
+    def _wait_for_cold_planning_baseline(
+        self, pre_reset_generation: int
+    ) -> str:
+        def current_live_baseline() -> bool:
+            planning = getattr(self, "_latest_planning_prior_readiness", None)
+            ros_clock_s = self._clock_seconds()
+            if not isinstance(planning, Mapping) or ros_clock_s is None:
+                return False
+            stamp_s = planning.get("stamp_s")
+            sequence = planning.get("sequence")
+            reset_epoch = planning.get("reset_epoch")
+            session = planning.get("recurrent_session_id")
+            return bool(
+                getattr(self, "_planning_prior_callback_count", 0) > 0
+                and planning.get("accepted") is True
+                and _planning_graph_provenance_matches(
+                    planning,
+                    _navigation_graph_identity(
+                        getattr(self, "_navigation_graph", None)
+                    ),
+                )
+                and isinstance(sequence, int)
+                and not isinstance(sequence, bool)
+                and sequence > 0
+                and isinstance(reset_epoch, int)
+                and not isinstance(reset_epoch, bool)
+                and reset_epoch == pre_reset_generation
+                and isinstance(session, str)
+                and bool(session)
+                and isinstance(stamp_s, (int, float))
+                and not isinstance(stamp_s, bool)
+                and math.isfinite(float(stamp_s))
+                and math.isfinite(float(ros_clock_s))
+                and 0.0 <= float(ros_clock_s) - float(stamp_s)
+                <= self._module2_planning_ready_timeout_sec
+            )
+
+        if not self._wait_until(
+            current_live_baseline,
+            self._module2_planning_ready_timeout_sec,
+        ):
+            planning = getattr(self, "_latest_planning_prior_readiness", None)
+            current_graph = _navigation_graph_identity(
+                getattr(self, "_navigation_graph", None)
+            )
+            context = {
+                key: planning.get(key)
+                for key in (
+                    "stamp_s", "sequence", "reset_epoch",
+                    "recurrent_session_id", "accepted",
+                    "source_physical_graph_id",
+                    "source_physical_graph_revision", "topology_revision",
+                )
+            } if isinstance(planning, Mapping) else None
+            raise TimeoutError(
+                "cold planning baseline timed out before reset: "
+                f"pre_reset_generation={pre_reset_generation}, "
+                "callback_count="
+                f"{getattr(self, '_planning_prior_callback_count', 0)}, "
+                f"planning={context}, current_navigation_graph={current_graph}, "
+                f"ros_clock_s={self._clock_seconds()}"
+            )
+        planning = self._latest_planning_prior_readiness
+        assert isinstance(planning, Mapping)
+        return str(planning["recurrent_session_id"])
 
     def _arm_next_terminal_fence(self) -> None:
         """Synchronously reserve the final route request before publishing it."""
@@ -8794,6 +8864,7 @@ class ExperimentRunner(Node):
         if not self._authorization_only:
             self._verify_collision_monitor_active()
         manifests: list[dict[str, Any]] = []
+        cold_planning_baseline_acquired = False
         selections = self._scenario.run_matrix or tuple(
             RunSelection(seed) for seed in self._scenario.seeds
         )
@@ -8855,6 +8926,17 @@ class ExperimentRunner(Node):
                 pre_reset_generation = int(
                     getattr(self._reset_stop_gate_status, "generation", -1)
                 )
+                if (
+                    not cold_planning_baseline_acquired
+                    and (
+                        self._require_module2_planning_ready
+                        or bool(getattr(self, "_cognitive_admission_components", {}))
+                    )
+                ):
+                    self._wait_for_cold_planning_baseline(
+                        pre_reset_generation
+                    )
+                    cold_planning_baseline_acquired = True
                 reset_case_id, reset_variant_id = _reset_dynamic_selection(
                     self._scenario.scenario_type, selection
                 )
