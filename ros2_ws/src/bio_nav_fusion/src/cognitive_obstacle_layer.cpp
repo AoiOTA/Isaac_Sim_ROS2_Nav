@@ -223,6 +223,7 @@ std::string CognitiveObstacleLayer::validateMessage(
   const double validation_ttl_s = durationSeconds(message.validation_ttl);
   const double validation_age_s = static_cast<double>(now_ns - validation_ns) * 1.0e-9;
   constexpr int64_t kFutureToleranceNs = 50000000LL;
+  constexpr int64_t kOdomSemanticEndpointToleranceNs = 100000000LL;
   if (message.schema_version != "bio_nav_cognitive_obstacles_v1") {return "schema";}
   if (message.header.frame_id != "base_link") {return "frame";}
   if (!identityFieldsPresent(message)) {return "identity";}
@@ -276,7 +277,8 @@ std::string CognitiveObstacleLayer::validateMessage(
     }
     if (!validStamp(message.source_odom_stamp) ||
       !validStamp(message.validation_odom_stamp) || validation_odom_ns < source_odom_ns ||
-      validation_odom_ns - source_odom_ns != source_age_ns ||
+      std::abs(source_odom_ns - source_ns) > kOdomSemanticEndpointToleranceNs ||
+      std::abs(validation_odom_ns - validation_ns) > kOdomSemanticEndpointToleranceNs ||
       now_ns + kFutureToleranceNs < validation_odom_ns)
     {
       return "odom_time";

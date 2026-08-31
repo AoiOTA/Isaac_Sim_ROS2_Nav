@@ -989,7 +989,7 @@ TEST(CognitiveObstacleLayer, consumer_identity_override_and_empty_fallback_are_s
     "/unknown_costmap:cognitive_obstacle_layer");
 }
 
-TEST(CognitiveObstacleLayer, static_depth_revalidation_requires_exact_dual_timeline)
+TEST(CognitiveObstacleLayer, static_depth_revalidation_accepts_independent_odom_endpoints)
 {
   using bio_nav_fusion::CognitiveObstacleLayer;
   CognitiveObstacleLayer::Identity identity{
@@ -1000,7 +1000,18 @@ TEST(CognitiveObstacleLayer, static_depth_revalidation_requires_exact_dual_timel
       message, 11100000000LL, identity, 6, 0.5, 0.2),
     "");
 
+  // Semantic messages and odometry commonly arrive on independent 60 Hz
+  // clocks.  Each odom endpoint is tied to its own semantic endpoint, not to
+  // an unrealistically exact equality between the two odom intervals.
   auto changed = message;
+  changed.source_odom_stamp.nanosec = 16665668U;
+  changed.validation_odom_stamp.nanosec = 16666666U;
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      changed, 11100000000LL, identity, 6, 0.5, 0.2),
+    "");
+
+  changed = message;
   EXPECT_EQ(
     CognitiveObstacleLayer::validateMessage(
       changed, 11600000000LL, identity, 6, 0.5, 0.2),
@@ -1031,10 +1042,41 @@ TEST(CognitiveObstacleLayer, static_depth_revalidation_requires_exact_dual_timel
     "source_age");
 
   changed = message;
+  changed.source_odom_stamp.nanosec = 100000001U;
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      changed, 11100000000LL, identity, 6, 0.5, 0.2),
+    "odom_time");
+
+  changed = message;
+  changed.validation_odom_stamp.nanosec = 100000001U;
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      changed, 11100000000LL, identity, 6, 0.5, 0.2),
+    "odom_time");
+
+  changed = message;
+  changed.source_odom_stamp.sec = 0;
+  changed.source_odom_stamp.nanosec = 0U;
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      changed, 11100000000LL, identity, 6, 0.5, 0.2),
+    "odom_time");
+
+  changed = message;
+  changed.source_odom_stamp.sec = 11;
   changed.validation_odom_stamp.sec = 10;
   EXPECT_EQ(
     CognitiveObstacleLayer::validateMessage(
       changed, 11100000000LL, identity, 6, 0.5, 0.2),
+    "odom_time");
+
+  changed = message;
+  changed.validation_odom_stamp.sec = 11;
+  changed.validation_odom_stamp.nanosec = 50000001U;
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      changed, 11000000000LL, identity, 6, 0.5, 0.2),
     "odom_time");
 }
 
