@@ -67,6 +67,7 @@ assert b.count(b"--disable-viewport-updates") == 1
 assert b[b.index(b"--viewport-arm-identity") + 1] == b"B"
 assert b"--viewport-runtime-attestation" in b
 assert b"--viewport-winner-manifest" in b
+assert b"--viewport-winner-manifest-sha256" in b
 assert b"--viewport-run-root" in b
 assert b[b.index(b"--viewport-scene") + 1] == b"rivermark:static"
 assert b"--rtx-descriptor-sets" in a and b"20000" in a

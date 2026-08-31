@@ -3202,18 +3202,32 @@ wait "$!"
         )
     run_dir.mkdir()
     viewport_attestation = run_dir / "viewport_runtime_attestation.json"
-    fake_proc = tmp_path / "viewport-proc"
-    fake_process = fake_proc / "4242"
-    fake_process.mkdir(parents=True)
-    (fake_proc / "sys/kernel/random").mkdir(parents=True)
-    (fake_proc / "sys/kernel/random/boot_id").write_text("fake-boot\n")
-    fake_fields = ["S", "1", "4242", *(["0"] * 16), "999"]
-    (fake_process / "stat").write_text(
-        "4242 (fake isaac) " + " ".join(fake_fields)
-    )
-    fake_cmdline = b"/usr/bin/python3\0" + str(navigation_source.resolve()).encode() + b"\0"
-    (fake_process / "cmdline").write_bytes(fake_cmdline)
-    (fake_process / "exe").symlink_to("/usr/bin/python3")
+    winner_digest = hashlib.sha256(viewport_winner_manifest.read_bytes()).hexdigest()
+    launcher = (scripts / "run_v6_rivermark.sh").resolve()
+    command_contract = {
+        "navigation_source": str(navigation_source.resolve()),
+        "disable_viewport_updates": True,
+        "viewport_arm_identity": "B",
+        "viewport_runtime_attestation": str(viewport_attestation.resolve()),
+        "viewport_winner_manifest": str(viewport_winner_manifest.resolve()),
+        "viewport_winner_manifest_sha256": winner_digest,
+        "viewport_run_root": str(run_dir.resolve()),
+        "viewport_scene": f"rivermark:{condition}",
+        "viewport_launcher": str(launcher),
+    }
+    viewport_command = [
+        sys.executable, "-c", "import time; time.sleep(120)",
+        str(navigation_source.resolve()), "--disable-viewport-updates",
+    ]
+    for name, value in command_contract.items():
+        if name in {"navigation_source", "disable_viewport_updates"}:
+            continue
+        viewport_command.extend(["--" + name.replace("_", "-"), str(value)])
+    viewport_process = subprocess.Popen(viewport_command, start_new_session=True)
+    time.sleep(0.02)
+    viewport_pid = viewport_process.pid
+    viewport_fields = Path(f"/proc/{viewport_pid}/stat").read_text().rsplit(")", 1)[1].split()
+    viewport_cmdline = Path(f"/proc/{viewport_pid}/cmdline").read_bytes()
     module3_identity = subprocess.run(
         ["git", "-C", str(project), "rev-parse", "HEAD", "HEAD^{tree}"],
         check=True, capture_output=True, text=True,
@@ -3221,12 +3235,12 @@ wait "$!"
     viewport_attestation.write_text(json.dumps({
         "schema": "bio_nav.v6_viewport_runtime_attestation.v1",
         "instance_uuid": "550e8400-e29b-41d4-a716-446655440000",
-        "pid": 4242,
-        "pgid": 4242,
-        "start_ticks": 999,
-        "boot_id": "fake-boot",
-        "cmdline_sha256": hashlib.sha256(fake_cmdline).hexdigest(),
-        "executable": str(Path("/usr/bin/python3").resolve()),
+        "pid": viewport_pid,
+        "pgid": int(viewport_fields[2]),
+        "start_ticks": int(viewport_fields[19]),
+        "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+        "cmdline_sha256": hashlib.sha256(viewport_cmdline).hexdigest(),
+        "executable": str(Path(f"/proc/{viewport_pid}/exe").resolve()),
         "start_wall_time_ns": time.time_ns(),
         "module3": {
             "path": str(project.resolve()),
@@ -3249,13 +3263,12 @@ wait "$!"
         ],
         "scene": f"rivermark:{condition}",
         "run_root": str(run_dir.resolve()),
-        "launcher_path": str((scripts / "run_v6_rivermark.sh").resolve()),
+        "launcher_path": str(launcher),
         "winner_manifest": {
             "path": str(viewport_winner_manifest.resolve()),
-            "sha256": hashlib.sha256(
-                viewport_winner_manifest.read_bytes()
-            ).hexdigest(),
+            "sha256": winner_digest,
         },
+        "command_contract": command_contract,
     }), encoding="utf-8")
     viewport_attestation.chmod(0o600)
     env = os.environ.copy()
@@ -3275,7 +3288,6 @@ wait "$!"
         "BIO_NAV_PHASE_F_CLEANUP_INT_CHECKS": "20",
         "BIO_NAV_PHASE_F_CLEANUP_TERM_CHECKS": "20",
         "BIO_NAV_PHASE_F_CLEANUP_QUIET_CHECKS": "2",
-        "BIO_NAV_VIEWPORT_PROC_ROOT": str(fake_proc),
     })
     command = [
         str(scripts / "run_v6_low_obstacle_phase_f_stack.sh"),
@@ -3348,6 +3360,7 @@ wait "$!"
         route_prior_catalog=route_prior_catalog,
         route_prior_snapshot=route_prior_snapshot,
         signal_log=signal_log,
+        viewport_process=viewport_process,
         env=env,
     )
 
@@ -3476,29 +3489,45 @@ def test_phase_f_rivermark_m3_dry_run_uses_catalog_and_generic_assets(
     winner.write_text(json.dumps({
         "schema": "startup-ab-fixture", "winner": {"viewport_arm": "B"}
     }))
-    fake_proc = tmp_path / "proc"
-    fake_process = fake_proc / "4242"
-    fake_process.mkdir(parents=True)
-    (fake_proc / "sys/kernel/random").mkdir(parents=True)
-    (fake_proc / "sys/kernel/random/boot_id").write_text("fake-boot\n")
-    fake_fields = ["S", "1", "4242", *(["0"] * 16), "999"]
-    (fake_process / "stat").write_text("4242 (fake) " + " ".join(fake_fields))
     navigation_source = (root / "isaac_sim/apps/navigation_sim.py").resolve()
-    fake_cmdline = b"/usr/bin/python3\0" + str(navigation_source).encode() + b"\0"
-    (fake_process / "cmdline").write_bytes(fake_cmdline)
-    (fake_process / "exe").symlink_to("/usr/bin/python3")
     revisions = subprocess.run(
         ["git", "-C", str(root), "rev-parse", "HEAD", "HEAD^{tree}"],
         check=True, capture_output=True, text=True,
     ).stdout.splitlines()
     viewport_attestation = run_root / "viewport_runtime_attestation.json"
+    winner_digest = hashlib.sha256(winner.read_bytes()).hexdigest()
+    launcher = (root / "scripts/run_v6_rivermark.sh").resolve()
+    command_contract = {
+        "navigation_source": str(navigation_source),
+        "disable_viewport_updates": True,
+        "viewport_arm_identity": "B",
+        "viewport_runtime_attestation": str(viewport_attestation.resolve()),
+        "viewport_winner_manifest": str(winner.resolve()),
+        "viewport_winner_manifest_sha256": winner_digest,
+        "viewport_run_root": str(run_root.resolve()),
+        "viewport_scene": f"rivermark:{condition}",
+        "viewport_launcher": str(launcher),
+    }
+    viewport_command = [
+        sys.executable, "-c", "import time; time.sleep(30)",
+        str(navigation_source), "--disable-viewport-updates",
+    ]
+    for name, value in command_contract.items():
+        if name in {"navigation_source", "disable_viewport_updates"}:
+            continue
+        viewport_command.extend(["--" + name.replace("_", "-"), str(value)])
+    viewport_process = subprocess.Popen(viewport_command, start_new_session=True)
+    time.sleep(0.02)
+    process_fields = Path(f"/proc/{viewport_process.pid}/stat").read_text().rsplit(")", 1)[1].split()
+    cmdline = Path(f"/proc/{viewport_process.pid}/cmdline").read_bytes()
     viewport_attestation.write_text(json.dumps({
         "schema": "bio_nav.v6_viewport_runtime_attestation.v1",
         "instance_uuid": "550e8400-e29b-41d4-a716-446655440000",
-        "pid": 4242, "pgid": 4242, "start_ticks": 999,
-        "boot_id": "fake-boot",
-        "cmdline_sha256": hashlib.sha256(fake_cmdline).hexdigest(),
-        "executable": str(Path("/usr/bin/python3").resolve()),
+        "pid": viewport_process.pid, "pgid": int(process_fields[2]),
+        "start_ticks": int(process_fields[19]),
+        "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+        "cmdline_sha256": hashlib.sha256(cmdline).hexdigest(),
+        "executable": str(Path(f"/proc/{viewport_process.pid}/exe").resolve()),
         "start_wall_time_ns": time.time_ns(),
         "module3": {"path": str(root), "head": revisions[0], "tree": revisions[1]},
         "navigation_source": {
@@ -3513,15 +3542,16 @@ def test_phase_f_rivermark_m3_dry_run_uses_catalog_and_generic_assets(
         ],
         "scene": f"rivermark:{condition}",
         "run_root": str(run_root),
-        "launcher_path": str((root / "scripts/run_v6_rivermark.sh").resolve()),
+        "launcher_path": str(launcher),
         "winner_manifest": {
             "path": str(winner.resolve()),
-            "sha256": hashlib.sha256(winner.read_bytes()).hexdigest(),
+            "sha256": winner_digest,
         },
+        "command_contract": command_contract,
     }))
     viewport_attestation.chmod(0o600)
-    result = subprocess.run(
-        [
+    try:
+        result = subprocess.run([
             str(root / "scripts/run_v6_low_obstacle_phase_f_stack.sh"),
             "M3",
             "--scene", "rivermark",
@@ -3534,12 +3564,11 @@ def test_phase_f_rivermark_m3_dry_run_uses_catalog_and_generic_assets(
             "--viewport-attestation", str(viewport_attestation),
             "--viewport-winner-manifest", str(winner),
             "--dry-run",
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-        env={**os.environ, "BIO_NAV_VIEWPORT_PROC_ROOT": str(fake_proc)},
-    )
+        ], capture_output=True, text=True, check=True)
+    finally:
+        if viewport_process.poll() is None:
+            os.killpg(viewport_process.pid, signal.SIGTERM)
+            viewport_process.wait(timeout=5.0)
 
     assert "scene=rivermark" in result.stdout
     assert f"condition={condition}" in result.stdout
@@ -3567,92 +3596,37 @@ def test_phase_f_rivermark_m3_dry_run_uses_catalog_and_generic_assets(
     assert "startup_profile:=module2_causal_obstacle_outdoor" in bridge
 
 
-def test_phase_f_viewport_runtime_attestation_fake_proc_fail_closed(tmp_path):
-    root = PACKAGE.parents[2]
-    stack = root / "scripts/run_v6_low_obstacle_phase_f_stack.sh"
-    run_root = tmp_path / "run"
-    run_root.mkdir()
-    catalog = tmp_path / "catalog"
-    catalog.mkdir()
-    (catalog / "catalog.json").write_text("{}\n")
-    winner = tmp_path / "winner.json"
-    winner.write_text(json.dumps({
-        "schema": "startup-ab-fixture", "winner": {"viewport_arm": "B"}
-    }))
-    fake_proc = tmp_path / "proc"
-    process_dir = fake_proc / "4242"
-    process_dir.mkdir(parents=True)
-    (fake_proc / "sys/kernel/random").mkdir(parents=True)
-    (fake_proc / "sys/kernel/random/boot_id").write_text("fake-boot\n")
-    fields = ["S", "1", "4242", *(["0"] * 16), "999"]
-    (process_dir / "stat").write_text("4242 (fake isaac) " + " ".join(fields))
-    navigation_source = (root / "isaac_sim/apps/navigation_sim.py").resolve()
-    fake_cmdline = b"/usr/bin/python3\0" + str(navigation_source).encode() + b"\0"
-    (process_dir / "cmdline").write_bytes(fake_cmdline)
-    (process_dir / "exe").symlink_to("/usr/bin/python3")
-    revisions = subprocess.run(
-        ["git", "-C", str(root), "rev-parse", "HEAD", "HEAD^{tree}"],
-        check=True, capture_output=True, text=True,
-    ).stdout.splitlines()
-    attestation = run_root / "viewport_runtime_attestation.json"
-    baseline = {
-        "schema": "bio_nav.v6_viewport_runtime_attestation.v1",
-        "instance_uuid": "550e8400-e29b-41d4-a716-446655440000",
-        "pid": 4242, "pgid": 4242, "start_ticks": 999,
-        "boot_id": "fake-boot",
-        "cmdline_sha256": hashlib.sha256(fake_cmdline).hexdigest(),
-        "executable": str(Path("/usr/bin/python3").resolve()),
-        "start_wall_time_ns": 123,
-        "module3": {"path": str(root), "head": revisions[0], "tree": revisions[1]},
-        "navigation_source": {
-            "path": str(navigation_source),
-            "sha256": hashlib.sha256(navigation_source.read_bytes()).hexdigest(),
-        },
-        "viewport_arm": "B",
-        "readbacks": [
-            {"phase": phase, "requested_disabled": True,
-             "observed_enabled": False, "match": True}
-            for phase in ("post_construction", "pre_ready")
-        ],
-        "scene": "rivermark:static",
-        "run_root": str(run_root),
-        "launcher_path": str((root / "scripts/run_v6_rivermark.sh").resolve()),
-        "winner_manifest": {
-            "path": str(winner.resolve()),
-            "sha256": hashlib.sha256(winner.read_bytes()).hexdigest(),
-        },
-    }
-    command = [
-        str(stack), "M3", "--scene", "rivermark", "--condition", "static",
-        "--run-dir", str(run_root), "--socket", str(tmp_path / "m2.sock"),
-        "--module2-asset-root", str(tmp_path / "assets"),
-        "--route-prior-catalog-root", str(catalog),
-        "--viewport-arm", "B", "--viewport-attestation", str(attestation),
-        "--viewport-winner-manifest", str(winner), "--dry-run",
-    ]
-    env = {**os.environ, "BIO_NAV_VIEWPORT_PROC_ROOT": str(fake_proc)}
+def test_phase_f_production_path_rejects_proc_override(tmp_path):
+    stack = PACKAGE.parents[2] / "scripts/run_v6_low_obstacle_phase_f_stack.sh"
+    result = subprocess.run(
+        [str(stack), "M3", "--dry-run"],
+        env={**os.environ, "BIO_NAV_VIEWPORT_PROC_ROOT": str(tmp_path)},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "forbidden" in result.stderr
 
-    def invoke(payload, *, mode=0o600, run_override=None):
-        attestation.write_text(json.dumps(payload))
-        attestation.chmod(mode)
-        actual = list(command)
-        if run_override is not None:
-            actual[actual.index("--run-dir") + 1] = str(run_override)
-        return subprocess.run(actual, env=env, capture_output=True, text=True)
 
-    assert invoke(baseline).returncode == 0
-    stale = json.loads(json.dumps(baseline))
-    stale["start_ticks"] = 998
-    assert invoke(stale).returncode != 0
-    wrong_head = json.loads(json.dumps(baseline))
-    wrong_head["module3"]["head"] = "0" * 40
-    assert invoke(wrong_head).returncode != 0
-    assert invoke(baseline, mode=0o644).returncode != 0
-    other_root = tmp_path / "copied-run"
-    other_root.mkdir()
-    assert invoke(baseline, run_override=other_root).returncode != 0
-    (process_dir / "stat").unlink()
-    assert invoke(baseline).returncode != 0
+@pytest.mark.parametrize("mutation", ("stale", "dead"))
+def test_phase_f_live_viewport_monitor_rejects_stale_or_dead_process(
+    tmp_path, mutation
+):
+    fake = _start_fake_phase_f_stack(tmp_path, scene="rivermark")
+    try:
+        if mutation == "stale":
+            attestation = fake.run_dir / "viewport_runtime_attestation.json"
+            payload = json.loads(attestation.read_text())
+            payload["start_ticks"] += 1
+            attestation.write_text(json.dumps(payload))
+            attestation.chmod(0o600)
+        else:
+            os.killpg(fake.viewport_process.pid, signal.SIGTERM)
+            fake.viewport_process.wait(timeout=5.0)
+        fake.process.wait(timeout=10.0)
+        assert fake.process.returncode != 0
+    finally:
+        _stop_fake_phase_f_stack(fake)
 
 
 def test_phase_f_rivermark_rejects_non_m3_invalid_condition_and_snapshot(
@@ -3930,7 +3904,11 @@ def test_phase_f_stack_writes_live_deterministic_condition_contract(tmp_path):
 def _stop_fake_phase_f_stack(fake: SimpleNamespace) -> None:
     if fake.process.poll() is None:
         os.killpg(fake.process.pid, signal.SIGINT)
-        fake.process.wait(timeout=10.0)
+        fake.process.wait(timeout=20.0)
+    viewport_process = getattr(fake, "viewport_process", None)
+    if viewport_process is not None and viewport_process.poll() is None:
+        os.killpg(viewport_process.pid, signal.SIGTERM)
+        viewport_process.wait(timeout=5.0)
 
 
 def test_phase_f_producer_stop_survives_nested_setsid_registration_race(tmp_path):

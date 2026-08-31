@@ -91,9 +91,9 @@ process_is_running() {
 
 validate_viewport_runtime_attestation() {
   local attestation="$1" expected_run_root="$2" launcher="$3"
-  local winner_manifest="$4" module3_root="$5" proc_root="$6" expected_scene="$7"
+  local winner_manifest="$4" module3_root="$5" expected_scene="$6"
   python3 - "${attestation}" "${expected_run_root}" "${launcher}" \
-    "${winner_manifest}" "${module3_root}" "${proc_root}" "${expected_scene}" <<'PY'
+    "${winner_manifest}" "${module3_root}" "${expected_scene}" <<'PY'
 import hashlib
 import json
 import os
@@ -108,8 +108,8 @@ expected_run_root = Path(sys.argv[2]).resolve()
 launcher = Path(sys.argv[3]).resolve()
 winner_manifest = Path(sys.argv[4]).resolve()
 module3_root = Path(sys.argv[5]).resolve()
-proc_root = Path(sys.argv[6]).resolve()
-expected_scene = sys.argv[7]
+proc_root = Path("/proc")
+expected_scene = sys.argv[6]
 try:
     metadata = os.lstat(attestation)
 except OSError as exc:
@@ -130,6 +130,7 @@ required = {
     "cmdline_sha256", "executable", "start_wall_time_ns", "module3",
     "navigation_source", "viewport_arm", "readbacks", "scene",
     "run_root", "launcher_path", "winner_manifest",
+    "command_contract",
 }
 if not isinstance(payload, dict) or set(payload) != required:
     raise SystemExit("viewport runtime attestation schema keys mismatch")
@@ -198,6 +199,36 @@ if payload.get("winner_manifest") != {
     "path": str(winner_manifest), "sha256": winner_digest
 }:
     raise SystemExit("viewport runtime winner manifest digest mismatch")
+tokens = [item.decode() for item in cmdline.split(b"\0") if item]
+expected_values = {
+    "--viewport-arm-identity": "B",
+    "--viewport-runtime-attestation": str(attestation.resolve()),
+    "--viewport-winner-manifest": str(winner_manifest),
+    "--viewport-winner-manifest-sha256": winner_digest,
+    "--viewport-run-root": str(expected_run_root),
+    "--viewport-scene": expected_scene,
+    "--viewport-launcher": str(launcher),
+}
+if tokens.count(str(navigation_source.resolve())) != 1 or tokens.count(
+    "--disable-viewport-updates"
+) != 1 or "--no-disable-viewport-updates" in tokens:
+    raise SystemExit("viewport runtime command entry/disable flag mismatch")
+for flag, expected in expected_values.items():
+    if tokens.count(flag) != 1:
+        raise SystemExit(f"viewport runtime command flag count mismatch: {flag}")
+    index = tokens.index(flag)
+    if index + 1 >= len(tokens) or tokens[index + 1] != expected:
+        raise SystemExit(f"viewport runtime command value mismatch: {flag}")
+expected_command = {
+    "navigation_source": str(navigation_source.resolve()),
+    "disable_viewport_updates": True,
+    **{
+        flag.removeprefix("--").replace("-", "_"): value
+        for flag, value in expected_values.items()
+    },
+}
+if payload.get("command_contract") != expected_command:
+    raise SystemExit("viewport runtime command attestation mismatch")
 readbacks = payload.get("readbacks")
 if (
     payload.get("viewport_arm") != "B"
@@ -581,6 +612,10 @@ fi
 arm="${1:-}"
 [[ "${arm}" =~ ^M[0-3]$ ]] || { usage; exit 2; }
 shift
+if [[ -n "${BIO_NAV_VIEWPORT_PROC_ROOT+x}" ]]; then
+  echo "BIO_NAV_VIEWPORT_PROC_ROOT is forbidden in the production Phase-F path" >&2
+  exit 2
+fi
 run_dir=""
 socket_path=""
 domain_id="${BIO_NAV_PHASE_F_DOMAIN_ID:-150}"
@@ -716,8 +751,7 @@ if [[ "${scene}" == "rivermark" ]]; then
   viewport_winner_manifest_sha256="$(sha256sum "${viewport_winner_manifest}" | awk '{print $1}')"
   viewport_instance_uuid="$(validate_viewport_runtime_attestation \
     "${viewport_attestation}" "${run_dir}" "${script_dir}/run_v6_rivermark.sh" \
-    "${viewport_winner_manifest}" "${script_dir}/.." \
-    "${BIO_NAV_VIEWPORT_PROC_ROOT:-/proc}" "rivermark:${condition}")"
+    "${viewport_winner_manifest}" "${script_dir}/.." "rivermark:${condition}")"
   viewport_requested="true"
   viewport_observed="true"
 elif [[ -n "${route_prior_catalog_root}" ]]; then
@@ -1211,8 +1245,7 @@ while [[ "${scene}" == "rivermark" ]] && process_is_running "${module3_pid}"; do
   exit_if_terminating
   validate_viewport_runtime_attestation \
     "${viewport_attestation}" "${run_dir}" "${script_dir}/run_v6_rivermark.sh" \
-    "${viewport_winner_manifest}" "${script_dir}/.." \
-    "${BIO_NAV_VIEWPORT_PROC_ROOT:-/proc}" "rivermark:${condition}" \
+    "${viewport_winner_manifest}" "${script_dir}/.." "rivermark:${condition}" \
     >/dev/null || {
       echo "viewport runtime attestation liveness check failed" >&2
       exit 1

@@ -428,6 +428,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--viewport-arm-identity", choices=("B",), default=None)
     parser.add_argument("--viewport-runtime-attestation", type=Path, default=None)
     parser.add_argument("--viewport-winner-manifest", type=Path, default=None)
+    parser.add_argument("--viewport-winner-manifest-sha256", type=str, default=None)
     parser.add_argument("--viewport-run-root", type=Path, default=None)
     parser.add_argument("--viewport-scene", type=str, default=None)
     parser.add_argument("--viewport-launcher", type=Path, default=None)
@@ -858,6 +859,51 @@ def _self_process_identity() -> dict[str, object]:
     }
 
 
+def _validate_viewport_command_contract(
+    tokens: Sequence[str],
+    *,
+    output_path: Path,
+    winner_manifest_path: Path,
+    winner_manifest_sha256: str,
+    run_root: Path,
+    scene: str,
+    launcher_path: Path,
+) -> dict[str, object]:
+    navigation_source = str(Path(__file__).resolve())
+    expected_values = {
+        "--viewport-arm-identity": "B",
+        "--viewport-runtime-attestation": str(output_path.resolve()),
+        "--viewport-winner-manifest": str(winner_manifest_path.resolve()),
+        "--viewport-winner-manifest-sha256": winner_manifest_sha256,
+        "--viewport-run-root": str(run_root.resolve()),
+        "--viewport-scene": scene,
+        "--viewport-launcher": str(launcher_path.resolve()),
+    }
+    if tokens.count(navigation_source) != 1 or tokens.count(
+        "--disable-viewport-updates"
+    ) != 1 or "--no-disable-viewport-updates" in tokens:
+        raise RuntimeError("viewport runtime command entry/disable flag mismatch")
+    for flag, expected in expected_values.items():
+        if tokens.count(flag) != 1:
+            raise RuntimeError(f"viewport runtime command flag count mismatch: {flag}")
+        index = tokens.index(flag)
+        if index + 1 >= len(tokens) or tokens[index + 1] != expected:
+            raise RuntimeError(f"viewport runtime command value mismatch: {flag}")
+    return {
+        "navigation_source": navigation_source,
+        "disable_viewport_updates": True,
+        **{flag.removeprefix("--").replace("-", "_"): value for flag, value in expected_values.items()},
+    }
+
+
+def _process_cmdline_tokens(pid: int) -> list[str]:
+    return [
+        token.decode()
+        for token in Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+        if token
+    ]
+
+
 def _publish_viewport_runtime_attestation(
     *,
     output_path: Path,
@@ -867,6 +913,7 @@ def _publish_viewport_runtime_attestation(
     run_root: Path,
     launcher_path: Path,
     winner_manifest_path: Path,
+    winner_manifest_sha256: str,
     readbacks: Sequence[dict[str, object]],
 ) -> dict[str, object]:
     output_path = output_path.expanduser()
@@ -894,6 +941,8 @@ def _publish_viewport_runtime_attestation(
     ):
         raise RuntimeError("viewport runtime attestation requires two matching readbacks")
     winner_digest = hashlib.sha256(winner_manifest_path.read_bytes()).hexdigest()
+    if winner_manifest_sha256 != winner_digest:
+        raise RuntimeError("viewport winner manifest digest argument mismatch")
     try:
         winner_payload = json.loads(winner_manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -905,10 +954,20 @@ def _publish_viewport_runtime_attestation(
         "viewport_arm", winner_row.get("selected_arm")
     ) != "B":
         raise RuntimeError("viewport startup A/B manifest did not select arm B")
+    process_identity = _self_process_identity()
+    command_contract = _validate_viewport_command_contract(
+        _process_cmdline_tokens(int(process_identity["pid"])),
+        output_path=output_path,
+        winner_manifest_path=winner_manifest_path,
+        winner_manifest_sha256=winner_manifest_sha256,
+        run_root=run_root,
+        scene=scene,
+        launcher_path=launcher_path,
+    )
     payload = {
         "schema": "bio_nav.v6_viewport_runtime_attestation.v1",
         "instance_uuid": str(uuid.UUID(instance_uuid)),
-        **_self_process_identity(),
+        **process_identity,
         "start_wall_time_ns": start_wall_time_ns,
         "module3": _git_head_tree(PROJECT_ROOT),
         "navigation_source": {
@@ -924,6 +983,7 @@ def _publish_viewport_runtime_attestation(
             "path": str(winner_manifest_path),
             "sha256": winner_digest,
         },
+        "command_contract": command_contract,
     }
     fd, temporary_name = tempfile.mkstemp(
         prefix=f".{output_path.name}.", suffix=".tmp", dir=run_root
@@ -1002,6 +1062,7 @@ def run(
     viewport_arm_identity: str | None = None,
     viewport_runtime_attestation_path: Path | None = None,
     viewport_winner_manifest_path: Path | None = None,
+    viewport_winner_manifest_sha256: str | None = None,
     viewport_run_root: Path | None = None,
     viewport_scene: str | None = None,
     viewport_launcher_path: Path | None = None,
@@ -1014,6 +1075,7 @@ def run(
         and disable_viewport_updates is True
         and viewport_runtime_attestation_path is not None
         and viewport_winner_manifest_path is not None
+        and viewport_winner_manifest_sha256 is not None
         and viewport_run_root is not None
         and viewport_scene is not None
         and viewport_launcher_path is not None
@@ -1022,6 +1084,7 @@ def run(
     if not viewport_attestation_requested and any(value is not None for value in (
         viewport_runtime_attestation_path,
         viewport_winner_manifest_path,
+        viewport_winner_manifest_sha256,
         viewport_run_root,
         viewport_scene,
         viewport_launcher_path,
@@ -2588,6 +2651,7 @@ def run(
         if viewport_attestation_requested:
             assert viewport_runtime_attestation_path is not None
             assert viewport_winner_manifest_path is not None
+            assert viewport_winner_manifest_sha256 is not None
             assert viewport_run_root is not None
             assert viewport_scene is not None
             assert viewport_launcher_path is not None
@@ -2599,6 +2663,7 @@ def run(
                 run_root=viewport_run_root,
                 launcher_path=viewport_launcher_path,
                 winner_manifest_path=viewport_winner_manifest_path,
+                winner_manifest_sha256=viewport_winner_manifest_sha256,
                 readbacks=(first_viewport_readback, second_viewport_readback),
             )
         node.get_logger().info(
@@ -3331,6 +3396,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         viewport_arm_identity=args.viewport_arm_identity,
         viewport_runtime_attestation_path=args.viewport_runtime_attestation,
         viewport_winner_manifest_path=args.viewport_winner_manifest,
+        viewport_winner_manifest_sha256=args.viewport_winner_manifest_sha256,
         viewport_run_root=args.viewport_run_root,
         viewport_scene=args.viewport_scene,
         viewport_launcher_path=args.viewport_launcher,

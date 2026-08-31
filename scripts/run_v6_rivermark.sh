@@ -163,11 +163,13 @@ if [[ "${entrypoint}" == "isaac" ]]; then
       "viewport runtime attestation path already exists"
     require_file "${viewport_winner_manifest}"
     viewport_winner_manifest="$(readlink -f -- "${viewport_winner_manifest}")"
+    viewport_winner_manifest_sha256="$(sha256sum "${viewport_winner_manifest}" | awk '{print $1}')"
     viewport_arguments=(
       --disable-viewport-updates
       --viewport-arm-identity B
       --viewport-runtime-attestation "${viewport_runtime_attestation}"
       --viewport-winner-manifest "${viewport_winner_manifest}"
+      --viewport-winner-manifest-sha256 "${viewport_winner_manifest_sha256}"
       --viewport-run-root "${viewport_run_root}"
       --viewport-scene "rivermark:${scenario}"
       --viewport-launcher "$(readlink -f -- "$0")"

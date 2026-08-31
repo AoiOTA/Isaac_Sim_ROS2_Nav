@@ -1773,6 +1773,21 @@ def _write_outdoor_production_pilot_root(tmp_path: Path, monkeypatch):
             "run_root": str(runtime_root.resolve()),
             "launcher_path": str((REPO / "scripts/run_v6_rivermark.sh").resolve()),
             "winner_manifest": {"path": str(winner.resolve()), "sha256": winner_digest},
+            "command_contract": {
+                "navigation_source": str(
+                    (REPO / "isaac_sim/apps/navigation_sim.py").resolve()
+                ),
+                "disable_viewport_updates": True,
+                "viewport_arm_identity": "B",
+                "viewport_runtime_attestation": str(runtime_attestation.resolve()),
+                "viewport_winner_manifest": str(winner.resolve()),
+                "viewport_winner_manifest_sha256": winner_digest,
+                "viewport_run_root": str(runtime_root.resolve()),
+                "viewport_scene": f"rivermark:{condition_id.split('_', 1)[1]}",
+                "viewport_launcher": str(
+                    (REPO / "scripts/run_v6_rivermark.sh").resolve()
+                ),
+            },
         }
         runtime_attestation.write_text(json.dumps(runtime_payload))
         runtime_attestation.chmod(0o600)

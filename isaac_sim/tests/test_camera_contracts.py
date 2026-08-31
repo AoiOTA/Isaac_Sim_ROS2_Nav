@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,7 @@ from isaac_sim.apps.navigation_sim import (
     _parser,
     _publish_viewport_runtime_attestation,
     _simulation_app_config,
+    _validate_viewport_command_contract,
     _verify_default_viewport_updates,
     _verify_rtx_descriptor_sets,
     run,
@@ -449,6 +451,7 @@ def test_viewport_runtime_attestation_is_atomic_0600_and_process_bound(
     winner = tmp_path / "winner.json"
     winner.write_text(json.dumps({"winner": {"viewport_arm": "B"}}))
     output = tmp_path / "viewport_runtime_attestation.json"
+    winner_digest = hashlib.sha256(winner.read_bytes()).hexdigest()
     monkeypatch.setattr(
         navigation_sim,
         "_self_process_identity",
@@ -461,6 +464,21 @@ def test_viewport_runtime_attestation_is_atomic_0600_and_process_bound(
             "executable": "/python",
         },
     )
+    monkeypatch.setattr(
+        navigation_sim,
+        "_process_cmdline_tokens",
+        lambda _pid: [
+            "/python", str(Path(navigation_sim.__file__).resolve()),
+            "--disable-viewport-updates",
+            "--viewport-arm-identity", "B",
+            "--viewport-runtime-attestation", str(output.resolve()),
+            "--viewport-winner-manifest", str(winner.resolve()),
+            "--viewport-winner-manifest-sha256", winner_digest,
+            "--viewport-run-root", str(tmp_path.resolve()),
+            "--viewport-scene", "rivermark:static",
+            "--viewport-launcher", str(Path(__file__).resolve()),
+        ],
+    )
     payload = _publish_viewport_runtime_attestation(
         output_path=output,
         instance_uuid="550e8400-e29b-41d4-a716-446655440000",
@@ -469,6 +487,7 @@ def test_viewport_runtime_attestation_is_atomic_0600_and_process_bound(
         run_root=tmp_path,
         launcher_path=Path(__file__),
         winner_manifest_path=winner,
+        winner_manifest_sha256=winner_digest,
         readbacks=(
             {
                 "phase": "post_construction",
@@ -497,7 +516,58 @@ def test_viewport_runtime_attestation_is_atomic_0600_and_process_bound(
             run_root=tmp_path,
             launcher_path=Path(__file__),
             winner_manifest_path=winner,
+            winner_manifest_sha256=winner_digest,
             readbacks=payload["readbacks"],
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("arm_a", "missing_disable", "attestation", "digest", "run_root", "scene", "launcher"),
+)
+def test_viewport_command_contract_rejects_arm_missing_flag_or_wrong_binding(
+    tmp_path, mutation
+):
+    output = tmp_path / "viewport_runtime_attestation.json"
+    winner = tmp_path / "winner.json"
+    winner.write_text('{"winner":{"viewport_arm":"B"}}')
+    digest = hashlib.sha256(winner.read_bytes()).hexdigest()
+    launcher = tmp_path / "launcher.sh"
+    launcher.write_text("#!/bin/sh\n")
+    values = {
+        "--viewport-arm-identity": "B",
+        "--viewport-runtime-attestation": str(output.resolve()),
+        "--viewport-winner-manifest": str(winner.resolve()),
+        "--viewport-winner-manifest-sha256": digest,
+        "--viewport-run-root": str(tmp_path.resolve()),
+        "--viewport-scene": "rivermark:static",
+        "--viewport-launcher": str(launcher.resolve()),
+    }
+    tokens = [str(Path(navigation_sim.__file__).resolve()), "--disable-viewport-updates"]
+    for flag, value in values.items():
+        tokens.extend([flag, value])
+    if mutation == "arm_a":
+        tokens[tokens.index("--viewport-arm-identity") + 1] = "A"
+    elif mutation == "missing_disable":
+        tokens.remove("--disable-viewport-updates")
+    else:
+        flag = {
+            "attestation": "--viewport-runtime-attestation",
+            "digest": "--viewport-winner-manifest-sha256",
+            "run_root": "--viewport-run-root",
+            "scene": "--viewport-scene",
+            "launcher": "--viewport-launcher",
+        }[mutation]
+        tokens[tokens.index(flag) + 1] = "wrong"
+    with pytest.raises(RuntimeError, match="viewport runtime command"):
+        _validate_viewport_command_contract(
+            tokens,
+            output_path=output,
+            winner_manifest_path=winner,
+            winner_manifest_sha256=digest,
+            run_root=tmp_path,
+            scene="rivermark:static",
+            launcher_path=launcher,
         )
 
 
@@ -773,6 +843,7 @@ def test_main_passes_runtime_contract_directly_to_run(
                 "viewport_arm_identity": None,
                 "viewport_runtime_attestation_path": None,
                 "viewport_winner_manifest_path": None,
+                "viewport_winner_manifest_sha256": None,
                 "viewport_run_root": None,
                 "viewport_scene": None,
                 "viewport_launcher_path": None,

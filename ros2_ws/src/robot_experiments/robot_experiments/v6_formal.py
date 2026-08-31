@@ -5341,7 +5341,7 @@ def _validate_viewport_runtime_snapshot(
         "schema", "instance_uuid", "pid", "pgid", "start_ticks", "boot_id",
         "cmdline_sha256", "executable", "start_wall_time_ns", "module3",
         "navigation_source", "viewport_arm", "readbacks", "scene",
-        "run_root", "launcher_path", "winner_manifest",
+        "run_root", "launcher_path", "winner_manifest", "command_contract",
     }, "viewport_runtime_attestation")
     try:
         instance = str(uuid.UUID(str(runtime.get("instance_uuid", ""))))
@@ -5352,6 +5352,31 @@ def _validate_viewport_runtime_snapshot(
         "rivermark_viewport_startup_winner_manifest"
     )
     readbacks = runtime.get("readbacks")
+    expected_command = {
+        "navigation_source": str(
+            Path(repositories["module3"]["path"])
+            / "isaac_sim/apps/navigation_sim.py"
+        ),
+        "disable_viewport_updates": True,
+        "viewport_arm_identity": "B",
+        "viewport_runtime_attestation": str(
+            Path(str(stack.get("viewport_runtime_attestation_path", ""))).resolve()
+        ),
+        "viewport_winner_manifest": str(Path(str(winner.get("path", ""))).resolve())
+        if isinstance(winner, Mapping)
+        else "",
+        "viewport_winner_manifest_sha256": winner.get("sha256")
+        if isinstance(winner, Mapping)
+        else None,
+        "viewport_run_root": str(
+            Path(str(stack.get("contract_path", ""))).resolve().parent
+        ),
+        "viewport_scene": f"rivermark:{expected_condition_id.split('_', 1)[1]}",
+        "viewport_launcher": str(
+            Path(repositories["module3"]["path"]).resolve()
+            / "scripts/run_v6_rivermark.sh"
+        ),
+    }
     if not (
         runtime.get("schema") == "bio_nav.v6_viewport_runtime_attestation.v1"
         and instance == runtime.get("instance_uuid") == stack.get("viewport_instance_uuid")
@@ -5373,6 +5398,7 @@ def _validate_viewport_runtime_snapshot(
             ),
         }
         and runtime.get("viewport_arm") == stack.get("viewport_arm") == "B"
+        and runtime.get("command_contract") == expected_command
         and isinstance(readbacks, list)
         and [row.get("phase") for row in readbacks]
         == ["post_construction", "pre_ready"]
