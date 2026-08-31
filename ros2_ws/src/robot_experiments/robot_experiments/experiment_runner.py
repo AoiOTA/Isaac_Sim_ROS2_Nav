@@ -138,6 +138,13 @@ TERMINAL_ZERO_CADENCE_TOLERANCE_SEC = 0.10
 # covers one post-retirement source plus a processed status from both consumers
 # without relaxing any source-stamp, sequence, identity, or zero-cell gate.
 DYNAMIC_RETIREMENT_CLEAR_TIMEOUT_SEC = 2.0
+COGNITIVE_ADMISSION_MIN_CONSECUTIVE = 3
+COGNITIVE_ADMISSION_BAD_REASON_TOKENS = (
+    "odom_time",
+    "future",
+    "stale",
+    "identity",
+)
 
 COMMON_REQUIRED_RECORDED_TOPICS = (
     "/clock",
@@ -197,6 +204,63 @@ def _module2_readiness_required(scenario_id: str, configured: object) -> bool:
             "final V6 scenarios cannot disable Module2 planning readiness"
         )
     return required
+
+
+def _cognitive_admission_components(
+    nav2_configuration: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Return only cognitive consumers explicitly enabled by the Nav2 profile."""
+
+    def parameters(*path: str) -> Mapping[str, Any]:
+        value: object = nav2_configuration
+        for name in path:
+            if not isinstance(value, Mapping):
+                return {}
+            value = value.get(name, {})
+        return value if isinstance(value, Mapping) else {}
+
+    components: dict[str, dict[str, Any]] = {}
+    for role, root in (
+        ("global_layer", "global_costmap"),
+        ("local_layer", "local_costmap"),
+    ):
+        values = parameters(root, root, "ros__parameters")
+        plugins = values.get("plugins", [])
+        plugin = values.get("cognitive_obstacle_layer", {})
+        if not isinstance(plugin, Mapping):
+            plugin = {}
+        mode = str(plugin.get("mode", "active")).strip().lower()
+        if (
+            isinstance(plugins, list)
+            and "cognitive_obstacle_layer" in plugins
+            and plugin.get("enabled", True) is not False
+            and mode not in {"off", "disabled"}
+        ):
+            components[role] = {
+                "mode": mode,
+                "maximum_age_s": float(plugin.get("maximum_age_s", 0.5)),
+            }
+
+    controller = parameters("controller_server", "ros__parameters")
+    follow_path = controller.get("FollowPath", {})
+    if not isinstance(follow_path, Mapping):
+        follow_path = {}
+    critics = follow_path.get("critics", [])
+    critic = follow_path.get("CognitiveRiskCritic", {})
+    if not isinstance(critic, Mapping):
+        critic = {}
+    mode = str(critic.get("mode", "active")).strip().lower()
+    if (
+        isinstance(critics, list)
+        and "CognitiveRiskCritic" in critics
+        and critic.get("enabled", True) is not False
+        and mode not in {"off", "disabled"}
+    ):
+        components["critic"] = {
+            "mode": mode,
+            "maximum_age_s": float(critic.get("maximum_age_s", 0.5)),
+        }
+    return components
 
 
 def _validate_condition_stack_parameters(
@@ -790,6 +854,13 @@ def _episode_validity(summary: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(route_prior, Mapping) and route_prior.get("required") is True:
         if route_prior.get("confirmed") is not True:
             reasons.append("route_prior_application_unconfirmed")
+    cognitive_admission = summary.get("cognitive_admission_readiness", {})
+    if (
+        isinstance(cognitive_admission, Mapping)
+        and cognitive_admission.get("required") is True
+        and cognitive_admission.get("ready") is not True
+    ):
+        reasons.append("cognitive_admission_readiness_failed")
     stack = summary.get("condition_stack_attestation", {})
     if isinstance(stack, Mapping) and stack.get("required") is True:
         if stack.get("confirmed") is not True:
@@ -1300,6 +1371,19 @@ class ExperimentRunner(Node):
             if nav2_override
             else self._scenario.resolve_path(self._scenario.nav2_config_file)
         )
+        try:
+            nav2_configuration = yaml.safe_load(
+                nav2_config.read_text(encoding="utf-8")
+            )
+        except (OSError, yaml.YAMLError) as exc:
+            raise ConfigurationError(
+                f"Nav2 configuration is unreadable: {nav2_config}"
+            ) from exc
+        if not isinstance(nav2_configuration, Mapping):
+            raise ConfigurationError("Nav2 configuration must be a mapping")
+        self._cognitive_admission_components = _cognitive_admission_components(
+            nav2_configuration
+        )
         self._robot_config_hash = configuration_sha256(robot_config)
         self._robot_footprint = load_robot_footprint(robot_config)
         self._nav2_config_hash = configuration_sha256(nav2_config)
@@ -1439,9 +1523,18 @@ class ExperimentRunner(Node):
                 "module2_planning_ready_timeout_sec", 30.0
             ).value
         )
+        self._cognitive_admission_ready_timeout_sec = float(
+            self.declare_parameter(
+                "cognitive_admission_ready_timeout_sec", 30.0
+            ).value
+        )
         if self._module2_planning_ready_timeout_sec <= 0.0:
             raise ConfigurationError(
                 "module2_planning_ready_timeout_sec must be positive"
+            )
+        if self._cognitive_admission_ready_timeout_sec <= 0.0:
+            raise ConfigurationError(
+                "cognitive_admission_ready_timeout_sec must be positive"
             )
         if self._record_bag and not self._record_evidence:
             raise ConfigurationError(
@@ -1664,6 +1757,12 @@ class ExperimentRunner(Node):
             RiskLayerStatus,
             "/bio_nav/cognitive_obstacle_layer/status",
             self._cognitive_layer_status_callback,
+            reliable,
+        )
+        self._cognitive_critic_status_subscription = self.create_subscription(
+            RiskLayerStatus,
+            "/bio_nav/cognitive_risk_critic/status",
+            self._cognitive_critic_status_callback,
             reliable,
         )
         self._appearance_state_subscription = self.create_subscription(
@@ -1928,7 +2027,10 @@ class ExperimentRunner(Node):
         self._obstacle_state_stamp_s: float | None = None
         self._obstacle_samples: list[dict[str, Any]] = []
         self._latest_cognitive_obstacles: CognitiveObstacleArray | None = None
+        self._latest_cognitive_obstacles_received_at: float | None = None
         self._latest_cognitive_layer_statuses: dict[str, RiskLayerStatus] = {}
+        self._reset_cognitive_admission_state()
+        self._reset_stop_gate_release_confirmed_generation: int | None = None
         self._dynamic_guard_aborted = False
         self._dynamic_safety_yield = False
         self._rgb_frame: dict[str, Any] | None = None
@@ -2161,11 +2263,297 @@ class ExperimentRunner(Node):
 
     def _cognitive_obstacle_callback(self, message: CognitiveObstacleArray) -> None:
         self._latest_cognitive_obstacles = message
+        received_at = time.monotonic()
+        self._latest_cognitive_obstacles_received_at = received_at
+        barrier_monotonic = self._cognitive_admission_barrier_monotonic
+        barrier_ros_s = self._cognitive_admission_barrier_ros_s
+        validation_stamp_s = self._message_stamp_seconds(
+            message.validation_stamp
+        )
+        identity = (
+            int(message.reset_epoch),
+            str(message.recurrent_session_id),
+            str(message.map_version),
+        )
+        planning = self._latest_planning_prior_readiness
+        planning_identity = (
+            (
+                int(planning["reset_epoch"]),
+                str(planning["recurrent_session_id"]),
+                str(planning["map_version"]),
+            )
+            if planning is not None
+            else None
+        )
+        if (
+            barrier_monotonic is None
+            or barrier_ros_s is None
+            or received_at <= barrier_monotonic
+            or validation_stamp_s <= barrier_ros_s
+            or not identity[1]
+            or identity[0] != self._cognitive_admission_expected_reset_epoch
+            or (
+                self._cognitive_admission_forbidden_recurrent_session_id
+                and identity[1]
+                == self._cognitive_admission_forbidden_recurrent_session_id
+            )
+            or identity[2] != self._scenario.map_version
+            or identity != planning_identity
+        ):
+            return
+        if (
+            self._cognitive_admission_current_identity is not None
+            and identity != self._cognitive_admission_current_identity
+        ):
+            self._cognitive_admission_streaks = {
+                role: 0 for role in self._cognitive_admission_components
+            }
+            self._cognitive_admission_last_sequences = {
+                role: -1 for role in self._cognitive_admission_components
+            }
+            self._cognitive_admission_latest = {}
+            self._cognitive_admission_sources = {}
+        self._cognitive_admission_current_identity = identity
+        key = (*identity, int(message.sequence))
+        self._cognitive_admission_sources[key] = {
+            "validation_stamp_s": validation_stamp_s,
+            "received_at": received_at,
+        }
+        while len(self._cognitive_admission_sources) > 128:
+            self._cognitive_admission_sources.pop(
+                next(iter(self._cognitive_admission_sources))
+            )
 
     def _cognitive_layer_status_callback(self, message: RiskLayerStatus) -> None:
         consumer = str(message.consumer)
         if consumer:
             self._latest_cognitive_layer_statuses[consumer] = message
+        if "global_costmap" in consumer:
+            self._update_cognitive_admission_status("global_layer", message)
+        elif "local_costmap" in consumer:
+            self._update_cognitive_admission_status("local_layer", message)
+
+    def _cognitive_critic_status_callback(self, message: RiskLayerStatus) -> None:
+        self._update_cognitive_admission_status("critic", message)
+
+    @staticmethod
+    def _message_stamp_seconds(stamp: object) -> float:
+        return float(getattr(stamp, "sec", 0)) + float(
+            getattr(stamp, "nanosec", 0)
+        ) * 1.0e-9
+
+    def _reset_cognitive_admission_state(
+        self,
+        *,
+        barrier_ros_s: float | None = None,
+        barrier_monotonic: float | None = None,
+        expected_reset_epoch: int | None = None,
+        forbidden_recurrent_session_id: str | None = None,
+    ) -> None:
+        components = getattr(self, "_cognitive_admission_components", {})
+        self._cognitive_admission_barrier_ros_s = barrier_ros_s
+        self._cognitive_admission_barrier_monotonic = barrier_monotonic
+        self._cognitive_admission_expected_reset_epoch = expected_reset_epoch
+        self._cognitive_admission_forbidden_recurrent_session_id = (
+            forbidden_recurrent_session_id or None
+        )
+        self._cognitive_admission_current_identity: tuple[int, str, str] | None = None
+        self._cognitive_admission_sources: dict[
+            tuple[int, str, str, int], dict[str, float]
+        ] = {}
+        self._cognitive_admission_streaks = {role: 0 for role in components}
+        self._cognitive_admission_last_sequences = {
+            role: -1 for role in components
+        }
+        self._cognitive_admission_latest: dict[str, dict[str, Any]] = {}
+        self._cognitive_admission_result_status = (
+            "exempt" if not components else "pending"
+        )
+        self._cognitive_admission_result_reason = (
+            "all_cognitive_components_explicitly_off"
+            if not components
+            else "awaiting_post_reset_status"
+        )
+
+    def _update_cognitive_admission_status(
+        self, role: str, message: RiskLayerStatus
+    ) -> None:
+        components = getattr(self, "_cognitive_admission_components", {})
+        if role not in components:
+            return
+        received_at = time.monotonic()
+        sequence = int(message.source_sequence)
+        identity = (
+            int(message.reset_epoch),
+            str(message.recurrent_session_id),
+            str(message.map_version),
+        )
+        source = self._cognitive_admission_sources.get((*identity, sequence))
+        reason = str(message.fallback_reason)
+        reason_lower = reason.lower()
+        status_stamp_s = self._message_stamp_seconds(message.stamp)
+        barrier_monotonic = self._cognitive_admission_barrier_monotonic
+        barrier_ros_s = self._cognitive_admission_barrier_ros_s
+        expected_mode = str(components[role].get("mode", "active"))
+        message_age_ms = float(message.message_age_ms)
+        maximum_age_ms = float(
+            components[role].get("maximum_age_s", 0.5)
+        ) * 1000.0
+        rejection_reason = ""
+        if barrier_monotonic is None or barrier_ros_s is None:
+            rejection_reason = "reset_barrier_unavailable"
+        elif received_at <= barrier_monotonic or status_stamp_s <= barrier_ros_s:
+            rejection_reason = "pre_reset_or_stale_status"
+        elif source is None:
+            rejection_reason = "source_sequence_not_current"
+        elif identity != self._cognitive_admission_current_identity:
+            rejection_reason = "stale_identity"
+        elif str(message.mode).strip().lower() != expected_mode:
+            rejection_reason = "component_mode_mismatch"
+        elif bool(message.rejected):
+            rejection_reason = "consumer_rejected"
+        elif (
+            not math.isfinite(message_age_ms)
+            or message_age_ms < 0.0
+            or message_age_ms > maximum_age_ms
+        ):
+            rejection_reason = "validation_stamp_stale"
+        elif any(token in reason_lower for token in COGNITIVE_ADMISSION_BAD_REASON_TOKENS):
+            rejection_reason = "unsafe_fallback_reason"
+
+        last_sequence = self._cognitive_admission_last_sequences.get(role, -1)
+        if sequence <= last_sequence:
+            return
+        self._cognitive_admission_last_sequences[role] = sequence
+        if rejection_reason:
+            self._cognitive_admission_streaks[role] = 0
+        else:
+            self._cognitive_admission_streaks[role] += 1
+        clock_s = self._clock_seconds()
+        validation_stamp_s = (
+            float(source["validation_stamp_s"]) if source is not None else None
+        )
+        validation_skew_ms = (
+            (clock_s - validation_stamp_s) * 1000.0
+            if clock_s is not None and validation_stamp_s is not None
+            else None
+        )
+        self._cognitive_admission_latest[role] = {
+            "consumer": str(message.consumer),
+            "mode": str(message.mode),
+            "offered": bool(message.offered),
+            "applied": bool(message.applied),
+            "rejected": bool(message.rejected),
+            "fallback_reason": reason,
+            "admission_rejection_reason": rejection_reason or None,
+            "source_sequence": sequence,
+            "reset_epoch": identity[0],
+            "recurrent_session_id": identity[1],
+            "map_version": identity[2],
+            "status_stamp_s": status_stamp_s,
+            "message_age_ms": message_age_ms,
+            "validation_stamp_s": validation_stamp_s,
+            "sim_time_s": clock_s,
+            "validation_stamp_vs_sim_time_skew_ms": validation_skew_ms,
+            "received_after_reset_barrier": bool(
+                barrier_monotonic is not None and received_at > barrier_monotonic
+            ),
+            "consecutive_healthy_samples": self._cognitive_admission_streaks[role],
+        }
+
+    def _cognitive_admission_snapshot(self) -> dict[str, Any]:
+        components = getattr(self, "_cognitive_admission_components", {})
+        planning = getattr(self, "_latest_planning_prior_readiness", None)
+        return {
+            "required": bool(components),
+            "required_components": sorted(components),
+            "minimum_consecutive_samples": COGNITIVE_ADMISSION_MIN_CONSECUTIVE,
+            "barrier_ros_s": getattr(
+                self, "_cognitive_admission_barrier_ros_s", None
+            ),
+            "expected_reset_epoch": getattr(
+                self, "_cognitive_admission_expected_reset_epoch", None
+            ),
+            "forbidden_previous_recurrent_session_id": getattr(
+                self,
+                "_cognitive_admission_forbidden_recurrent_session_id",
+                None,
+            ),
+            "module2_planning_identity": (
+                {
+                    key: planning.get(key)
+                    for key in (
+                        "sequence",
+                        "reset_epoch",
+                        "recurrent_session_id",
+                        "map_version",
+                    )
+                }
+                if isinstance(planning, Mapping)
+                else None
+            ),
+            "status": getattr(
+                self, "_cognitive_admission_result_status", "not_checked"
+            ),
+            "ready": getattr(
+                self, "_cognitive_admission_result_status", "not_checked"
+            ) in {"ready", "exempt"},
+            "reason": getattr(
+                self, "_cognitive_admission_result_reason", "not_checked"
+            ),
+            "components": {
+                role: {
+                    "expected_mode": str(configuration.get("mode", "active")),
+                    "maximum_age_s": float(
+                        configuration.get("maximum_age_s", 0.5)
+                    ),
+                    "consecutive_healthy_samples": int(
+                        self._cognitive_admission_streaks.get(role, 0)
+                    ),
+                    "latest": dict(self._cognitive_admission_latest.get(role, {})),
+                }
+                for role, configuration in sorted(components.items())
+            },
+        }
+
+    def _wait_for_cognitive_admission_ready(self) -> None:
+        components = getattr(self, "_cognitive_admission_components", {})
+        if not components:
+            self._cognitive_admission_result_status = "exempt"
+            self._cognitive_admission_result_reason = (
+                "all_cognitive_components_explicitly_off"
+            )
+            return
+
+        def ready() -> bool:
+            return all(
+                self._cognitive_admission_streaks.get(role, 0)
+                >= COGNITIVE_ADMISSION_MIN_CONSECUTIVE
+                for role in components
+            )
+
+        if self._wait_until(
+            ready, self._cognitive_admission_ready_timeout_sec
+        ):
+            self._cognitive_admission_result_status = "ready"
+            self._cognitive_admission_result_reason = (
+                "three_consecutive_current_healthy_samples_per_component"
+            )
+            return
+        self._cognitive_admission_result_status = "timeout"
+        missing = [
+            f"{role}={self._cognitive_admission_streaks.get(role, 0)}"
+            for role in sorted(components)
+            if self._cognitive_admission_streaks.get(role, 0)
+            < COGNITIVE_ADMISSION_MIN_CONSECUTIVE
+        ]
+        self._cognitive_admission_result_reason = (
+            "cognitive_admission_readiness_timeout:" + ",".join(missing)
+        )
+        raise RuntimeError(
+            "cognitive admission readiness timed out before route dispatch: "
+            + ",".join(missing)
+        )
 
     def _appearance_state_callback(self, message: String) -> None:
         try:
@@ -2309,6 +2697,10 @@ class ExperimentRunner(Node):
         dynamic = [float(value) for value in message.dynamic_cost]
         self._latest_planning_prior_readiness = {
             "stamp_s": stamp_s,
+            "sequence": int(message.sequence),
+            "reset_epoch": int(message.reset_epoch),
+            "recurrent_session_id": str(message.recurrent_session_id),
+            "map_version": str(message.map_version),
             "module2_healthy": bool(message.module2_healthy),
             "place_entropy_normalized": float(
                 message.place_entropy_normalized
@@ -3198,6 +3590,14 @@ class ExperimentRunner(Node):
         appearance_profile_id: str | None = None,
     ) -> None:
         previous_seed_epoch = self._localization_seed_epoch
+        previous_cognitive_obstacles = getattr(
+            self, "_latest_cognitive_obstacles", None
+        )
+        previous_cognitive_session = (
+            str(previous_cognitive_obstacles.recurrent_session_id)
+            if previous_cognitive_obstacles is not None
+            else None
+        )
         self._cancel_stale_navigation_goal()
         self._clear_localization_buffer()
         self._set_reset_seed(seed, case_id, variant_id, appearance_profile_id)
@@ -3264,6 +3664,20 @@ class ExperimentRunner(Node):
             self._service_timeout_sec,
         ):
             raise TimeoutError("timed out waiting for post-reset RGB evidence frame")
+        barrier_ros_s = self._clock_seconds()
+        if barrier_ros_s is None:
+            raise RuntimeError(
+                "cognitive admission readiness requires post-reset ROS time"
+            )
+        self._latest_cognitive_obstacles = None
+        self._latest_cognitive_obstacles_received_at = None
+        self._latest_cognitive_layer_statuses = {}
+        self._reset_cognitive_admission_state(
+            barrier_ros_s=barrier_ros_s,
+            barrier_monotonic=time.monotonic(),
+            expected_reset_epoch=int(receipt["generation"]),
+            forbidden_recurrent_session_id=previous_cognitive_session,
+        )
 
     def _pose_message(self, specification) -> PoseStamped:
         pose = PoseStamped()
@@ -3682,7 +4096,15 @@ class ExperimentRunner(Node):
             raise RuntimeError(
                 "A21 route-guided backend unavailable: graph or coordinator missing"
             )
-        self._wait_for_reset_stop_gate_release()
+        receipt = getattr(self, "_reset_receipt", None)
+        confirmed_generation = getattr(
+            self, "_reset_stop_gate_release_confirmed_generation", None
+        )
+        if (
+            receipt is None
+            or confirmed_generation != int(receipt["generation"])
+        ):
+            self._wait_for_reset_stop_gate_release()
         specifications = (
             self._scenario.route
             if self._scenario.route
@@ -3824,6 +4246,11 @@ class ExperimentRunner(Node):
             not self._reset_stop_gate_status_received
             and self._reset_stop_gate_status_subscription.get_publisher_count() == 0
         ):
+            receipt = self._reset_receipt
+            if receipt is not None:
+                self._reset_stop_gate_release_confirmed_generation = int(
+                    receipt["generation"]
+                )
             return
         receipt = self._reset_receipt
         barrier = self._reset_call_barrier_monotonic
@@ -3853,6 +4280,7 @@ class ExperimentRunner(Node):
                 "reset stop gate release timed out before route dispatch: "
                 f"generation={generation}"
             )
+        self._reset_stop_gate_release_confirmed_generation = generation
 
     def _arm_next_terminal_fence(self) -> None:
         """Synchronously reserve the final route request before publishing it."""
@@ -4808,6 +5236,9 @@ class ExperimentRunner(Node):
                 "state": dict(self._appearance_state or {}),
                 "ready": appearance_ready,
             },
+            "cognitive_admission_readiness": (
+                self._cognitive_admission_snapshot()
+            ),
             "condition_id": (
                 self._active_selection.condition_id
                 if self._active_selection is not None
@@ -5452,6 +5883,19 @@ class ExperimentRunner(Node):
             "route_prior_application_confirmed": route_prior_application[
                 "confirmed"
             ],
+            "cognitive_admission_readiness": dict(
+                manifest.get("cognitive_admission_readiness", {})
+            ),
+            "startup_invalid_reason": (
+                manifest.get("cognitive_admission_readiness", {}).get("reason")
+                if manifest.get("cognitive_admission_readiness", {}).get(
+                    "required"
+                ) is True
+                and manifest.get("cognitive_admission_readiness", {}).get(
+                    "ready"
+                ) is not True
+                else None
+            ),
             "condition_stack_id": condition_stack_id or None,
             "stack_session_id": stack_session_id or None,
             "formal_freeze_digest": formal_freeze_digest or None,
@@ -5817,6 +6261,10 @@ class ExperimentRunner(Node):
                     reset_variant_id,
                     selection.appearance_profile_id,
                 )
+                # Pre-dispatch contract: reset/stop release, Module2 planning
+                # readiness, then per-consumer cognitive admission readiness.
+                if self._navigation_execution_backend == "route_guided":
+                    self._wait_for_reset_stop_gate_release()
                 if self._require_module2_planning_ready and not self._wait_until(
                     lambda: self._planning_prior_ready_streak >= 5,
                     self._module2_planning_ready_timeout_sec,
@@ -5827,6 +6275,8 @@ class ExperimentRunner(Node):
                 if self._record_evidence:
                     root = self._begin_run_evidence(run_index, seed)
                     self._lifecycle_event("evidence_started")
+                self._wait_for_cognitive_admission_ready()
+                if self._record_evidence:
                     self._active_stack_episode_receipt = (
                         self._claim_stack_episode_sequence(
                             pre_reset_generation=pre_reset_generation,

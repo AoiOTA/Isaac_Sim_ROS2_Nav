@@ -78,6 +78,10 @@ def test_default_enabled_slam_buffer_clear_still_fails_closed_when_service_missi
 def _planning_prior(*, stamp_sec: int, healthy: bool):
     return SimpleNamespace(
         stamp=SimpleNamespace(sec=stamp_sec, nanosec=0),
+        sequence=stamp_sec,
+        reset_epoch=2,
+        recurrent_session_id="session-2",
+        map_version="map-v1",
         module2_healthy=healthy,
         place_entropy_normalized=0.58,
         context_uncertainty=0.58,
@@ -101,6 +105,10 @@ def test_planning_readiness_uses_consecutive_fresh_healthy_priors_only():
     assert runner._planning_prior_ready_streak == 5
     assert runner._latest_planning_prior_readiness == {
         "stamp_s": 5.0,
+        "sequence": 5,
+        "reset_epoch": 2,
+        "recurrent_session_id": "session-2",
+        "map_version": "map-v1",
         "module2_healthy": True,
         "place_entropy_normalized": 0.58,
         "context_uncertainty": 0.58,

@@ -12,6 +12,7 @@ import yaml
 import robot_experiments.experiment_runner as experiment_runner_module
 from robot_experiments.attempt31_rivermark_qualification import _rate_group
 from robot_experiments.experiment_runner import (
+    _cognitive_admission_components,
     _edge_prior_statistics,
     _episode_validity,
     _localization_node_ownership_evidence,
@@ -530,6 +531,257 @@ def _retirement_stamp(value):
         sec=seconds,
         nanosec=int(round((value - seconds) * 1.0e9)),
     )
+
+
+def _cognitive_admission_runner(*, components=None):
+    runner = object.__new__(ExperimentRunner)
+    runner._scenario = SimpleNamespace(map_version="map-v1")
+    runner._cognitive_admission_components = (
+        {
+            "global_layer": {"mode": "active"},
+            "local_layer": {"mode": "active"},
+            "critic": {"mode": "active"},
+        }
+        if components is None
+        else components
+    )
+    runner._clock_seconds = lambda: 12.0
+    runner._latest_cognitive_layer_statuses = {}
+    runner._latest_planning_prior_readiness = {
+        "reset_epoch": 2,
+        "recurrent_session_id": "session-2",
+        "map_version": "map-v1",
+    }
+    runner._cognitive_admission_ready_timeout_sec = 0.25
+    runner._wait_until = lambda predicate, _timeout: predicate()
+    runner._reset_cognitive_admission_state(
+        barrier_ros_s=10.0,
+        barrier_monotonic=0.0,
+        expected_reset_epoch=2,
+        forbidden_recurrent_session_id="old-session",
+    )
+    return runner
+
+
+def _cognitive_source(
+    sequence, *, epoch=2, session="session-2", map_version="map-v1",
+    validation_stamp=11.0,
+):
+    return SimpleNamespace(
+        sequence=sequence,
+        reset_epoch=epoch,
+        recurrent_session_id=session,
+        map_version=map_version,
+        validation_stamp=_retirement_stamp(validation_stamp),
+    )
+
+
+def _cognitive_status(
+    role,
+    sequence,
+    *,
+    rejected=False,
+    fallback_reason="zero_cost_delta",
+    epoch=2,
+    session="session-2",
+    map_version="map-v1",
+    stamp=11.5,
+):
+    consumers = {
+        "global_layer": "/global_costmap/global_costmap:cognitive_obstacle_layer",
+        "local_layer": "/local_costmap/local_costmap:cognitive_obstacle_layer",
+        "critic": "FollowPath/CognitiveRiskCritic",
+    }
+    return SimpleNamespace(
+        consumer=consumers[role],
+        mode="active",
+        offered=True,
+        applied=False,
+        rejected=rejected,
+        fallback_reason=fallback_reason,
+        source_sequence=sequence,
+        reset_epoch=epoch,
+        recurrent_session_id=session,
+        map_version=map_version,
+        stamp=_retirement_stamp(stamp),
+        message_age_ms=25.0,
+    )
+
+
+def _publish_cognitive_sample(
+    runner, sequence, *, status_overrides=None, source_overrides=None,
+):
+    source_overrides = source_overrides or {}
+    runner._cognitive_obstacle_callback(
+        _cognitive_source(sequence, **source_overrides)
+    )
+    for role in runner._cognitive_admission_components:
+        overrides = dict((status_overrides or {}).get(role, {}))
+        status = _cognitive_status(role, sequence, **overrides)
+        if role == "critic":
+            runner._cognitive_critic_status_callback(status)
+        else:
+            runner._cognitive_layer_status_callback(status)
+
+
+def test_cognitive_admission_blocks_odom_time_until_three_new_healthy_samples():
+    runner = _cognitive_admission_runner()
+    for sequence in range(1, 6):
+        _publish_cognitive_sample(
+            runner,
+            sequence,
+            status_overrides={
+                role: {
+                    "rejected": True,
+                    "fallback_reason": "rejection_reason=odom_time",
+                }
+                for role in runner._cognitive_admission_components
+            },
+        )
+    with pytest.raises(RuntimeError, match="timed out before route dispatch"):
+        runner._wait_for_cognitive_admission_ready()
+
+    for sequence in (6, 7):
+        _publish_cognitive_sample(runner, sequence)
+        with pytest.raises(RuntimeError, match="timed out before route dispatch"):
+            runner._wait_for_cognitive_admission_ready()
+    _publish_cognitive_sample(runner, 8)
+    runner._wait_for_cognitive_admission_ready()
+
+    evidence = runner._cognitive_admission_snapshot()
+    assert evidence["ready"] is True
+    assert all(
+        item["consecutive_healthy_samples"] == 3
+        for item in evidence["components"].values()
+    )
+    assert evidence["components"]["critic"]["latest"][
+        "validation_stamp_vs_sim_time_skew_ms"
+    ] == pytest.approx(1000.0)
+
+
+@pytest.mark.parametrize(
+    ("source_overrides", "status_overrides"),
+    (
+        ({"epoch": 1}, {"epoch": 1}),
+        ({"session": "old-session"}, {"session": "old-session"}),
+        ({"map_version": "old-map"}, {"map_version": "old-map"}),
+        ({"validation_stamp": 9.0}, {"stamp": 9.5}),
+    ),
+    ids=("old-epoch", "old-session", "old-map", "stale"),
+)
+def test_cognitive_admission_rejects_old_identity_and_stale_samples(
+    source_overrides, status_overrides,
+):
+    runner = _cognitive_admission_runner()
+    _publish_cognitive_sample(
+        runner,
+        1,
+        source_overrides=source_overrides,
+        status_overrides={
+            role: status_overrides
+            for role in runner._cognitive_admission_components
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="timed out before route dispatch"):
+        runner._wait_for_cognitive_admission_ready()
+    assert not runner._cognitive_admission_snapshot()["ready"]
+
+
+def test_cognitive_admission_accepts_healthy_zero_cost_no_cell_samples_only_at_three():
+    runner = _cognitive_admission_runner()
+    for sequence in (1, 2):
+        _publish_cognitive_sample(runner, sequence)
+    with pytest.raises(RuntimeError, match="timed out before route dispatch"):
+        runner._wait_for_cognitive_admission_ready()
+
+    _publish_cognitive_sample(runner, 3)
+    runner._wait_for_cognitive_admission_ready()
+    evidence = runner._cognitive_admission_snapshot()
+    assert evidence["ready"] is True
+    assert all(
+        item["latest"]["applied"] is False
+        and item["latest"]["rejected"] is False
+        and item["latest"]["fallback_reason"] == "zero_cost_delta"
+        for item in evidence["components"].values()
+    )
+
+
+def test_cognitive_admission_timeout_cannot_reach_dispatch_and_records_reason():
+    runner = _cognitive_admission_runner()
+    dispatched = []
+    with pytest.raises(RuntimeError, match="timed out before route dispatch"):
+        runner._wait_for_cognitive_admission_ready()
+        dispatched.append(True)
+
+    evidence = runner._cognitive_admission_snapshot()
+    assert dispatched == []
+    assert evidence["status"] == "timeout"
+    assert evidence["ready"] is False
+    assert evidence["reason"].startswith(
+        "cognitive_admission_readiness_timeout:"
+    )
+    summary = {
+        "terminal_zero_confirmed": False,
+        "reset_receipt": {},
+        "reset_receipt_confirmed": False,
+        "contact_sensor_evidence_confirmed": False,
+        "fixed_map_to_odom_evidence_confirmed": True,
+        "data_complete": False,
+        "checksums_verified": False,
+        "cognitive_admission_readiness": evidence,
+    }
+    assert "cognitive_admission_readiness_failed" in _episode_validity(summary)[
+        "invalid_reasons"
+    ]
+
+
+def test_cognitive_admission_component_off_exemption_comes_from_profile():
+    profile = {
+        "controller_server": {
+            "ros__parameters": {
+                "FollowPath": {
+                    "critics": ["CognitiveRiskCritic"],
+                    "CognitiveRiskCritic": {"enabled": False},
+                }
+            }
+        },
+        "global_costmap": {
+            "global_costmap": {
+                "ros__parameters": {
+                    "plugins": ["cognitive_obstacle_layer"],
+                    "cognitive_obstacle_layer": {"enabled": False},
+                }
+            }
+        },
+        "local_costmap": {
+            "local_costmap": {
+                "ros__parameters": {
+                    "plugins": ["cognitive_obstacle_layer"],
+                    "cognitive_obstacle_layer": {"mode": "off"},
+                }
+            }
+        },
+    }
+    assert _cognitive_admission_components(profile) == {}
+    runner = _cognitive_admission_runner(components={})
+    runner._wait_for_cognitive_admission_ready()
+    assert runner._cognitive_admission_snapshot()["status"] == "exempt"
+
+
+def test_v6_profile_requires_both_layers_and_critic():
+    path = (
+        Path(__file__).parents[2]
+        / "robot_navigation/config/nav2_v6_low_obstacle_isolation.yaml"
+    )
+    components = _cognitive_admission_components(
+        yaml.safe_load(path.read_text(encoding="utf-8"))
+    )
+    assert components == {
+        "global_layer": {"mode": "shadow", "maximum_age_s": 0.5},
+        "local_layer": {"mode": "shadow", "maximum_age_s": 0.5},
+        "critic": {"mode": "shadow", "maximum_age_s": 0.5},
+    }
 
 
 def _retirement_clearance_runner(*, rejected, fallback_reason):
@@ -1142,6 +1394,9 @@ def test_cross_reset_completion_callback_cannot_mark_terminal_barrier(monkeypatc
 
 def test_clear_run_state_resets_terminal_zero_observation_fields():
     runner = object.__new__(ExperimentRunner)
+    runner._cognitive_admission_components = {
+        "global_layer": {"mode": "active"}
+    }
     runner._clear_run_state()
     runner._terminal_zero_observation_started_monotonic = 1.0
     runner._terminal_zero_barrier_monotonic = 1.05
@@ -1159,6 +1414,12 @@ def test_clear_run_state_resets_terminal_zero_observation_fields():
     runner._cmd_vel_sim_last_receive_monotonic = 2.0
     runner._cmd_vel_sim_last_nonzero_monotonic = 1.2
     runner._cmd_vel_sim_zero_stamps = [1.3, 1.9]
+    runner._cognitive_admission_sources[(2, "session", "map", 7)] = {
+        "validation_stamp_s": 2.0,
+        "received_at": 3.0,
+    }
+    runner._cognitive_admission_streaks["global_layer"] = 3
+    runner._cognitive_admission_last_sequences["global_layer"] = 7
 
     runner._clear_run_state()
 
@@ -1173,6 +1434,12 @@ def test_clear_run_state_resets_terminal_zero_observation_fields():
     assert runner._terminal_zero_first_zero_monotonic is None
     assert runner._terminal_zero_last_zero_monotonic is None
     assert runner._terminal_zero_confirming_sample_count == 0
+    assert runner._cognitive_admission_sources == {}
+    assert runner._cognitive_admission_streaks == {"global_layer": 0}
+    assert runner._cognitive_admission_last_sequences == {"global_layer": -1}
+    assert runner._cognitive_admission_barrier_ros_s is None
+    assert runner._cognitive_admission_expected_reset_epoch is None
+    assert runner._cognitive_admission_forbidden_recurrent_session_id is None
     assert not runner._terminal_zero_confirmed
     assert runner._terminal_zero_reason == "not_checked"
     assert runner._cmd_vel_sim_last_receive_monotonic is None
@@ -1399,6 +1666,7 @@ def _static_sat_evidence_run(
     stack_session_id: str = "",
     formal_freeze_digest: str = "",
     path_deviation_percent: float | None = None,
+    cognitive_admission_timeout: bool = False,
 ):
     scenario = load_scenario(
         Path(__file__).parents[1] / "config" / "static.yaml"
@@ -1502,6 +1770,21 @@ def _static_sat_evidence_run(
     runner._reset_receipt = {"generation": 1}
     runner._record_bag = False
     runner._fail_stop_metric_contract = None
+    if cognitive_admission_timeout:
+        runner._cognitive_admission_components = {
+            "global_layer": {"mode": "active", "maximum_age_s": 0.5},
+            "local_layer": {"mode": "active", "maximum_age_s": 0.5},
+            "critic": {"mode": "active", "maximum_age_s": 0.5},
+        }
+        runner._reset_cognitive_admission_state(
+            barrier_ros_s=10.0,
+            barrier_monotonic=0.0,
+            expected_reset_epoch=2,
+        )
+        runner._cognitive_admission_result_status = "timeout"
+        runner._cognitive_admission_result_reason = (
+            "cognitive_admission_readiness_timeout:critic=0,global_layer=0,local_layer=0"
+        )
     if collision_monitor_stop:
         runner._collision_lock_timeout_sec = 0.0
         runner._lookup_fresh_map_to_odom = lambda: None
@@ -1528,7 +1811,8 @@ def _static_sat_evidence_run(
 
     root = tmp_path / "run-0002-seed-7301"
     root.mkdir()
-    (root / "TRIAL_DISPATCHED.json").write_text("{}\n", encoding="utf-8")
+    if not cognitive_admission_timeout:
+        (root / "TRIAL_DISPATCHED.json").write_text("{}\n", encoding="utf-8")
 
     def write_files(names):
         for name in names:
@@ -1548,6 +1832,25 @@ def _static_sat_evidence_run(
         manifest, 7301, 2, root, bag_complete=False
     )
     return runner, manifest, summary, root
+
+
+def test_cognitive_admission_timeout_is_manifested_as_startup_invalid(tmp_path):
+    _runner, manifest, summary, root = _static_sat_evidence_run(
+        tmp_path,
+        obstacle_position=None,
+        contact_sensor_collision=False,
+        cognitive_admission_timeout=True,
+    )
+
+    assert not (root / "TRIAL_DISPATCHED.json").exists()
+    assert manifest["cognitive_admission_readiness"]["status"] == "timeout"
+    assert manifest["cognitive_admission_readiness"]["ready"] is False
+    assert summary["startup_invalid_reason"].startswith(
+        "cognitive_admission_readiness_timeout:"
+    )
+    assert "cognitive_admission_readiness_failed" in summary[
+        "episode_validity"
+    ]["invalid_reasons"]
 
 
 def test_run_evidence_records_condition_stack_attestation(tmp_path):
