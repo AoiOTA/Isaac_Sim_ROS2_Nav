@@ -1630,6 +1630,82 @@ def _write_indoor_production_pilot_root(tmp_path: Path, monkeypatch):
     return pilot_root
 
 
+def _write_outdoor_production_pilot_root(tmp_path: Path, monkeypatch):
+    pilot_root = _write_production_pilot_root(tmp_path, monkeypatch)
+    for condition_id in set(v6_formal_module.FORMAL_CONDITION_IDS) - set(
+        v6_formal_module.OUTDOOR_CONDITION_IDS
+    ):
+        shutil.rmtree(pilot_root / condition_id)
+    winner = tmp_path / "viewport-winner.json"
+    winner.write_text(json.dumps({
+        "winner": {
+            "viewport_arm": "B",
+            "disable_viewport_updates_requested": True,
+            "disable_viewport_updates_observed": True,
+        }
+    }))
+    monkeypatch.setenv(
+        "BIO_NAV_RIVERMARK_STARTUP_WINNER_ATTESTATION", str(winner.resolve())
+    )
+    winner_digest = hashlib.sha256(winner.read_bytes()).hexdigest()
+    repositories = {
+        name: v6_formal_module._repository_freeze_entry_with_tree(path)
+        for name, path in {
+            "integration": REPO.parent / "bio_nav_integration",
+            "module2": REPO.parent / "bio_nav_module2",
+            "module3": REPO,
+        }.items()
+    }
+    for condition_id in v6_formal_module.OUTDOOR_CONDITION_IDS:
+        for rep in range(1, 4):
+            rep_root = pilot_root / condition_id / f"rep{rep}"
+            run_root = next(rep_root.glob("*/run-*"))
+            stack_path = run_root / "stack_contract.json"
+            stack = json.loads(stack_path.read_text())
+            stack["schema"] = v6_formal_module.STACK_CONTRACT_SCHEMA
+            for name in repositories:
+                stack[f"{name}_tree"] = repositories[name]["tree"]
+            stack.update({
+                "viewport_arm": "B",
+                "disable_viewport_updates_requested": True,
+                "disable_viewport_updates_observed": True,
+                "viewport_startup_attestation_sha256": winner_digest,
+            })
+            stack["stack_session_id"] = v6_formal_module._stack_session_id(stack)
+            stack_path.write_text(json.dumps(stack))
+            manifest_path = run_root / "run_manifest.json"
+            summary_path = run_root / "run_summary.json"
+            manifest = json.loads(manifest_path.read_text())
+            summary = json.loads(summary_path.read_text())
+            receipt = manifest["stack_episode_receipt"]
+            receipt.update({
+                "stack_session_id": stack["stack_session_id"],
+                "viewport_arm": "B",
+                "disable_viewport_updates_requested": True,
+                "disable_viewport_updates_observed": True,
+                "viewport_startup_attestation_sha256": winner_digest,
+            })
+            manifest["stack_session_id"] = stack["stack_session_id"]
+            summary["stack_session_id"] = stack["stack_session_id"]
+            summary["condition_stack_attestation"].update({
+                "stack_session_id": stack["stack_session_id"],
+                "stack_episode_receipt": receipt,
+                "viewport_arm": "B",
+                "disable_viewport_updates_requested": True,
+                "disable_viewport_updates_observed": True,
+                "viewport_startup_attestation_sha256": winner_digest,
+            })
+            manifest_path.write_text(json.dumps(manifest))
+            summary_path.write_text(json.dumps(summary))
+            _refresh_checksums(run_root)
+            sidecars = [path for path in rep_root.iterdir() if path.is_file()]
+            stem = sidecars[0].stem
+            for path in sidecars:
+                path.unlink()
+            write_run_report(manifest, rep_root, stem)
+    return pilot_root
+
+
 def ready_facts() -> ReadinessFacts:
     return ReadinessFacts(
         **{name: True for name in ReadinessFacts.__dataclass_fields__}
@@ -2633,12 +2709,9 @@ def test_indoor_pilot_aggregate_publishes_only_nine_indoor_runs(
     aggregate = json.loads(aggregate_output.read_text())
     pilot_manifest = json.loads(manifest_output.read_text())
     assert aggregate["schema_version"] == v6_formal_module.INDOOR_PILOT_AGGREGATE_SCHEMA
-    assert aggregate["validator_only_head_promotion"]["schema"] == (
-        "bio_nav.v6_validator_only_head_promotion.v1"
-    )
-    assert result["validator_only_head_promotion"] == aggregate[
-        "validator_only_head_promotion"
-    ]
+    assert "validator_only_head_promotion" not in aggregate
+    assert "validator_only_head_promotion" not in pilot_manifest["freeze"]
+    assert result["validator_only_head_promotion"] is None
     assert [row["id"] for row in aggregate["conditions"]] == list(
         v6_formal_module.INDOOR_CONDITION_IDS
     )
@@ -2659,6 +2732,226 @@ def test_indoor_pilot_aggregate_publishes_only_nine_indoor_runs(
             "path": str(experiment_launch),
             "sha256": "e11de8da7b00e75d1ad99ec09adf74aeccd8471b3e28c5a653a10c01d0a1bef5",
         }]
+
+
+def test_same_exact_tuple_skips_validator_promotion(monkeypatch):
+    freeze = {
+        "repositories": {"module3": {"path": "/m3", "head": "a", "tree": "t"}},
+        "driver_version": "driver",
+        "kernel_release": "kernel",
+    }
+    monkeypatch.setattr(
+        v6_formal_module,
+        "_build_validator_only_head_promotion",
+        lambda **_kwargs: pytest.fail("same tuple must not enter promotion"),
+    )
+    assert v6_formal_module._validator_promotion_if_needed(
+        freeze=freeze,
+        pilot_runtime=json.loads(json.dumps(freeze)),
+    ) is None
+
+
+def test_outdoor_pilot_aggregate_and_freeze_publish_nine_b_attested_runs(
+    tmp_path, monkeypatch
+):
+    pilot_root = _write_outdoor_production_pilot_root(tmp_path, monkeypatch)
+    manifest_output = tmp_path / "nas" / "outdoor-pilot-manifest.json"
+    aggregate_output = tmp_path / "nas" / "outdoor-pilot-aggregate.json"
+    result = v6_formal_module.aggregate_outdoor_pilot(
+        pilot_root=pilot_root,
+        output_manifest=manifest_output,
+        output_aggregate=aggregate_output,
+    )
+    assert result["qualification"] == "OUTDOOR_PILOT_READY"
+    assert result["strict_successes"] == 9
+    aggregate = json.loads(aggregate_output.read_text())
+    assert [row["id"] for row in aggregate["conditions"]] == list(
+        v6_formal_module.OUTDOOR_CONDITION_IDS
+    )
+    campaign_path = tmp_path / "nas" / "outdoor-campaign.json"
+    campaign = v6_formal_module.freeze_outdoor_campaign_from_pilot(
+        pilot_manifest_path=manifest_output,
+        pilot_aggregate_path=aggregate_output,
+        output_manifest_path=campaign_path,
+        outdoor_output_root=tmp_path / "nas" / "outdoor-runs",
+    )
+    assert len(campaign.pilot_freeze_provenance["episodes"]) == 9
+    assert campaign.freeze["frozen_assets"][
+        "rivermark_viewport_startup_winner_attestation"
+    ]["sha256"]
+
+
+def test_outdoor_thresholds_are_static_19_dynamic_appearance_18():
+    assert v6_formal_module.OUTDOOR_SUCCESS_THRESHOLDS == {
+        "outdoor_static": 19,
+        "outdoor_dynamic": 18,
+        "outdoor_appearance": 18,
+    }
+
+
+def test_outdoor_and_combine_wrapper_cli_contracts_are_exposed():
+    wrapper = (REPO / "scripts/run_v6_formal_episode.sh").read_text()
+    for token in (
+        "--aggregate-outdoor-pilot", "--freeze-outdoor-pilot",
+        "--execute-outdoor", "--combine-qualified-halves",
+    ):
+        assert token in wrapper
+    parser = v6_formal_module.build_parser()
+    parsed = parser.parse_args(["--combine-qualified-halves", "/indoor", "/outdoor"])
+    assert parsed.combine_qualified_halves == ["/indoor", "/outdoor"]
+
+
+def test_different_head_keeps_existing_validator_promotion(monkeypatch):
+    freeze = {
+        "repositories": {"module3": {"path": "/m3", "head": "b"}},
+        "driver_version": "driver",
+        "kernel_release": "kernel",
+    }
+    expected = {"schema": "bio_nav.v6_validator_only_head_promotion.v1"}
+    monkeypatch.setattr(
+        v6_formal_module,
+        "_build_validator_only_head_promotion",
+        lambda **_kwargs: expected,
+    )
+    assert v6_formal_module._validator_promotion_if_needed(
+        freeze=freeze,
+        pilot_runtime={
+            **freeze,
+            "repositories": {"module3": {"path": "/m3", "head": "a"}},
+        },
+    ) == expected
+
+
+def test_viewport_winner_attestation_requires_b_requested_and_observed(tmp_path):
+    path = tmp_path / "winner.json"
+    path.write_text(json.dumps({
+        "winner": {
+            "viewport_arm": "B",
+            "disable_viewport_updates": {"requested": True, "observed": True},
+        }
+    }))
+    parsed = v6_formal_module._viewport_winner_attestation(path)
+    assert parsed["viewport_arm"] == "B"
+    assert parsed["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    path.write_text(json.dumps({
+        "winner": {
+            "viewport_arm": "B",
+            "disable_viewport_updates": {"requested": True, "observed": False},
+        }
+    }))
+    with pytest.raises(V6ContractError, match="requested/observed"):
+        v6_formal_module._viewport_winner_attestation(path)
+
+
+@pytest.mark.parametrize("mutation", ["missing", "mismatch"])
+def test_outdoor_stack_rejects_missing_or_mismatched_viewport_attestation(
+    tmp_path, mutation
+):
+    path = _live_stack_contract(tmp_path, condition_id="outdoor_static")
+    payload = json.loads(path.read_text())
+    repositories = {}
+    for name, root in {
+        "integration": REPO.parent / "bio_nav_integration",
+        "module2": REPO.parent / "bio_nav_module2",
+        "module3": REPO,
+    }.items():
+        repositories[name] = v6_formal_module._repository_freeze_entry_with_tree(root)
+        payload[f"{name}_tree"] = repositories[name]["tree"]
+    payload.update({
+        "schema": v6_formal_module.STACK_CONTRACT_SCHEMA,
+        "viewport_arm": "B",
+        "disable_viewport_updates_requested": True,
+        "disable_viewport_updates_observed": True,
+        "viewport_startup_attestation_sha256": "a" * 64,
+    })
+    if mutation == "missing":
+        payload["disable_viewport_updates_observed"] = None
+    else:
+        payload["viewport_startup_attestation_sha256"] = "b" * 64
+    payload["stack_session_id"] = v6_formal_module._stack_session_id(payload)
+    path.write_text(json.dumps(payload))
+    freeze = {
+        "repositories": repositories,
+        "driver_version": payload["driver_version"],
+        "kernel_release": payload["kernel_release"],
+        "frozen_assets": {
+            "rivermark_viewport_startup_winner_attestation": {
+                "path": str(tmp_path / "winner.json"), "sha256": "a" * 64,
+            }
+        },
+    }
+    with pytest.raises(V6ContractError, match="viewport arm attestation"):
+        v6_formal_module._load_stack_contract_snapshot(
+            path, expected_condition_id="outdoor_static", freeze=freeze
+        )
+
+
+def test_combine_rejects_mixed_repository_tuple_before_evidence(monkeypatch):
+    common = {
+        "repositories": {
+            "integration": {"path": "/i", "head": "a", "tree": "t"},
+            "module2": {"path": "/m2", "head": "b", "tree": "u"},
+            "module3": {"path": "/m3", "head": "c", "tree": "v"},
+        },
+        "driver_version": "driver", "kernel_release": "kernel",
+        "frozen_assets": {}, "runner_entrypoint": {},
+        "experiment_runner": {}, "v6_formal": {},
+    }
+    indoor = SimpleNamespace(freeze=json.loads(json.dumps(common)))
+    outdoor = SimpleNamespace(freeze=json.loads(json.dumps(common)))
+    outdoor.freeze["repositories"]["module3"]["head"] = "different"
+    monkeypatch.setattr(v6_formal_module, "load_indoor_campaign_manifest", lambda _p: indoor)
+    monkeypatch.setattr(v6_formal_module, "load_outdoor_campaign_manifest", lambda _p: outdoor)
+    monkeypatch.setattr(v6_formal_module, "evaluate_indoor_campaign", lambda _m: {
+        "qualification": "INDOOR_QUALIFICATION_PASS", "present_episodes": 60,
+        "valid_episodes": 60,
+    })
+    monkeypatch.setattr(v6_formal_module, "evaluate_outdoor_campaign", lambda _m: {
+        "qualification": "OUTDOOR_QUALIFICATION_PASS", "present_episodes": 60,
+        "valid_episodes": 60,
+    })
+    with pytest.raises(V6ContractError, match=r"HEAD\+tree tuple mismatch"):
+        v6_formal_module.combine_qualified_halves("indoor", "outdoor")
+
+
+def test_half_evidence_digest_rereads_exactly_sixty_runs(tmp_path, monkeypatch):
+    conditions = []
+    for condition_index, condition_id in enumerate(v6_formal_module.INDOOR_CONDITION_IDS):
+        scenario_id = f"scenario-{condition_index}"
+        output = tmp_path / condition_id
+        identities = tuple(
+            {"seed": 1000 + condition_index * 20 + index} for index in range(20)
+        )
+        for run_index, identity in enumerate(identities, start=1):
+            root = output / scenario_id / f"run-{run_index:04d}-seed-{identity['seed']}"
+            root.mkdir(parents=True)
+            for name in (
+                "run_summary.json", "run_manifest.json", "checksums.sha256",
+                "stack_contract.json",
+            ):
+                (root / name).write_text(f"{condition_id}:{run_index}:{name}")
+        conditions.append(v6_formal_module.FormalCondition(
+            condition_id, "indoor", condition_id.split("_", 1)[1],
+            tmp_path / "scenario.yaml", output, (), scenario_id, identities,
+        ))
+    calls = []
+    monkeypatch.setattr(
+        v6_formal_module, "_load_stack_contract_snapshot",
+        lambda path, **_kwargs: (
+            calls.append(path) or {"schema": v6_formal_module.STACK_CONTRACT_SCHEMA},
+            hashlib.sha256(str(path).encode()).hexdigest(),
+        ),
+    )
+    digest = v6_formal_module._half_evidence_digest(
+        SimpleNamespace(conditions=tuple(conditions), freeze={})
+    )
+    assert len(digest) == 64
+    assert len(calls) == 60
+    calls[-1].unlink()
+    with pytest.raises(V6ContractError, match="core file is missing"):
+        v6_formal_module._half_evidence_digest(
+            SimpleNamespace(conditions=tuple(conditions), freeze={})
+        )
 
 
 def test_indoor_pilot_aggregate_rejects_non_indoor_root(tmp_path, monkeypatch):

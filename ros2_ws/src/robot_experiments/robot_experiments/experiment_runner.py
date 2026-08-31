@@ -7596,6 +7596,7 @@ class ExperimentRunner(Node):
         condition_stack_id = getattr(self, "_condition_stack_id", "")
         stack_session_id = getattr(self, "_stack_session_id", "")
         formal_freeze_digest = getattr(self, "_formal_freeze_digest", "")
+        stack_contract = getattr(self, "_condition_stack_contract", {})
         condition_stack_attestation = {
             "required": bool(condition_stack_id),
             "condition_stack_id": condition_stack_id or None,
@@ -7605,6 +7606,16 @@ class ExperimentRunner(Node):
                 manifest.get("stack_episode_receipt", {})
             ),
             "confirmed": bool(condition_stack_id and stack_session_id),
+            "viewport_arm": stack_contract.get("viewport_arm"),
+            "disable_viewport_updates_requested": stack_contract.get(
+                "disable_viewport_updates_requested"
+            ),
+            "disable_viewport_updates_observed": stack_contract.get(
+                "disable_viewport_updates_observed"
+            ),
+            "viewport_startup_attestation_sha256": stack_contract.get(
+                "viewport_startup_attestation_sha256"
+            ),
         }
         manifest["condition_stack_attestation"] = condition_stack_attestation
         manifest["localization_node_ownership"] = localization_node_ownership
@@ -8018,6 +8029,16 @@ class ExperimentRunner(Node):
             "t2_selector_path": self._condition_stack_contract.get("t2_selector_path"),
             "t2_selector_sha256": self._condition_stack_contract.get(
                 "t2_selector_sha256"
+            ),
+            "viewport_arm": self._condition_stack_contract.get("viewport_arm"),
+            "disable_viewport_updates_requested": self._condition_stack_contract.get(
+                "disable_viewport_updates_requested"
+            ),
+            "disable_viewport_updates_observed": self._condition_stack_contract.get(
+                "disable_viewport_updates_observed"
+            ),
+            "viewport_startup_attestation_sha256": self._condition_stack_contract.get(
+                "viewport_startup_attestation_sha256"
             ),
         }
 

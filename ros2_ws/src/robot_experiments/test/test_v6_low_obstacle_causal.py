@@ -3167,6 +3167,14 @@ wait "$!"
     route_prior_catalog.mkdir()
     (route_prior_catalog / "catalog.json").write_text(
         "{}\n", encoding="utf-8")
+    viewport_attestation = tmp_path / "viewport-winner.json"
+    viewport_attestation.write_text(json.dumps({
+        "winner": {
+            "viewport_arm": "B",
+            "disable_viewport_updates_requested": True,
+            "disable_viewport_updates_observed": True,
+        }
+    }), encoding="utf-8")
     run_dir = tmp_path / "run"
     socket_path = tmp_path / "socket/module2.sock"
     runtime_dir = tmp_path / "runtime"
@@ -3221,6 +3229,8 @@ wait "$!"
             "--scene", scene,
             "--condition", condition,
             "--route-prior-catalog-root", str(route_prior_catalog),
+            "--viewport-arm", "B",
+            "--viewport-attestation", str(viewport_attestation),
         ])
     if localization_supervisor_mode is not None:
         command.extend(
@@ -3400,6 +3410,14 @@ def test_phase_f_rivermark_m3_dry_run_uses_catalog_and_generic_assets(
     catalog = tmp_path / "rivermark catalog"
     catalog.mkdir()
     (catalog / "catalog.json").write_text("{}\n", encoding="utf-8")
+    viewport_attestation = tmp_path / "viewport-winner.json"
+    viewport_attestation.write_text(json.dumps({
+        "winner": {
+            "viewport_arm": "B",
+            "disable_viewport_updates_requested": True,
+            "disable_viewport_updates_observed": True,
+        }
+    }), encoding="utf-8")
     result = subprocess.run(
         [
             str(root / "scripts/run_v6_low_obstacle_phase_f_stack.sh"),
@@ -3410,6 +3428,8 @@ def test_phase_f_rivermark_m3_dry_run_uses_catalog_and_generic_assets(
             "--socket", str(tmp_path / "module2.sock"),
             "--module2-asset-root", str(tmp_path / "module2-assets"),
             "--route-prior-catalog-root", str(catalog),
+            "--viewport-arm", "B",
+            "--viewport-attestation", str(viewport_attestation),
             "--dry-run",
         ],
         capture_output=True,
@@ -3421,6 +3441,9 @@ def test_phase_f_rivermark_m3_dry_run_uses_catalog_and_generic_assets(
     assert f"condition={condition}" in result.stdout
     assert "route_prior_enabled=true" in result.stdout
     assert f"route_prior_snapshot_catalog_root={catalog}" in result.stdout
+    assert "viewport_arm=B" in result.stdout
+    assert "disable_viewport_updates_requested=true" in result.stdout
+    assert "disable_viewport_updates_observed=true" in result.stdout
     assert "route_prior_snapshot_path" not in result.stdout
     assert (
         "module2_assets: --config configs/module2_pdf_v310_module3.yaml "

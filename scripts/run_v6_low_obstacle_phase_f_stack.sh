@@ -11,6 +11,7 @@ usage() {
   echo "       [--localization-supervisor-mode shadow|active --candidate-manifest PATH]" >&2
   echo "       [--enable-route-prior --route-prior-snapshot PATH]" >&2
   echo "       [--route-prior-catalog-root PATH] [--dry-run]" >&2
+  echo "       outdoor requires --viewport-arm B --viewport-attestation PATH" >&2
   echo "       BIO_NAV_MODULE2_V310_ROOT or --module2-root must name the canonical Module2 root" >&2
   echo "       $0 stop-producer --run-dir PATH --socket PATH" >&2
 }
@@ -130,7 +131,10 @@ write_process_identity() {
 write_stack_contract() {
   local directory="$1" condition_id="$2" scene_name="$3" condition_name="$4"
   local arm_name="$5" domain="$6" profile="$7" pid="$8" pgid="$9"
+  local viewport_arm_name="${10}" viewport_requested="${11}"
+  local viewport_observed="${12}" viewport_attestation_sha256="${13}"
   local start_ticks boot_id temporary integration_head module2_head module3_head
+  local integration_tree module2_tree module3_tree
   local driver_version kernel_release module3_root
   local t2_selector t2_selector_sha256 sequence_path
   start_ticks="$(awk '{print $22}' "/proc/${pid}/stat")"
@@ -139,6 +143,9 @@ write_stack_contract() {
   integration_head="$(git -C "${integration_root}" rev-parse HEAD)"
   module2_head="$(git -C "${module2_root}" rev-parse HEAD)"
   module3_head="$(git -C "${module3_root}" rev-parse HEAD)"
+  integration_tree="$(git -C "${integration_root}" rev-parse 'HEAD^{tree}')"
+  module2_tree="$(git -C "${module2_root}" rev-parse 'HEAD^{tree}')"
+  module3_tree="$(git -C "${module3_root}" rev-parse 'HEAD^{tree}')"
   git -C "${integration_root}" diff --quiet HEAD -- \
     && git -C "${integration_root}" diff --cached --quiet \
     || { echo "Integration tracked state is dirty" >&2; return 1; }
@@ -161,7 +168,10 @@ write_stack_contract() {
     "${pid}" "${pgid}" "${start_ticks}" "${boot_id}" \
     "${integration_head}" "${module2_head}" "${module3_head}" \
     "${driver_version}" "${kernel_release}" "${t2_selector}" \
-    "${t2_selector_sha256}" "${sequence_path}" <<'PY'
+    "${t2_selector_sha256}" "${sequence_path}" \
+    "${integration_tree}" "${module2_tree}" "${module3_tree}" \
+    "${viewport_arm_name}" "${viewport_requested}" "${viewport_observed}" \
+    "${viewport_attestation_sha256}" <<'PY'
 import hashlib
 import json
 import os
@@ -170,7 +180,7 @@ import sys
 
 target = Path(sys.argv[1])
 payload = {
-    "schema": "bio_nav.v6_stack_contract.v1",
+    "schema": "bio_nav.v6_stack_contract.v2",
     "condition_id": sys.argv[2],
     "scene": sys.argv[3],
     "condition": sys.argv[4],
@@ -184,6 +194,9 @@ payload = {
     "integration_head": sys.argv[12],
     "module2_head": sys.argv[13],
     "module3_head": sys.argv[14],
+    "integration_tree": sys.argv[20],
+    "module2_tree": sys.argv[21],
+    "module3_tree": sys.argv[22],
     "integration_dirty": False,
     "module2_dirty": False,
     "module3_dirty": False,
@@ -192,6 +205,14 @@ payload = {
     "t2_selector_path": sys.argv[17],
     "t2_selector_sha256": sys.argv[18],
     "episode_sequence_path": sys.argv[19],
+    "viewport_arm": sys.argv[23],
+    "disable_viewport_updates_requested": (
+        sys.argv[24] == "true" if sys.argv[24] != "not_applicable" else "not_applicable"
+    ),
+    "disable_viewport_updates_observed": (
+        sys.argv[25] == "true" if sys.argv[25] != "not_applicable" else "not_applicable"
+    ),
+    "viewport_startup_attestation_sha256": sys.argv[26],
 }
 canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
 payload["stack_session_id"] = hashlib.sha256(canonical.encode()).hexdigest()
@@ -408,6 +429,8 @@ candidate_manifest=""
 route_prior_enabled="false"
 route_prior_snapshot=""
 route_prior_catalog_root=""
+viewport_arm=""
+viewport_attestation=""
 scene="kujiale"
 condition="static"
 dry_run=false
@@ -441,6 +464,14 @@ while (($#)); do
       ;;
     --route-prior-catalog-root)
       route_prior_catalog_root="${2:?--route-prior-catalog-root requires a path}"
+      shift 2
+      ;;
+    --viewport-arm)
+      viewport_arm="${2:?--viewport-arm requires B}"
+      shift 2
+      ;;
+    --viewport-attestation)
+      viewport_attestation="${2:?--viewport-attestation requires a path}"
       shift 2
       ;;
     --dry-run) dry_run=true; shift ;;
@@ -502,9 +533,48 @@ if [[ "${scene}" == "rivermark" ]]; then
   }
   route_prior_catalog_root="$(cd "${route_prior_catalog_root}" && pwd -P)"
   route_prior_enabled="true"
+  [[ "${viewport_arm}" == "B" ]] || {
+    echo "Rivermark qualification requires explicit --viewport-arm B" >&2
+    exit 2
+  }
+  [[ "${viewport_attestation}" == /* && -r "${viewport_attestation}" ]] || {
+    echo "Rivermark qualification requires an absolute readable viewport attestation" >&2
+    exit 2
+  }
+  viewport_attestation="$(readlink -f -- "${viewport_attestation}")"
+  viewport_attestation_sha256="$(sha256sum "${viewport_attestation}" | awk '{print $1}')"
+  python3 - "${viewport_attestation}" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+winner = payload.get("winner", payload) if isinstance(payload, dict) else {}
+setting = winner.get("disable_viewport_updates", {})
+arm = winner.get("viewport_arm", winner.get("selected_arm"))
+requested = winner.get("disable_viewport_updates_requested")
+observed = winner.get("disable_viewport_updates_observed")
+if isinstance(setting, dict):
+    requested = setting.get("requested", requested)
+    observed = setting.get("observed", observed)
+if arm != "B" or requested is not True or observed is not True:
+    raise SystemExit("viewport attestation does not prove winner B requested/observed true")
+PY
+  viewport_requested="true"
+  viewport_observed="true"
 elif [[ -n "${route_prior_catalog_root}" ]]; then
   echo "--route-prior-catalog-root requires --scene rivermark" >&2
   exit 2
+fi
+if [[ "${scene}" != "rivermark" ]]; then
+  [[ -z "${viewport_arm}" && -z "${viewport_attestation}" ]] || {
+    echo "viewport qualification options are outdoor-only" >&2
+    exit 2
+  }
+  viewport_arm="not_applicable"
+  viewport_requested="not_applicable"
+  viewport_observed="not_applicable"
+  viewport_attestation_sha256="not_applicable"
 fi
 if [[ "${route_prior_enabled}" == true ]]; then
   [[ "${arm}" == "M3" ]] || {
@@ -594,6 +664,11 @@ if [[ "${dry_run}" == true ]]; then
     printf 'route_prior_snapshot_catalog_root=%s\n' \
       "${route_prior_catalog_root}"
     printf 'route_prior_semantics=region_catalog_context_switch\n'
+    printf 'viewport_arm=%s\n' "${viewport_arm}"
+    printf 'disable_viewport_updates_requested=%s\n' "${viewport_requested}"
+    printf 'disable_viewport_updates_observed=%s\n' "${viewport_observed}"
+    printf 'viewport_startup_attestation_sha256=%s\n' \
+      "${viewport_attestation_sha256}"
   fi
   if [[ "${arm}" != "M0" ]]; then
     printf 'module2_assets:'
@@ -877,7 +952,8 @@ stack_pgid="$(process_group_of_pid "$$")"
 write_process_identity stack "${run_dir}" "$$" "${stack_pgid}"
 write_stack_contract "${run_dir}" "${condition_id}" "${contract_scene}" \
   "${condition}" "${arm}" "${domain_id}" "${startup_profile}" \
-  "$$" "${stack_pgid}"
+  "$$" "${stack_pgid}" "${viewport_arm}" "${viewport_requested}" \
+  "${viewport_observed}" "${viewport_attestation_sha256}"
 
 module3_localization_args=()
 module3_route_args=(

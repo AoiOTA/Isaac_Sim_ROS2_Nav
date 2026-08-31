@@ -50,6 +50,10 @@ INDOOR_PILOT_MANIFEST_SCHEMA = "bio_nav_v6_indoor_pilot_manifest_v2"
 INDOOR_PILOT_AGGREGATE_SCHEMA = "bio_nav_v6_indoor_pilot_aggregate_v2"
 INDOOR_CAMPAIGN_SCHEMA_VERSION = "bio_nav_v6_indoor_campaign_v2"
 INDOOR_CONTINUATION_SCHEMA_VERSION = "bio_nav.v6_indoor_continuation.v1"
+OUTDOOR_PILOT_MANIFEST_SCHEMA = "bio_nav_v6_outdoor_pilot_manifest_v1"
+OUTDOOR_PILOT_AGGREGATE_SCHEMA = "bio_nav_v6_outdoor_pilot_aggregate_v1"
+OUTDOOR_CAMPAIGN_SCHEMA_VERSION = "bio_nav_v6_outdoor_campaign_v1"
+COMBINED_HALVES_SCHEMA_VERSION = "bio_nav_v6_combined_qualified_halves_v1"
 FORMAL_NAS_ROOT = Path("/mnt/nas_home")
 PILOT_SCENARIO_FILENAMES = {
     "indoor_static": "v6_final_kujiale_static.yaml",
@@ -61,22 +65,32 @@ PILOT_SCENARIO_FILENAMES = {
 }
 FORMAL_CONDITION_IDS = (
     "indoor_static",
+    "indoor_dynamic",
+    "indoor_appearance",
     "outdoor_static",
     "outdoor_dynamic",
     "outdoor_appearance",
-    "indoor_dynamic",
-    "indoor_appearance",
 )
 INDOOR_CONDITION_IDS = (
     "indoor_static",
     "indoor_dynamic",
     "indoor_appearance",
 )
+OUTDOOR_CONDITION_IDS = (
+    "outdoor_static",
+    "outdoor_dynamic",
+    "outdoor_appearance",
+)
 FORMAL_RUNS_PER_CONDITION = 20
 INDOOR_SUCCESS_THRESHOLDS = {
     "indoor_static": 19,
     "indoor_dynamic": 18,
     "indoor_appearance": 18,
+}
+OUTDOOR_SUCCESS_THRESHOLDS = {
+    "outdoor_static": 19,
+    "outdoor_dynamic": 18,
+    "outdoor_appearance": 18,
 }
 FORMAL_SUCCESS_THRESHOLDS = {
     condition_id: (19 if condition_id.endswith("_static") else 18)
@@ -125,6 +139,26 @@ INDOOR_FROZEN_ASSET_KEYS = frozenset({
     "indoor_route_prior_valid_state_mask",
     "indoor_map_yaml",
     "indoor_map_pgm",
+})
+OUTDOOR_FROZEN_ASSET_KEYS = frozenset({
+    "module1_checkpoint",
+    "module2_srdr_checkpoint",
+    "module2_visual_heads_shadow_checkpoint",
+    "selected_run4_visual_heads_checkpoint",
+    "dino_checkpoint",
+    "rivermark_usd",
+    "rivermark_catalog",
+    "rivermark_catalog_constraints_tree",
+    "rivermark_viewport_startup_winner_attestation",
+    "outdoor_map_yaml",
+    "outdoor_map_pgm",
+})
+COMMON_HALF_ASSET_KEYS = frozenset({
+    "module1_checkpoint",
+    "module2_srdr_checkpoint",
+    "module2_visual_heads_shadow_checkpoint",
+    "selected_run4_visual_heads_checkpoint",
+    "dino_checkpoint",
 })
 NOT_QUALIFIED = "NOT_QUALIFIED"
 ENGINEERING_PILOT = "ENGINEERING_PILOT"
@@ -310,6 +344,16 @@ class IndoorCampaignManifest:
     conditions: tuple[FormalCondition, ...]
 
 
+@dataclass(frozen=True)
+class OutdoorCampaignManifest:
+    path: Path
+    runner_entrypoint: Path
+    freeze: Mapping[str, Any]
+    freeze_digest: str
+    pilot_freeze_provenance: Mapping[str, Any]
+    conditions: tuple[FormalCondition, ...]
+
+
 def _file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -412,13 +456,15 @@ def _validate_formal_freeze(
     }
     if expected_physical_contracts is not None:
         required_freeze_keys.add("physical_contracts")
-        required_freeze_keys.add("validator_only_head_promotion")
+        if isinstance(value, Mapping) and "validator_only_head_promotion" in value:
+            required_freeze_keys.add("validator_only_head_promotion")
         continuation_present = isinstance(value, Mapping) and (
             "indoor_continuation" in value
             or "qualification_tooling_promotion" in value
         )
         if continuation_present:
             required_freeze_keys.update({
+                "validator_only_head_promotion",
                 "indoor_continuation",
                 "qualification_tooling_promotion",
             })
@@ -434,7 +480,10 @@ def _validate_formal_freeze(
     normalized_repositories: dict[str, dict[str, str]] = {}
     for name, value_entry in repositories.items():
         entry = _mapping(value_entry, f"freeze.repositories.{name}")
-        _require_exact_keys(entry, {"path", "head"}, f"freeze.repositories.{name}")
+        if set(entry) not in ({"path", "head"}, {"path", "head", "tree"}):
+            raise V6ContractError(
+                f"freeze.repositories.{name} must bind path/head and optional tree"
+            )
         repo_path = Path(str(entry.get("path", ""))).expanduser()
         if not repo_path.is_absolute():
             raise V6ContractError(f"freeze.repositories.{name}.path must be absolute")
@@ -450,9 +499,19 @@ def _validate_formal_freeze(
             raise V6ContractError(f"freeze repository is invalid: {name}") from exc
         if entry.get("head") != actual_head:
             raise V6ContractError(f"freeze repository head mismatch: {name}")
+        actual_tree = subprocess.run(
+            ["git", "-C", str(repo_path), "rev-parse", "HEAD^{tree}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        if "tree" in entry and entry.get("tree") != actual_tree:
+            raise V6ContractError(f"freeze repository tree mismatch: {name}")
         if _repository_tracked_dirty(repo_path):
             raise V6ContractError(f"freeze repository tracked state is dirty: {name}")
         normalized_repositories[name] = {"path": str(repo_path), "head": actual_head}
+        if "tree" in entry:
+            normalized_repositories[name]["tree"] = actual_tree
     driver_version = str(freeze.get("driver_version", ""))
     if driver_version != _current_driver_version():
         raise V6ContractError("freeze driver_version mismatch")
@@ -591,10 +650,11 @@ def _validate_formal_freeze(
     }
     if normalized_physical_contracts is not None:
         normalized["physical_contracts"] = normalized_physical_contracts
-        normalized["validator_only_head_promotion"] = dict(_mapping(
-            freeze.get("validator_only_head_promotion"),
-            "freeze.validator_only_head_promotion",
-        ))
+        if "validator_only_head_promotion" in freeze:
+            normalized["validator_only_head_promotion"] = dict(_mapping(
+                freeze.get("validator_only_head_promotion"),
+                "freeze.validator_only_head_promotion",
+            ))
         if continuation_present:
             normalized["indoor_continuation"] = dict(_mapping(
                 freeze.get("indoor_continuation"),
@@ -1400,10 +1460,10 @@ def _validate_validator_only_head_promotion(
             pilot_repositories.get(name),
             f"validator_only_head_promotion.pilot_runtime.repositories.{name}",
         )
-        _require_exact_keys(
-            pilot_entry, {"path", "head"},
-            f"validator_only_head_promotion.pilot_runtime.repositories.{name}",
-        )
+        if set(pilot_entry) not in ({"path", "head"}, {"path", "head", "tree"}):
+            raise V6ContractError(
+                "validator-only promotion repository identity keys are invalid"
+            )
         final_entry = _mapping(freeze["repositories"][name], f"freeze.repositories.{name}")
         if Path(str(pilot_entry["path"])).resolve() != Path(str(final_entry["path"])).resolve():
             raise V6ContractError("validator-only promotion repository path mismatch")
@@ -1518,7 +1578,7 @@ def _derive_indoor_pilot_runtime(
             if len(matches) != 1 or matches[0].is_symlink():
                 raise V6ContractError("indoor Pilot stack snapshot topology mismatch")
             expected_paths.append(matches[0])
-    tuples = []
+    payloads = []
     for path in expected_paths:
         try:
             payload = dict(_mapping(
@@ -1527,34 +1587,77 @@ def _derive_indoor_pilot_runtime(
             ))
         except (OSError, json.JSONDecodeError) as exc:
             raise V6ContractError(f"indoor Pilot stack snapshot is unreadable: {exc}") from exc
-        _require_exact_keys(payload, STACK_CONTRACT_KEYS, "indoor_pilot_stack_contract")
+        _require_exact_keys(
+            payload, _stack_contract_keys(payload), "indoor_pilot_stack_contract"
+        )
         if (
-            payload.get("schema") != STACK_CONTRACT_SCHEMA
+            payload.get("schema") not in {STACK_CONTRACT_SCHEMA_V1, STACK_CONTRACT_SCHEMA}
             or payload.get("stack_session_id") != _stack_session_id(payload)
             or payload.get("integration_dirty") is not False
             or payload.get("module2_dirty") is not False
             or payload.get("module3_dirty") is not False
         ):
             raise V6ContractError("indoor Pilot stack snapshot identity/cleanliness mismatch")
+        payloads.append(payload)
+    head_tuples = {
+        tuple(payload.get(f"{name}_head") for name in (
+            "integration", "module2", "module3"
+        ))
+        for payload in payloads
+    }
+    if len(head_tuples) != 1:
+        raise V6ContractError("indoor Pilot stack snapshots contain a mixed runtime tuple")
+    tuples = []
+    for payload in payloads:
+        heads = {
+            name: str(payload.get(f"{name}_head", ""))
+            for name in ("integration", "module2", "module3")
+        }
+        trees = {}
+        for name, head in heads.items():
+            if payload.get("schema") == STACK_CONTRACT_SCHEMA:
+                trees[name] = str(payload.get(f"{name}_tree", ""))
+            else:
+                trees[name] = str(_validator_only_git_output(
+                    Path(repositories[name]["path"]),
+                    ["rev-parse", f"{head}^{{tree}}"],
+                    binary=False,
+                )).strip()
         tuples.append((
-            payload.get("integration_head"), payload.get("module2_head"),
-            payload.get("module3_head"), payload.get("driver_version"),
-            payload.get("kernel_release"), payload.get("t2_selector_path"),
-            payload.get("t2_selector_sha256"),
+            heads["integration"], trees["integration"],
+            heads["module2"], trees["module2"],
+            heads["module3"], trees["module3"],
+            payload.get("driver_version"), payload.get("kernel_release"),
+            payload.get("t2_selector_path"), payload.get("t2_selector_sha256"),
         ))
     if len(set(tuples)) != 1:
         raise V6ContractError("indoor Pilot stack snapshots contain a mixed runtime tuple")
-    integration_head, module2_head, module3_head, driver, kernel, _selector, _selector_sha = tuples[0]
+    (
+        integration_head, integration_tree, module2_head, module2_tree,
+        module3_head, module3_tree, driver, kernel, _selector, _selector_sha,
+    ) = tuples[0]
     if not all(
         isinstance(head, str) and re.fullmatch(r"[0-9a-f]{40,64}", head)
         for head in (integration_head, module2_head, module3_head)
+    ) or not all(
+        isinstance(tree, str) and re.fullmatch(r"[0-9a-f]{40,64}", tree)
+        for tree in (integration_tree, module2_tree, module3_tree)
     ) or not all(isinstance(value, str) and value for value in (driver, kernel)):
         raise V6ContractError("indoor Pilot stack snapshot repository HEAD is invalid")
     return {
         "repositories": {
-            "integration": {**repositories["integration"], "head": integration_head},
-            "module2": {**repositories["module2"], "head": module2_head},
-            "module3": {**repositories["module3"], "head": module3_head},
+            "integration": {
+                **repositories["integration"], "head": integration_head,
+                "tree": integration_tree,
+            },
+            "module2": {
+                **repositories["module2"], "head": module2_head,
+                "tree": module2_tree,
+            },
+            "module3": {
+                **repositories["module3"], "head": module3_head,
+                "tree": module3_tree,
+            },
         },
         "driver_version": driver,
         "kernel_release": kernel,
@@ -1562,14 +1665,30 @@ def _derive_indoor_pilot_runtime(
 
 
 def _pilot_freeze_from_validator_promotion(
-    freeze: Mapping[str, Any], promotion: Mapping[str, Any]
+    freeze: Mapping[str, Any], promotion: Mapping[str, Any] | None
 ) -> dict[str, Any]:
     pilot_freeze = json.loads(json.dumps(freeze))
+    if promotion is None:
+        return pilot_freeze
     pilot_runtime = promotion["pilot_runtime"]
     pilot_freeze["repositories"] = json.loads(json.dumps(pilot_runtime["repositories"]))
     pilot_freeze["driver_version"] = pilot_runtime["driver_version"]
     pilot_freeze["kernel_release"] = pilot_runtime["kernel_release"]
     return pilot_freeze
+
+
+def _validator_promotion_if_needed(
+    *, freeze: Mapping[str, Any], pilot_runtime: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    if (
+        pilot_runtime["repositories"] == freeze["repositories"]
+        and pilot_runtime["driver_version"] == freeze["driver_version"]
+        and pilot_runtime["kernel_release"] == freeze["kernel_release"]
+    ):
+        return None
+    return _build_validator_only_head_promotion(
+        freeze=freeze, pilot_runtime=pilot_runtime
+    )
 
 
 def _qualification_tooling_ast_guard(
@@ -2904,11 +3023,16 @@ def load_indoor_campaign_manifest(
         ),
     )
     _validate_indoor_static_reference_contract(condition_tuple[0], freeze)
+    promotion_value = freeze.get("validator_only_head_promotion")
     promotion = (
-        freeze.get("validator_only_head_promotion")
+        promotion_value
         if continuation
-        else _validate_validator_only_head_promotion(
-            freeze.get("validator_only_head_promotion"), freeze=freeze
+        else (
+            _validate_validator_only_head_promotion(
+                promotion_value, freeze=freeze
+            )
+            if promotion_value is not None
+            else None
         )
     )
     if not _require_pilot_provenance:
@@ -2957,6 +3081,207 @@ def load_indoor_campaign_manifest(
 
 def _pilot_selection_identity(condition: FormalCondition, rep: int) -> Mapping[str, Any]:
     return condition.episode_identities[rep - 1]
+
+
+def _viewport_winner_attestation(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise V6ContractError(f"viewport winner attestation is unreadable: {exc}") from exc
+    payload = _mapping(payload, "viewport_winner_attestation")
+    winner = payload.get("winner", payload)
+    winner = _mapping(winner, "viewport_winner_attestation.winner")
+    setting = winner.get("disable_viewport_updates", {})
+    if not isinstance(setting, Mapping):
+        setting = {}
+    arm = winner.get("viewport_arm", winner.get("selected_arm"))
+    requested = winner.get("disable_viewport_updates_requested")
+    observed = winner.get("disable_viewport_updates_observed")
+    requested = setting.get("requested", requested)
+    observed = setting.get("observed", observed)
+    if arm != "B" or requested is not True or observed is not True:
+        raise V6ContractError(
+            "viewport winner attestation must prove B requested/observed true"
+        )
+    return {
+        "path": str(path.resolve()),
+        "sha256": _file_sha256(path),
+        "viewport_arm": "B",
+        "disable_viewport_updates_requested": True,
+        "disable_viewport_updates_observed": True,
+    }
+
+
+def load_outdoor_campaign_manifest(
+    path: str | Path, *, _require_pilot_provenance: bool = True
+) -> OutdoorCampaignManifest:
+    import stat
+
+    lexical = Path(path).expanduser()
+    if ".." in lexical.parts:
+        raise V6ContractError("outdoor manifest lexical path cannot contain '..'")
+    if not lexical.is_absolute():
+        lexical = Path.cwd() / lexical
+    current = Path(lexical.anchor)
+    for part in lexical.parts[1:]:
+        current /= part
+        if not os.path.lexists(current) or stat.S_ISLNK(os.lstat(current).st_mode):
+            raise V6ContractError("outdoor manifest path is missing or contains symlink")
+    if not stat.S_ISREG(os.lstat(lexical).st_mode):
+        raise V6ContractError("outdoor manifest leaf is not a regular file")
+    manifest_path = lexical.resolve()
+    raw = _mapping(yaml.safe_load(manifest_path.read_text(encoding="utf-8")), "outdoor_manifest")
+    required = {
+        "schema_version", "intended_use", "runs_per_condition",
+        "runner_entrypoint", "freeze", "conditions",
+    }
+    if _require_pilot_provenance:
+        required.add("outdoor_pilot_freeze_provenance")
+    _require_exact_keys(raw, required, "outdoor_manifest")
+    if raw.get("schema_version") != OUTDOOR_CAMPAIGN_SCHEMA_VERSION:
+        raise V6ContractError("outdoor schema_version is unsupported")
+    if raw.get("intended_use") != "outdoor_qualification":
+        raise V6ContractError("outdoor intended_use must be outdoor_qualification")
+    if raw.get("runs_per_condition") != FORMAL_RUNS_PER_CONDITION:
+        raise V6ContractError("outdoor runs_per_condition must be exactly 20")
+    runner = Path(str(raw.get("runner_entrypoint", ""))).expanduser()
+    if not runner.is_absolute():
+        runner = manifest_path.parent / runner
+    runner = runner.resolve()
+    if not runner.is_file() or not os.access(runner, os.R_OK | os.X_OK):
+        raise V6ContractError("outdoor runner_entrypoint is not executable")
+    rows = raw.get("conditions")
+    if not isinstance(rows, list) or len(rows) != 3:
+        raise V6ContractError("outdoor conditions must contain three rows")
+    conditions: list[FormalCondition] = []
+    scenario_configs: dict[str, set[Path]] = {}
+    outputs: set[Path] = set()
+    expected_arguments = {
+        "nav2_profile": "v6_low_obstacle_isolation",
+        "nav2_config_file": str(_canonical_nav2_config()),
+        "navigation_execution_backend": "route_guided",
+        "require_module2_planning_ready": "true",
+    }
+    for index, value in enumerate(rows):
+        row = _mapping(value, f"conditions[{index}]")
+        _require_exact_keys(
+            row,
+            {"id", "scene", "category", "scenario_file", "output_directory", "runner_arguments"},
+            f"conditions[{index}]",
+        )
+        condition_id = str(row.get("id", ""))
+        scene = str(row.get("scene", ""))
+        category = str(row.get("category", ""))
+        if condition_id != f"{scene}_{category}" or scene != "outdoor":
+            raise V6ContractError("outdoor condition identity is invalid")
+        scenario_path = Path(str(row.get("scenario_file", ""))).expanduser()
+        if not scenario_path.is_absolute():
+            scenario_path = manifest_path.parent / scenario_path
+        scenario_path = scenario_path.resolve()
+        scenario = load_scenario(scenario_path)
+        expected_type = "static" if category == "appearance" else category
+        if scenario.scenario_type != expected_type or "rivermark" not in (
+            f"{scenario.scenario_id} {scenario.map_version}".lower()
+        ):
+            raise V6ContractError("outdoor scenario identity/type mismatch")
+        if category == "appearance" and scenario.appearance_config_file is None:
+            raise V6ContractError("outdoor appearance scenario has no appearance config")
+        if category == "static" and scenario.optimal_reference_file is None:
+            raise V6ContractError("outdoor static scenario must bind optimal reference")
+        selections = scenario.run_matrix or tuple(
+            {
+                "seed": seed, "condition_id": None, "dynamic_case_id": None,
+                "dynamic_variant_id": None, "appearance_profile_id": None,
+            }
+            for seed in scenario.seeds
+        )
+        identities = [
+            dict(item) if isinstance(item, Mapping) else {
+                "seed": item.seed,
+                "condition_id": item.condition_id,
+                "dynamic_case_id": item.case_id,
+                "dynamic_variant_id": item.variant_id,
+                "appearance_profile_id": item.appearance_profile_id,
+            }
+            for item in selections
+        ]
+        identity_keys = {
+            tuple(identity.get(name) for name in (
+                "seed", "condition_id", "dynamic_case_id",
+                "dynamic_variant_id", "appearance_profile_id",
+            ))
+            for identity in identities
+        }
+        if len(identities) != 20 or len(identity_keys) != 20:
+            raise V6ContractError("outdoor scenario must contain 20 unique identities")
+        output = Path(str(row.get("output_directory", ""))).expanduser()
+        if not output.is_absolute() or output.resolve() in outputs:
+            raise V6ContractError("outdoor output directories must be absolute and unique")
+        output = output.resolve()
+        outputs.add(output)
+        arguments = row.get("runner_arguments")
+        if not isinstance(arguments, list) or not all(
+            isinstance(item, str) and ":=" in item for item in arguments
+        ):
+            raise V6ContractError("outdoor runner_arguments are invalid")
+        pairs = [item.split(":=", 1) for item in arguments]
+        if len({name for name, _ in pairs}) != len(pairs) or dict(pairs) != expected_arguments:
+            raise V6ContractError("outdoor runner_arguments differ from audited contract")
+        scenario_configs[condition_id] = _scenario_runtime_config_paths(
+            scenario, arguments
+        )
+        conditions.append(FormalCondition(
+            condition_id=condition_id,
+            scene=scene,
+            category=category,
+            scenario_file=scenario_path,
+            output_directory=output,
+            runner_arguments=tuple(arguments),
+            scenario_id=scenario.scenario_id,
+            episode_identities=tuple(identities),
+        ))
+    if tuple(row.condition_id for row in conditions) != OUTDOOR_CONDITION_IDS:
+        raise V6ContractError("outdoor conditions must use static, dynamic, appearance order")
+    condition_tuple = tuple(conditions)
+    freeze, freeze_digest = _validate_formal_freeze(
+        raw.get("freeze"),
+        conditions=condition_tuple,
+        scenario_configs=scenario_configs,
+        runner_entrypoint=runner,
+        condition_ids=OUTDOOR_CONDITION_IDS,
+        frozen_asset_keys=OUTDOOR_FROZEN_ASSET_KEYS,
+    )
+    if any("tree" not in freeze["repositories"][name] for name in freeze["repositories"]):
+        raise V6ContractError("outdoor qualification requires repository HEAD+tree identity")
+    winner = freeze["frozen_assets"]["rivermark_viewport_startup_winner_attestation"]
+    parsed_winner = _viewport_winner_attestation(Path(winner["path"]))
+    if parsed_winner["sha256"] != winner["sha256"]:
+        raise V6ContractError("outdoor viewport winner digest mismatch")
+    if not _require_pilot_provenance:
+        return OutdoorCampaignManifest(
+            manifest_path, runner, freeze, freeze_digest, {}, condition_tuple
+        )
+    provenance = _mapping(
+        raw.get("outdoor_pilot_freeze_provenance"),
+        "outdoor_pilot_freeze_provenance",
+    )
+    _require_exact_keys(
+        provenance, {"schema", "pilot_manifest", "pilot_aggregate", "episodes"},
+        "outdoor_pilot_freeze_provenance",
+    )
+    if provenance.get("schema") != "bio_nav.v6_outdoor_pilot_freeze_provenance.v1":
+        raise V6ContractError("outdoor Pilot freeze provenance schema mismatch")
+    if not isinstance(provenance.get("episodes"), list) or len(provenance["episodes"]) != 9:
+        raise V6ContractError("outdoor Pilot freeze provenance must index 9 episodes")
+    _revalidate_indoor_pilot_freeze_provenance(
+        provenance,
+        conditions=condition_tuple,
+        freeze=freeze,
+        freeze_digest=freeze_digest,
+    )
+    return OutdoorCampaignManifest(
+        manifest_path, runner, freeze, freeze_digest, provenance, condition_tuple
+    )
 
 
 def _validate_sufficient_pilot_episode(
@@ -3044,6 +3369,15 @@ def _validate_sufficient_pilot_episode(
         == stack_contract["t2_selector_path"]
         and sequence_receipt.get("t2_selector_sha256")
         == stack_contract["t2_selector_sha256"]
+        and all(
+            sequence_receipt.get(name) == stack_contract.get(name)
+            for name in (
+                "viewport_arm",
+                "disable_viewport_updates_requested",
+                "disable_viewport_updates_observed",
+                "viewport_startup_attestation_sha256",
+            )
+        )
     ):
         raise V6ContractError("Pilot stack episode sequence/T2 receipt mismatch")
     reset_receipt = episode.get("reset_receipt", {})
@@ -3383,14 +3717,13 @@ def freeze_indoor_campaign_from_pilot(
         candidate["conditions"].append(
             {**row, "output_directory": str(output_root / str(row["id"]))}
         )
-    _require_exact_keys(
-        aggregate,
-        {
-            "schema_version", "pilot_manifest", "validator_only_head_promotion",
-            "conditions",
-        },
-        "indoor_pilot_aggregate",
-    )
+    expected_aggregate_keys = {"schema_version", "pilot_manifest", "conditions"}
+    pilot_promotion = _mapping(
+        pilot.get("freeze"), "indoor_pilot_manifest.freeze"
+    ).get("validator_only_head_promotion")
+    if pilot_promotion is not None:
+        expected_aggregate_keys.add("validator_only_head_promotion")
+    _require_exact_keys(aggregate, expected_aggregate_keys, "indoor_pilot_aggregate")
     if aggregate.get("schema_version") != INDOOR_PILOT_AGGREGATE_SCHEMA:
         raise V6ContractError("unsupported indoor Pilot aggregate")
     aggregate_manifest = Path(str(aggregate.get("pilot_manifest", ""))).expanduser()
@@ -3399,9 +3732,7 @@ def freeze_indoor_campaign_from_pilot(
     aggregate_rows = aggregate.get("conditions")
     if not isinstance(aggregate_rows, list) or len(aggregate_rows) != 3:
         raise V6ContractError("indoor Pilot aggregate must contain three conditions")
-    if aggregate.get("validator_only_head_promotion") != _mapping(
-        pilot.get("freeze"), "indoor_pilot_manifest.freeze"
-    ).get("validator_only_head_promotion"):
+    if aggregate.get("validator_only_head_promotion") != pilot_promotion:
         raise V6ContractError("indoor Pilot promotion binding mismatch")
     if not output_root.parent.is_dir():
         raise V6ContractError("indoor output root parent must exist")
@@ -3424,7 +3755,7 @@ def freeze_indoor_campaign_from_pilot(
             temporary, _require_pilot_provenance=False
         )
         pilot_freeze = _pilot_freeze_from_validator_promotion(
-            campaign.freeze, campaign.freeze["validator_only_head_promotion"]
+            campaign.freeze, campaign.freeze.get("validator_only_head_promotion")
         )
         sessions: dict[str, str] = {}
         evidence_index: list[dict[str, Any]] = []
@@ -3502,6 +3833,166 @@ def freeze_indoor_campaign_from_pilot(
             os.link(temporary, output_path)
         except FileExistsError as exc:
             raise V6ContractError("indoor manifest already exists") from exc
+        published = True
+        return replace(campaign, path=output_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+        if not published:
+            try:
+                output_root.rmdir()
+            except OSError:
+                pass
+
+
+def freeze_outdoor_campaign_from_pilot(
+    *,
+    pilot_manifest_path: str | Path,
+    pilot_aggregate_path: str | Path,
+    output_manifest_path: str | Path,
+    outdoor_output_root: str | Path,
+) -> OutdoorCampaignManifest:
+    inputs = [Path(value).expanduser() for value in (
+        pilot_manifest_path, pilot_aggregate_path, output_manifest_path,
+    )]
+    if not all(path.is_absolute() for path in inputs):
+        raise V6ContractError("outdoor freezer paths must be absolute")
+    pilot_path, aggregate_path, output_path = (path.resolve() for path in inputs)
+    output_root = Path(outdoor_output_root).expanduser()
+    if not output_root.is_absolute():
+        raise V6ContractError("outdoor output root must be absolute")
+    output_root = output_root.resolve()
+    try:
+        output_root.relative_to(FORMAL_NAS_ROOT.resolve())
+    except ValueError as exc:
+        raise V6ContractError("outdoor output root must be under NAS") from exc
+    _validate_nas_mount(output_root)
+    if output_root.exists() or output_path.exists() or not output_path.parent.is_dir():
+        raise V6ContractError("outdoor outputs must be new")
+    try:
+        pilot = _mapping(yaml.safe_load(pilot_path.read_text()), "outdoor_pilot_manifest")
+        aggregate = _mapping(json.loads(aggregate_path.read_text()), "outdoor_pilot_aggregate")
+    except (OSError, json.JSONDecodeError, yaml.YAMLError) as exc:
+        raise V6ContractError(f"outdoor freezer input is unreadable: {exc}") from exc
+    _require_exact_keys(
+        pilot,
+        {"schema_version", "intended_use", "runner_entrypoint", "freeze", "conditions"},
+        "outdoor_pilot_manifest",
+    )
+    if (
+        pilot.get("schema_version") != OUTDOOR_PILOT_MANIFEST_SCHEMA
+        or pilot.get("intended_use") != "outdoor_pilot"
+    ):
+        raise V6ContractError("unsupported outdoor Pilot manifest")
+    _require_exact_keys(
+        aggregate, {"schema_version", "pilot_manifest", "conditions"},
+        "outdoor_pilot_aggregate",
+    )
+    if aggregate.get("schema_version") != OUTDOOR_PILOT_AGGREGATE_SCHEMA:
+        raise V6ContractError("unsupported outdoor Pilot aggregate")
+    bound_manifest = Path(str(aggregate.get("pilot_manifest", ""))).expanduser()
+    if not bound_manifest.is_absolute() or bound_manifest.resolve() != pilot_path:
+        raise V6ContractError("outdoor Pilot aggregate manifest binding mismatch")
+    pilot_rows = pilot.get("conditions")
+    aggregate_rows = aggregate.get("conditions")
+    if not isinstance(pilot_rows, list) or len(pilot_rows) != 3:
+        raise V6ContractError("outdoor Pilot manifest must contain three conditions")
+    if not isinstance(aggregate_rows, list) or len(aggregate_rows) != 3:
+        raise V6ContractError("outdoor Pilot aggregate must contain three conditions")
+    candidate = {
+        "schema_version": OUTDOOR_CAMPAIGN_SCHEMA_VERSION,
+        "intended_use": "outdoor_qualification",
+        "runs_per_condition": FORMAL_RUNS_PER_CONDITION,
+        "runner_entrypoint": pilot["runner_entrypoint"],
+        "freeze": pilot["freeze"],
+        "conditions": [],
+    }
+    for value in pilot_rows:
+        row = dict(_mapping(value, "outdoor_pilot_manifest.conditions[]"))
+        _require_exact_keys(
+            row, {"id", "scene", "category", "scenario_file", "runner_arguments"},
+            "outdoor_pilot_manifest.conditions[]",
+        )
+        candidate["conditions"].append({
+            **row, "output_directory": str(output_root / str(row["id"]))
+        })
+    if not output_root.parent.is_dir():
+        raise V6ContractError("outdoor output root parent must exist")
+    output_root.mkdir(exist_ok=False)
+    try:
+        fd, name = tempfile.mkstemp(
+            prefix=f".{output_path.name}.", suffix=".tmp", dir=output_path.parent
+        )
+    except OSError:
+        output_root.rmdir()
+        raise
+    os.close(fd)
+    temporary = Path(name)
+    published = False
+    try:
+        temporary.write_text(json.dumps(candidate, indent=2, sort_keys=True) + "\n")
+        campaign = load_outdoor_campaign_manifest(
+            temporary, _require_pilot_provenance=False
+        )
+        evidence_index = []
+        sessions: dict[str, str] = {}
+        for condition, value in zip(campaign.conditions, aggregate_rows):
+            row = _mapping(value, "outdoor_pilot_aggregate.conditions[]")
+            _require_exact_keys(
+                row, {"id", "scene", "category", "episodes"},
+                "outdoor_pilot_aggregate.conditions[]",
+            )
+            if (row.get("id"), row.get("scene"), row.get("category")) != (
+                condition.condition_id, condition.scene, condition.category,
+            ):
+                raise V6ContractError("outdoor Pilot condition identity/order mismatch")
+            episodes = row.get("episodes")
+            if not isinstance(episodes, list) or len(episodes) != 3:
+                raise V6ContractError("outdoor Pilot condition must contain three episodes")
+            generations = []
+            for rep, episode_value in enumerate(episodes, start=1):
+                episode = _mapping(episode_value, "outdoor_pilot_aggregate.episodes[]")
+                _require_exact_keys(
+                    episode,
+                    {"rep", "boundary", "summary_path", "manifest_path", "stack_contract_path", "stack_tuple_digest"},
+                    "outdoor_pilot_aggregate.episodes[]",
+                )
+                boundary = "cold" if rep == 1 else "hot_reset"
+                if episode.get("rep") != rep or episode.get("boundary") != boundary:
+                    raise V6ContractError("outdoor Pilot cold/hot order mismatch")
+                paths = [Path(str(episode[name])).expanduser() for name in (
+                    "summary_path", "manifest_path", "stack_contract_path",
+                )]
+                if not all(path.is_absolute() for path in paths):
+                    raise V6ContractError("outdoor Pilot evidence paths must be absolute")
+                session, generation, indexed = _validate_sufficient_pilot_episode(
+                    condition=condition,
+                    rep=rep,
+                    summary_path=paths[0].resolve(),
+                    manifest_path=paths[1].resolve(),
+                    stack_contract_path=paths[2].resolve(),
+                    expected_stack_tuple_digest=str(episode["stack_tuple_digest"]),
+                    freeze=campaign.freeze,
+                    freeze_digest=campaign.freeze_digest,
+                )
+                sessions.setdefault(condition.condition_id, session)
+                if sessions[condition.condition_id] != session:
+                    raise V6ContractError("outdoor Pilot condition stack session changed")
+                generations.append(generation)
+                evidence_index.append(indexed)
+            if generations != [2, 3, 4]:
+                raise V6ContractError("outdoor Pilot reset generations must be 2,3,4")
+        candidate["outdoor_pilot_freeze_provenance"] = {
+            "schema": "bio_nav.v6_outdoor_pilot_freeze_provenance.v1",
+            "pilot_manifest": {"path": str(pilot_path), "sha256": _file_sha256(pilot_path)},
+            "pilot_aggregate": {"path": str(aggregate_path), "sha256": _file_sha256(aggregate_path)},
+            "episodes": evidence_index,
+        }
+        temporary.write_text(json.dumps(candidate, indent=2, sort_keys=True) + "\n")
+        campaign = load_outdoor_campaign_manifest(temporary)
+        try:
+            os.link(temporary, output_path)
+        except FileExistsError as exc:
+            raise V6ContractError("outdoor manifest already exists") from exc
         published = True
         return replace(campaign, path=output_path)
     finally:
@@ -3641,6 +4132,20 @@ def _repository_freeze_entry(path: Path) -> dict[str, str]:
     except (OSError, subprocess.CalledProcessError) as exc:
         raise V6ContractError(f"Pilot repository is invalid: {path}") from exc
     return {"path": str(path), "head": head}
+
+
+def _repository_freeze_entry_with_tree(path: Path) -> dict[str, str]:
+    entry = _repository_freeze_entry(path)
+    try:
+        tree = subprocess.run(
+            ["git", "-C", entry["path"], "rev-parse", "HEAD^{tree}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise V6ContractError(f"Pilot repository tree is invalid: {path}") from exc
+    return {**entry, "tree": tree}
 
 
 def _build_sufficient_pilot_manifest(
@@ -3905,9 +4410,9 @@ def _build_indoor_pilot_manifest(
     }
     freeze = {
         "repositories": {
-            "integration": _repository_freeze_entry(integration_root),
-            "module2": _repository_freeze_entry(module2_root),
-            "module3": _repository_freeze_entry(module3_root),
+            "integration": _repository_freeze_entry_with_tree(integration_root),
+            "module2": _repository_freeze_entry_with_tree(module2_root),
+            "module3": _repository_freeze_entry_with_tree(module3_root),
         },
         "driver_version": _current_driver_version(),
         "kernel_release": os.uname().release,
@@ -3927,10 +4432,11 @@ def _build_indoor_pilot_manifest(
     pilot_runtime = _derive_indoor_pilot_runtime(
         pilot_root, repositories=freeze["repositories"]
     )
-    promotion = _build_validator_only_head_promotion(
+    promotion = _validator_promotion_if_needed(
         freeze=freeze, pilot_runtime=pilot_runtime
     )
-    freeze["validator_only_head_promotion"] = promotion
+    if promotion is not None:
+        freeze["validator_only_head_promotion"] = promotion
     pilot_manifest = {
         "schema_version": INDOOR_PILOT_MANIFEST_SCHEMA,
         "intended_use": "indoor_pilot",
@@ -3967,6 +4473,205 @@ def _build_indoor_pilot_manifest(
     finally:
         temporary.unlink(missing_ok=True)
     return pilot_manifest, campaign.conditions, campaign.freeze_digest, campaign.freeze
+
+
+def _derive_outdoor_pilot_runtime(
+    pilot_root: Path, *, repositories: Mapping[str, Any]
+) -> dict[str, Any]:
+    paths: list[Path] = []
+    for condition_id in OUTDOOR_CONDITION_IDS:
+        for rep in range(1, 4):
+            matches = list(
+                (pilot_root / condition_id / f"rep{rep}").glob(
+                    "*/run-*/stack_contract.json"
+                )
+            )
+            if len(matches) != 1 or matches[0].is_symlink():
+                raise V6ContractError("outdoor Pilot stack snapshot topology mismatch")
+            paths.append(matches[0])
+    tuples = []
+    for path in paths:
+        try:
+            payload = dict(_mapping(json.loads(path.read_text()), "outdoor_pilot_stack"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise V6ContractError(f"outdoor Pilot stack is unreadable: {exc}") from exc
+        _require_exact_keys(payload, _stack_contract_keys(payload), "outdoor_pilot_stack")
+        if (
+            payload.get("schema") != STACK_CONTRACT_SCHEMA
+            or payload.get("stack_session_id") != _stack_session_id(payload)
+            or payload.get("viewport_arm") != "B"
+            or payload.get("disable_viewport_updates_requested") is not True
+            or payload.get("disable_viewport_updates_observed") is not True
+            or any(payload.get(f"{name}_dirty") is not False for name in (
+                "integration", "module2", "module3"
+            ))
+        ):
+            raise V6ContractError("outdoor Pilot stack identity/viewport mismatch")
+        tuples.append(tuple(payload.get(name) for name in (
+            "integration_head", "integration_tree", "module2_head", "module2_tree",
+            "module3_head", "module3_tree", "driver_version", "kernel_release",
+            "viewport_startup_attestation_sha256",
+        )))
+    if len(set(tuples)) != 1:
+        raise V6ContractError("outdoor Pilot stack snapshots contain a mixed tuple")
+    values = tuples[0]
+    return {
+        "repositories": {
+            name: {
+                **repositories[name],
+                "head": values[offset],
+                "tree": values[offset + 1],
+            }
+            for name, offset in (("integration", 0), ("module2", 2), ("module3", 4))
+        },
+        "driver_version": values[6],
+        "kernel_release": values[7],
+        "viewport_startup_attestation_sha256": values[8],
+    }
+
+
+def _build_outdoor_pilot_manifest(
+    pilot_root: Path,
+) -> tuple[dict[str, Any], tuple[FormalCondition, ...], str, Mapping[str, Any]]:
+    module3_root = Path(
+        os.environ.get("BIO_NAV_MODULE3_ROOT", str(Path(__file__).resolve().parents[4]))
+    ).expanduser().resolve()
+    integration_root = Path(os.environ.get("BIO_NAV_INTEGRATION_ROOT", "")).expanduser()
+    module2_root = Path(
+        os.environ.get("BIO_NAV_MODULE2_ROOT")
+        or os.environ.get("BIO_NAV_MODULE2_V310_ROOT", "")
+    ).expanduser()
+    asset_root = Path(os.environ.get("BIO_NAV_MODULE2_ASSET_ROOT", "")).expanduser()
+    catalog_root = Path(os.environ.get("BIO_NAV_ROUTE_PRIOR_CATALOG", "")).expanduser()
+    rivermark_usd = Path(os.environ.get("RIVERMARK_USD", "")).expanduser()
+    winner_path = Path(
+        os.environ.get("BIO_NAV_RIVERMARK_STARTUP_WINNER_ATTESTATION", "")
+    ).expanduser()
+    for name, value in (
+        ("Integration", integration_root), ("Module2", module2_root),
+        ("Module3", module3_root), ("Module2 asset", asset_root),
+        ("Rivermark catalog", catalog_root),
+    ):
+        if not value.is_absolute() or not value.exists():
+            raise V6ContractError(f"{name} root is missing or not absolute")
+    if not rivermark_usd.is_absolute() or not rivermark_usd.is_file():
+        raise V6ContractError("Rivermark USD is missing or not absolute")
+    if not winner_path.is_absolute() or not winner_path.is_file():
+        raise V6ContractError("Rivermark viewport winner attestation is missing")
+    winner = _viewport_winner_attestation(winner_path.resolve())
+    config_root = module3_root / "ros2_ws/src/robot_experiments/config"
+    runner = module3_root / "scripts/run_experiment.sh"
+    nav2_config = _canonical_nav2_config()
+    condition_rows = []
+    scenarios = {}
+    scenario_configs = {}
+    for condition_id in OUTDOOR_CONDITION_IDS:
+        scene, category = condition_id.split("_", 1)
+        scenario_path = config_root / PILOT_SCENARIO_FILENAMES[condition_id]
+        scenario = load_scenario(scenario_path)
+        arguments = [
+            "nav2_profile:=v6_low_obstacle_isolation",
+            f"nav2_config_file:={nav2_config}",
+            "navigation_execution_backend:=route_guided",
+            "require_module2_planning_ready:=true",
+        ]
+        condition_rows.append({
+            "id": condition_id, "scene": scene, "category": category,
+            "scenario_file": str(scenario_path), "runner_arguments": arguments,
+        })
+        scenarios[condition_id] = _frozen_file_entry(scenario_path)
+        scenario_configs[condition_id] = [
+            _frozen_file_entry(path)
+            for path in sorted(_scenario_runtime_config_paths(scenario, arguments))
+        ]
+    frozen_assets = {
+        "module1_checkpoint": _frozen_file_entry(
+            asset_root / "weights/module1_mamba_metric_sensor_warm_v8.pt"
+        ),
+        "module2_srdr_checkpoint": _frozen_file_entry(
+            asset_root / "weights/module2_srdr_v310_seed20260822.pt"
+        ),
+        "module2_visual_heads_shadow_checkpoint": _frozen_file_entry(
+            asset_root / "weights/module2_srdr_v310_kujiale_0026_visual_heads_shadow_v1.pt"
+        ),
+        "selected_run4_visual_heads_checkpoint": _frozen_file_entry(
+            asset_root / "weights/kujiale_0026_visual_heads_run4_v310.pt"
+        ),
+        "dino_checkpoint": _frozen_file_entry(
+            asset_root / "third_party/dinov2/weights/dinov2_vits14_pretrain.pth"
+        ),
+        "rivermark_usd": _frozen_file_entry(rivermark_usd),
+        "rivermark_catalog": _frozen_file_entry(catalog_root / "catalog.json"),
+        "rivermark_catalog_constraints_tree": {
+            "path": str((catalog_root / "constraints").resolve()),
+            "sha256": _constraints_tree_sha256(catalog_root / "constraints"),
+        },
+        "rivermark_viewport_startup_winner_attestation": {
+            "path": winner["path"], "sha256": winner["sha256"],
+        },
+        "outdoor_map_yaml": _frozen_file_entry(
+            module3_root / "data/rivermark_demo/rivermark_selected.yaml"
+        ),
+        "outdoor_map_pgm": _frozen_file_entry(
+            module3_root / "data/rivermark_demo/rivermark_selected.pgm"
+        ),
+    }
+    freeze = {
+        "repositories": {
+            "integration": _repository_freeze_entry_with_tree(integration_root),
+            "module2": _repository_freeze_entry_with_tree(module2_root),
+            "module3": _repository_freeze_entry_with_tree(module3_root),
+        },
+        "driver_version": _current_driver_version(),
+        "kernel_release": os.uname().release,
+        "scenarios": scenarios,
+        "scenario_configs": scenario_configs,
+        "frozen_assets": frozen_assets,
+        "runner_entrypoint": _frozen_file_entry(runner),
+        "experiment_runner": _frozen_file_entry(
+            module3_root / "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py"
+        ),
+        "v6_formal": _frozen_file_entry(Path(__file__).resolve()),
+    }
+    runtime = _derive_outdoor_pilot_runtime(pilot_root, repositories=freeze["repositories"])
+    if not (
+        runtime["repositories"] == freeze["repositories"]
+        and runtime["driver_version"] == freeze["driver_version"]
+        and runtime["kernel_release"] == freeze["kernel_release"]
+        and runtime["viewport_startup_attestation_sha256"] == winner["sha256"]
+    ):
+        raise V6ContractError("outdoor Pilot must use the current exact tuple and winner B")
+    pilot = {
+        "schema_version": OUTDOOR_PILOT_MANIFEST_SCHEMA,
+        "intended_use": "outdoor_pilot",
+        "runner_entrypoint": str(runner),
+        "freeze": freeze,
+        "conditions": condition_rows,
+    }
+    validation = {
+        "schema_version": OUTDOOR_CAMPAIGN_SCHEMA_VERSION,
+        "intended_use": "outdoor_qualification",
+        "runs_per_condition": FORMAL_RUNS_PER_CONDITION,
+        "runner_entrypoint": str(runner),
+        "freeze": freeze,
+        "conditions": [
+            {**row, "output_directory": str(pilot_root / ".outdoor-validation" / row["id"])}
+            for row in condition_rows
+        ],
+    }
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=".outdoor-pilot-freeze-validation.", suffix=".json", dir=pilot_root
+    )
+    os.close(fd)
+    temporary = Path(temporary_name)
+    try:
+        temporary.write_text(json.dumps(validation), encoding="utf-8")
+        campaign = load_outdoor_campaign_manifest(
+            temporary, _require_pilot_provenance=False
+        )
+    finally:
+        temporary.unlink(missing_ok=True)
+    return pilot, campaign.conditions, campaign.freeze_digest, campaign.freeze
 
 
 def _publish_no_clobber_json_pair(
@@ -4222,8 +4927,12 @@ def aggregate_indoor_pilot(
     pilot_manifest, conditions, freeze_digest, freeze = _build_indoor_pilot_manifest(
         root
     )
-    promotion = _validate_validator_only_head_promotion(
-        freeze.get("validator_only_head_promotion"), freeze=freeze
+    promotion = (
+        _validate_validator_only_head_promotion(
+            freeze.get("validator_only_head_promotion"), freeze=freeze
+        )
+        if freeze.get("validator_only_head_promotion") is not None
+        else None
     )
     pilot_freeze = _pilot_freeze_from_validator_promotion(freeze, promotion)
     aggregate_rows = []
@@ -4307,9 +5016,10 @@ def aggregate_indoor_pilot(
     aggregate = {
         "schema_version": INDOOR_PILOT_AGGREGATE_SCHEMA,
         "pilot_manifest": str(manifest_output),
-        "validator_only_head_promotion": promotion,
         "conditions": aggregate_rows,
     }
+    if promotion is not None:
+        aggregate["validator_only_head_promotion"] = promotion
     _publish_no_clobber_json_pair(
         manifest_output, pilot_manifest, aggregate_output, aggregate
     )
@@ -4325,6 +5035,109 @@ def aggregate_indoor_pilot(
         "pilot_aggregate": {
             "path": str(aggregate_output),
             "sha256": _file_sha256(aggregate_output),
+        },
+        "dispatch": False,
+    }
+
+
+def aggregate_outdoor_pilot(
+    *, pilot_root: str | Path, output_manifest: str | Path, output_aggregate: str | Path
+) -> dict[str, Any]:
+    root = Path(pilot_root).expanduser()
+    manifest_output = Path(output_manifest).expanduser()
+    aggregate_output = Path(output_aggregate).expanduser()
+    if not all(path.is_absolute() for path in (root, manifest_output, aggregate_output)):
+        raise V6ContractError("outdoor Pilot aggregate paths must be absolute")
+    root, manifest_output, aggregate_output = (
+        root.resolve(), manifest_output.resolve(), aggregate_output.resolve()
+    )
+    if not root.is_dir() or manifest_output.exists() or aggregate_output.exists():
+        raise V6ContractError("outdoor Pilot root must exist and outputs must be new")
+    for path in (root, manifest_output.parent, aggregate_output.parent):
+        try:
+            path.relative_to(FORMAL_NAS_ROOT.resolve())
+        except ValueError as exc:
+            raise V6ContractError("outdoor Pilot paths must be under NAS") from exc
+        _validate_nas_mount(path)
+    if {path.name for path in root.iterdir()} != set(OUTDOOR_CONDITION_IDS):
+        raise V6ContractError("outdoor Pilot root must contain exactly three conditions")
+    pilot, conditions, freeze_digest, freeze = _build_outdoor_pilot_manifest(root)
+    aggregate_rows = []
+    for condition in conditions:
+        condition_root = root / condition.condition_id
+        expected_reps = {f"rep{rep}" for rep in range(1, 4)}
+        if {path.name for path in condition_root.iterdir()} != expected_reps:
+            raise V6ContractError("outdoor Pilot condition must contain rep1-rep3")
+        episodes = []
+        for rep in range(1, 4):
+            identity = condition.episode_identities[rep - 1]
+            rep_root = condition_root / f"rep{rep}"
+            scenario_root = rep_root / condition.scenario_id
+            run_root = scenario_root / f"run-{rep:04d}-seed-{identity['seed']}"
+            if (
+                len(list(rep_root.iterdir())) != 3
+                or scenario_root.is_symlink()
+                or not scenario_root.is_dir()
+                or {path.name for path in scenario_root.iterdir()} != {run_root.name}
+                or run_root.is_symlink()
+                or not run_root.is_dir()
+            ):
+                raise V6ContractError("outdoor Pilot rep topology mismatch")
+            summary = run_root / "run_summary.json"
+            episode = run_root / "run_manifest.json"
+            stack = run_root / "stack_contract.json"
+            _validate_indoor_pilot_sidecars(
+                rep_root=rep_root,
+                scenario_directory=scenario_root,
+                condition=condition,
+                rep=rep,
+                expected_seed=int(identity["seed"]),
+                final_manifest_path=episode,
+            )
+            _contract, tuple_digest = _load_stack_contract_snapshot(
+                stack, expected_condition_id=condition.condition_id, freeze=freeze
+            )
+            _validate_sufficient_pilot_episode(
+                condition=condition,
+                rep=rep,
+                summary_path=summary,
+                manifest_path=episode,
+                stack_contract_path=stack,
+                expected_stack_tuple_digest=tuple_digest,
+                freeze=freeze,
+                freeze_digest=freeze_digest,
+            )
+            episodes.append({
+                "rep": rep,
+                "boundary": "cold" if rep == 1 else "hot_reset",
+                "summary_path": str(summary),
+                "manifest_path": str(episode),
+                "stack_contract_path": str(stack),
+                "stack_tuple_digest": tuple_digest,
+            })
+        aggregate_rows.append({
+            "id": condition.condition_id,
+            "scene": condition.scene,
+            "category": condition.category,
+            "episodes": episodes,
+        })
+    aggregate = {
+        "schema_version": OUTDOOR_PILOT_AGGREGATE_SCHEMA,
+        "pilot_manifest": str(manifest_output),
+        "conditions": aggregate_rows,
+    }
+    _publish_no_clobber_json_pair(
+        manifest_output, pilot, aggregate_output, aggregate
+    )
+    return {
+        "qualification": "OUTDOOR_PILOT_READY",
+        "formal_qualification": NOT_QUALIFIED,
+        "strict_successes": 9,
+        "pilot_manifest": {
+            "path": str(manifest_output), "sha256": _file_sha256(manifest_output)
+        },
+        "pilot_aggregate": {
+            "path": str(aggregate_output), "sha256": _file_sha256(aggregate_output)
         },
         "dispatch": False,
     }
@@ -4378,8 +5191,9 @@ def _checksums_verified(run_root: Path) -> bool:
     return True
 
 
-STACK_CONTRACT_SCHEMA = "bio_nav.v6_stack_contract.v1"
-STACK_CONTRACT_KEYS = {
+STACK_CONTRACT_SCHEMA_V1 = "bio_nav.v6_stack_contract.v1"
+STACK_CONTRACT_SCHEMA = "bio_nav.v6_stack_contract.v2"
+STACK_CONTRACT_KEYS_V1 = {
     "schema",
     "condition_id",
     "scene",
@@ -4404,10 +5218,29 @@ STACK_CONTRACT_KEYS = {
     "episode_sequence_path",
     "stack_session_id",
 }
+STACK_CONTRACT_V2_ONLY_KEYS = {
+    "integration_tree",
+    "module2_tree",
+    "module3_tree",
+    "viewport_arm",
+    "disable_viewport_updates_requested",
+    "disable_viewport_updates_observed",
+    "viewport_startup_attestation_sha256",
+}
+STACK_CONTRACT_KEYS = STACK_CONTRACT_KEYS_V1 | STACK_CONTRACT_V2_ONLY_KEYS
+
+
+def _stack_contract_keys(payload: Mapping[str, Any]) -> set[str]:
+    if payload.get("schema") == STACK_CONTRACT_SCHEMA_V1:
+        return STACK_CONTRACT_KEYS_V1
+    if payload.get("schema") == STACK_CONTRACT_SCHEMA:
+        return STACK_CONTRACT_KEYS
+    raise V6ContractError("stack contract schema mismatch")
 
 
 def _stack_session_id(payload: Mapping[str, Any]) -> str:
-    basis = {key: payload[key] for key in STACK_CONTRACT_KEYS - {"stack_session_id"}}
+    keys = _stack_contract_keys(payload)
+    basis = {key: payload[key] for key in keys - {"stack_session_id"}}
     canonical = json.dumps(basis, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
 
@@ -4434,6 +5267,9 @@ STACK_TUPLE_KEYS = (
 
 def _stack_tuple_digest(payload: Mapping[str, Any]) -> str:
     normalized = {key: payload[key] for key in STACK_TUPLE_KEYS}
+    for key in sorted(STACK_CONTRACT_V2_ONLY_KEYS):
+        if key in payload:
+            normalized[key] = payload[key]
     canonical = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
 
@@ -4449,14 +5285,21 @@ def _load_stack_contract_snapshot(
     except (OSError, json.JSONDecodeError) as exc:
         raise V6ContractError(f"Pilot stack contract is unreadable: {exc}") from exc
     payload = dict(_mapping(payload, "pilot_stack_contract"))
-    _require_exact_keys(payload, STACK_CONTRACT_KEYS, "pilot_stack_contract")
+    keys = _stack_contract_keys(payload)
+    _require_exact_keys(payload, keys, "pilot_stack_contract")
     if (
-        payload.get("schema") != STACK_CONTRACT_SCHEMA
-        or payload.get("condition_id") != expected_condition_id
+        payload.get("condition_id") != expected_condition_id
         or payload.get("condition_id") != f"{payload.get('scene')}_{payload.get('condition')}"
         or payload.get("stack_session_id") != _stack_session_id(payload)
     ):
         raise V6ContractError("Pilot stack contract identity/digest mismatch")
+    if (
+        payload["schema"] == STACK_CONTRACT_SCHEMA_V1
+        and expected_condition_id.startswith("outdoor_")
+        and "rivermark_viewport_startup_winner_attestation"
+        in freeze.get("frozen_assets", {})
+    ):
+        raise V6ContractError("outdoor qualification requires v2 viewport attestation")
     expected_profile = (
         "module2_causal_obstacle_outdoor"
         if expected_condition_id.startswith("outdoor_")
@@ -4490,6 +5333,32 @@ def _load_stack_contract_snapshot(
         and payload.get("kernel_release") == freeze["kernel_release"]
     ):
         raise V6ContractError("Pilot stack contract frozen tuple mismatch")
+    if payload["schema"] == STACK_CONTRACT_SCHEMA:
+        if any(
+            payload.get(f"{name}_tree") != repositories[name].get("tree")
+            for name in ("integration", "module2", "module3")
+        ):
+            raise V6ContractError("Pilot stack contract repository tree mismatch")
+        if expected_condition_id.startswith("outdoor_"):
+            attestation = freeze["frozen_assets"].get(
+                "rivermark_viewport_startup_winner_attestation"
+            )
+            if not (
+                payload.get("viewport_arm") == "B"
+                and payload.get("disable_viewport_updates_requested") is True
+                and payload.get("disable_viewport_updates_observed") is True
+                and isinstance(attestation, Mapping)
+                and payload.get("viewport_startup_attestation_sha256")
+                == attestation.get("sha256")
+            ):
+                raise V6ContractError("outdoor viewport arm attestation mismatch")
+        elif not (
+            payload.get("viewport_arm") == "not_applicable"
+            and payload.get("disable_viewport_updates_requested") == "not_applicable"
+            and payload.get("disable_viewport_updates_observed") == "not_applicable"
+            and payload.get("viewport_startup_attestation_sha256") == "not_applicable"
+        ):
+            raise V6ContractError("indoor viewport fields must be not_applicable")
     expected_selector = (
         Path(repositories["module3"]["path"])
         / "scripts"
@@ -4517,9 +5386,8 @@ def validate_condition_stack_contract(
     except (OSError, json.JSONDecodeError) as exc:
         raise V6ContractError(f"condition stack contract is unreadable: {exc}") from exc
     payload = dict(_mapping(payload, "condition_stack_contract"))
-    _require_exact_keys(payload, STACK_CONTRACT_KEYS, "condition_stack_contract")
-    if payload["schema"] != STACK_CONTRACT_SCHEMA:
-        raise V6ContractError("condition stack contract schema mismatch")
+    keys = _stack_contract_keys(payload)
+    _require_exact_keys(payload, keys, "condition_stack_contract")
     if payload["condition_id"] != expected_condition_id:
         raise V6ContractError("condition stack contract condition mismatch")
     if payload["condition_id"] != f"{payload['scene']}_{payload['condition']}":
@@ -5047,6 +5915,58 @@ def evaluate_indoor_campaign(manifest: IndoorCampaignManifest) -> dict[str, Any]
     return _evaluate_campaign(manifest, indoor_only=True)
 
 
+def _outdoor_as_authorized_formal(
+    manifest: OutdoorCampaignManifest,
+) -> FormalCampaignManifest:
+    return FormalCampaignManifest(
+        path=manifest.path,
+        authorization=FORMAL_EXECUTION_AUTHORIZED,
+        runner_entrypoint=manifest.runner_entrypoint,
+        freeze=manifest.freeze,
+        freeze_digest=manifest.freeze_digest,
+        pilot_freeze_provenance=manifest.pilot_freeze_provenance,
+        conditions=manifest.conditions,
+    )
+
+
+def evaluate_outdoor_campaign(manifest: OutdoorCampaignManifest) -> dict[str, Any]:
+    result = _evaluate_campaign(_outdoor_as_authorized_formal(manifest), indoor_only=False)
+    result["schema_version"] = OUTDOOR_CAMPAIGN_SCHEMA_VERSION
+    result["formal_qualification"] = NOT_QUALIFIED
+    result.pop("execution_authorization", None)
+    if (
+        result["valid_episodes"] == 60
+        and not result["blockers"]
+        and all(row["qualification"] == "PASS" for row in result["conditions"])
+    ):
+        result["qualification"] = "OUTDOOR_QUALIFICATION_PASS"
+        result["campaign_status"] = "OUTDOOR_QUALIFICATION_PASS"
+    elif any("early_fail_unreachable" in blocker for blocker in result["blockers"]):
+        result["qualification"] = "INCOMPLETE"
+        result["campaign_status"] = "EARLY_FAIL_UNREACHABLE"
+    elif result["blockers"]:
+        result["qualification"] = "INCOMPLETE"
+        result["campaign_status"] = "STOP_INVALID"
+    else:
+        result["qualification"] = "INCOMPLETE"
+        result["campaign_status"] = "IN_PROGRESS"
+    return result
+
+
+def outdoor_dispatch_plan(
+    manifest: OutdoorCampaignManifest, aggregate: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    plans = formal_dispatch_plan(manifest, aggregate)
+    by_condition = {row["condition_id"]: row for row in plans}
+    aggregates = {row["id"]: row for row in aggregate["conditions"]}
+    for condition_id in OUTDOOR_CONDITION_IDS:
+        if aggregates[condition_id]["qualification"] == "PASS":
+            continue
+        plan = by_condition.get(condition_id)
+        return [plan] if plan is not None else []
+    return []
+
+
 def formal_dispatch_plan(
     manifest: FormalCampaignManifest | IndoorCampaignManifest,
     aggregate: Mapping[str, Any],
@@ -5265,9 +6185,11 @@ def execute_indoor_campaign(
     ):
         _validate_indoor_continuation_contract(manifest)
     else:
-        _validate_validator_only_head_promotion(
-            manifest.freeze.get("validator_only_head_promotion"), freeze=manifest.freeze
-        )
+        promotion = manifest.freeze.get("validator_only_head_promotion")
+        if promotion is not None:
+            _validate_validator_only_head_promotion(
+                promotion, freeze=manifest.freeze
+            )
     if condition_stack_id not in INDOOR_CONDITION_IDS:
         raise V6ContractError(f"unknown indoor condition stack: {condition_stack_id}")
     aggregate = evaluate_indoor_campaign(manifest)
@@ -5384,6 +6306,189 @@ def execute_indoor_campaign(
             "indoor episode did not add exactly one valid target run"
         )
     return after
+
+
+def execute_outdoor_campaign(
+    manifest: OutdoorCampaignManifest,
+    *,
+    condition_stack_id: str,
+    condition_stack_contract: str | Path,
+) -> dict[str, Any]:
+    if condition_stack_id not in OUTDOOR_CONDITION_IDS:
+        raise V6ContractError(f"unknown outdoor condition stack: {condition_stack_id}")
+    aggregate = evaluate_outdoor_campaign(manifest)
+    if aggregate["blockers"]:
+        raise V6ContractError(
+            "outdoor campaign blocked: " + ",".join(aggregate["blockers"])
+        )
+    plans = outdoor_dispatch_plan(manifest, aggregate)
+    if len(plans) != 1 or plans[0]["condition_id"] != condition_stack_id:
+        raise V6ContractError(
+            f"outdoor condition is not the next unique episode: {condition_stack_id}"
+        )
+    contract, _digest = _load_stack_contract_snapshot(
+        Path(condition_stack_contract).expanduser().resolve(),
+        expected_condition_id=condition_stack_id,
+        freeze=manifest.freeze,
+    )
+    if not (
+        contract.get("viewport_arm") == "B"
+        and contract.get("disable_viewport_updates_requested") is True
+        and contract.get("disable_viewport_updates_observed") is True
+        and contract.get("viewport_startup_attestation_sha256")
+        == manifest.freeze["frozen_assets"][
+            "rivermark_viewport_startup_winner_attestation"
+        ]["sha256"]
+    ):
+        raise V6ContractError("outdoor execution viewport winner attestation mismatch")
+    execute_formal_campaign(
+        _outdoor_as_authorized_formal(manifest),
+        condition_stack_id=condition_stack_id,
+        condition_stack_contract=condition_stack_contract,
+    )
+    return evaluate_outdoor_campaign(manifest)
+
+
+def _half_evidence_digest(
+    manifest: IndoorCampaignManifest | OutdoorCampaignManifest,
+) -> str:
+    rows = []
+    for condition in manifest.conditions:
+        for run_index, identity in enumerate(condition.episode_identities, start=1):
+            root = (
+                condition.output_directory
+                / condition.scenario_id
+                / f"run-{run_index:04d}-seed-{int(identity['seed'])}"
+            )
+            if root.is_symlink() or not root.is_dir():
+                raise V6ContractError("combined half evidence is partial or symlinked")
+            entries = {}
+            for filename in (
+                "run_summary.json", "run_manifest.json", "checksums.sha256",
+                "stack_contract.json",
+            ):
+                evidence = root / filename
+                if evidence.is_symlink() or not evidence.is_file():
+                    raise V6ContractError("combined half evidence core file is missing")
+                entries[filename] = _file_sha256(evidence)
+            contract, tuple_digest = _load_stack_contract_snapshot(
+                root / "stack_contract.json",
+                expected_condition_id=condition.condition_id,
+                freeze=manifest.freeze,
+            )
+            if contract.get("schema") != STACK_CONTRACT_SCHEMA:
+                raise V6ContractError("combined halves reject old stack evidence")
+            rows.append({
+                "condition_id": condition.condition_id,
+                "run_index": run_index,
+                "seed": int(identity["seed"]),
+                "root": str(root.resolve()),
+                "files": entries,
+                "stack_tuple_digest": tuple_digest,
+            })
+    if len(rows) != 60:
+        raise V6ContractError("combined half must independently index 60 episodes")
+    canonical = json.dumps(rows, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def combine_qualified_halves(
+    indoor_manifest_path: str | Path,
+    outdoor_manifest_path: str | Path,
+) -> dict[str, Any]:
+    indoor = load_indoor_campaign_manifest(indoor_manifest_path)
+    outdoor = load_outdoor_campaign_manifest(outdoor_manifest_path)
+    if (
+        indoor.freeze.get("validator_only_head_promotion") is not None
+        or indoor.freeze.get("indoor_continuation") is not None
+    ):
+        raise V6ContractError("combined halves require fresh same-tuple indoor evidence")
+    indoor_result = evaluate_indoor_campaign(indoor)
+    outdoor_result = evaluate_outdoor_campaign(outdoor)
+    if indoor_result.get("qualification") != "INDOOR_QUALIFICATION_PASS":
+        raise V6ContractError("combined halves require indoor PASS")
+    if outdoor_result.get("qualification") != "OUTDOOR_QUALIFICATION_PASS":
+        raise V6ContractError("combined halves require outdoor PASS")
+    if not (
+        indoor_result["present_episodes"] == indoor_result["valid_episodes"] == 60
+        and outdoor_result["present_episodes"] == outdoor_result["valid_episodes"] == 60
+    ):
+        raise V6ContractError("combined halves reject partial or invalid evidence")
+    indoor_repositories = indoor.freeze["repositories"]
+    outdoor_repositories = outdoor.freeze["repositories"]
+    if indoor_repositories != outdoor_repositories or any(
+        "tree" not in row for row in indoor_repositories.values()
+    ):
+        raise V6ContractError("combined halves repository HEAD+tree tuple mismatch")
+    for name, row in indoor_repositories.items():
+        path = Path(row["path"])
+        current = _repository_freeze_entry_with_tree(path)
+        if current != row or _repository_tracked_dirty(path):
+            raise V6ContractError(f"combined halves tracked provenance drift: {name}")
+    if (
+        indoor.freeze["driver_version"] != outdoor.freeze["driver_version"]
+        or indoor.freeze["kernel_release"] != outdoor.freeze["kernel_release"]
+    ):
+        raise V6ContractError("combined halves driver/kernel policy mismatch")
+    for name in COMMON_HALF_ASSET_KEYS:
+        if indoor.freeze["frozen_assets"].get(name) != outdoor.freeze[
+            "frozen_assets"
+        ].get(name):
+            raise V6ContractError(f"combined halves shared asset mismatch: {name}")
+    for name in ("runner_entrypoint", "experiment_runner", "v6_formal"):
+        if indoor.freeze[name] != outdoor.freeze[name]:
+            raise V6ContractError(f"combined halves tooling/profile mismatch: {name}")
+    indoor_evidence_digest = _half_evidence_digest(indoor)
+    outdoor_evidence_digest = _half_evidence_digest(outdoor)
+    condition_rows = []
+    for result in (indoor_result, outdoor_result):
+        for row in result["conditions"]:
+            condition_rows.append({
+                "id": row["id"],
+                "qualification": row["qualification"],
+                "strict_successes": row["strict_successes"],
+                "valid_episodes": row["valid_episodes"],
+                "required_strict_successes": row["required_strict_successes"],
+                **(
+                    {"path_deviation_percent": row["path_deviation_percent"]}
+                    if "path_deviation_percent" in row
+                    else {}
+                ),
+            })
+    if tuple(row["id"] for row in condition_rows) != (
+        *INDOOR_CONDITION_IDS, *OUTDOOR_CONDITION_IDS,
+    ):
+        raise V6ContractError("combined condition order mismatch")
+    return {
+        "schema_version": COMBINED_HALVES_SCHEMA_VERSION,
+        "qualification": "COMBINED_QUALIFICATION_PASS",
+        "formal_qualification": NOT_QUALIFIED,
+        "dispatch": False,
+        "repositories": json.loads(json.dumps(indoor_repositories)),
+        "platform_policy": {
+            "driver_version": indoor.freeze["driver_version"],
+            "kernel_release": indoor.freeze["kernel_release"],
+        },
+        "halves": {
+            "indoor": {
+                "manifest": {
+                    "path": str(indoor.path), "sha256": _file_sha256(indoor.path)
+                },
+                "freeze_digest": indoor.freeze_digest,
+                "evidence_digest": indoor_evidence_digest,
+                "validated_episodes": 60,
+            },
+            "outdoor": {
+                "manifest": {
+                    "path": str(outdoor.path), "sha256": _file_sha256(outdoor.path)
+                },
+                "freeze_digest": outdoor.freeze_digest,
+                "evidence_digest": outdoor_evidence_digest,
+                "validated_episodes": 60,
+            },
+        },
+        "conditions": condition_rows,
+    }
 
 
 def _mapping(value: Any, path: str) -> Mapping[str, Any]:
@@ -6748,16 +7853,24 @@ def build_parser() -> argparse.ArgumentParser:
     manifest_group.add_argument("--manifest")
     manifest_group.add_argument("--formal-manifest")
     manifest_group.add_argument("--indoor-manifest")
+    manifest_group.add_argument("--outdoor-manifest")
     manifest_group.add_argument("--pilot-manifest")
     manifest_group.add_argument("--indoor-pilot-manifest")
+    manifest_group.add_argument("--outdoor-pilot-manifest")
     manifest_group.add_argument("--continue-indoor-parent")
+    manifest_group.add_argument(
+        "--combine-qualified-halves", nargs=2, metavar=("INDOOR", "OUTDOOR")
+    )
     parser.add_argument("--pilot-aggregate")
     parser.add_argument("--output-manifest")
     parser.add_argument("--formal-output-root")
     parser.add_argument("--indoor-pilot-aggregate")
     parser.add_argument("--indoor-output-root")
+    parser.add_argument("--outdoor-pilot-aggregate")
+    parser.add_argument("--outdoor-output-root")
     manifest_group.add_argument("--aggregate-pilot-root")
     manifest_group.add_argument("--aggregate-indoor-pilot-root")
+    manifest_group.add_argument("--aggregate-outdoor-pilot-root")
     parser.add_argument("--output-pilot-manifest")
     parser.add_argument("--output-pilot-aggregate")
     parser.add_argument("--continuation-output-manifest")
@@ -6767,6 +7880,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dispatch-pilot", action="store_true")
     parser.add_argument("--execute-formal", action="store_true")
     parser.add_argument("--execute-indoor", action="store_true")
+    parser.add_argument("--execute-outdoor", action="store_true")
     parser.add_argument("--condition-stack-id")
     parser.add_argument("--condition-stack-contract")
     parser.add_argument("--output-jsonl")
@@ -6784,6 +7898,18 @@ def cli(argv: list[str] | None = None) -> int:
         parser.error(continuation_error)
     args = parser.parse_args(raw_argv)
     try:
+        if args.combine_qualified_halves:
+            forbidden = (
+                args.pilot or args.dispatch_pilot or args.execute_formal
+                or args.execute_indoor or args.execute_outdoor
+                or args.condition_stack_id or args.condition_stack_contract
+            )
+            if forbidden:
+                raise V6ContractError("combine-qualified-halves is read-only")
+            print(json.dumps(combine_qualified_halves(
+                args.combine_qualified_halves[0], args.combine_qualified_halves[1]
+            ), sort_keys=True))
+            return 0
         if args.continue_indoor_parent:
             if not args.continuation_output_manifest or not args.continuation_output_root:
                 raise V6ContractError(
@@ -6818,10 +7944,27 @@ def cli(argv: list[str] | None = None) -> int:
                 raise V6ContractError(
                     "indoor Pilot aggregate mode requires both output paths"
                 )
-            if args.pilot or args.dispatch_pilot or args.execute_formal or args.execute_indoor:
+            if args.pilot or args.dispatch_pilot or args.execute_formal or args.execute_indoor or args.execute_outdoor:
                 raise V6ContractError("indoor Pilot aggregate mode cannot dispatch")
             result = aggregate_indoor_pilot(
                 pilot_root=args.aggregate_indoor_pilot_root,
+                output_manifest=args.output_pilot_manifest,
+                output_aggregate=args.output_pilot_aggregate,
+            )
+            print(json.dumps(result, sort_keys=True))
+            return 0
+        if args.aggregate_outdoor_pilot_root:
+            if not args.output_pilot_manifest or not args.output_pilot_aggregate:
+                raise V6ContractError(
+                    "outdoor Pilot aggregate mode requires both output paths"
+                )
+            if (
+                args.pilot or args.dispatch_pilot or args.execute_formal
+                or args.execute_indoor or args.execute_outdoor
+            ):
+                raise V6ContractError("outdoor Pilot aggregate mode cannot dispatch")
+            result = aggregate_outdoor_pilot(
+                pilot_root=args.aggregate_outdoor_pilot_root,
                 output_manifest=args.output_pilot_manifest,
                 output_aggregate=args.output_pilot_aggregate,
             )
@@ -6832,7 +7975,7 @@ def cli(argv: list[str] | None = None) -> int:
                 raise V6ContractError(
                     "Pilot aggregate mode requires both output paths"
                 )
-            if args.pilot or args.dispatch_pilot or args.execute_formal or args.execute_indoor:
+            if args.pilot or args.dispatch_pilot or args.execute_formal or args.execute_indoor or args.execute_outdoor:
                 raise V6ContractError("Pilot aggregate mode cannot dispatch")
             result = aggregate_sufficient_pilot(
                 pilot_root=args.aggregate_pilot_root,
@@ -6850,7 +7993,7 @@ def cli(argv: list[str] | None = None) -> int:
                 raise V6ContractError(
                     "indoor Pilot freezer requires aggregate, output manifest, and indoor output root"
                 )
-            if args.pilot or args.dispatch_pilot or args.execute_formal or args.execute_indoor:
+            if args.pilot or args.dispatch_pilot or args.execute_formal or args.execute_indoor or args.execute_outdoor:
                 raise V6ContractError("indoor Pilot freezer cannot dispatch episodes")
             frozen = freeze_indoor_campaign_from_pilot(
                 pilot_manifest_path=args.indoor_pilot_manifest,
@@ -6862,6 +8005,35 @@ def cli(argv: list[str] | None = None) -> int:
                 "qualification": "INDOOR_CAMPAIGN_READY",
                 "formal_qualification": NOT_QUALIFIED,
                 "indoor_progress": "0/60",
+                "dispatch": False,
+                "manifest": str(frozen.path),
+                "freeze_digest": frozen.freeze_digest,
+            }, sort_keys=True))
+            return 0
+        if args.outdoor_pilot_manifest:
+            if (
+                not args.outdoor_pilot_aggregate
+                or not args.output_manifest
+                or not args.outdoor_output_root
+            ):
+                raise V6ContractError(
+                    "outdoor Pilot freezer requires aggregate, output manifest, and output root"
+                )
+            if (
+                args.pilot or args.dispatch_pilot or args.execute_formal
+                or args.execute_indoor or args.execute_outdoor
+            ):
+                raise V6ContractError("outdoor Pilot freezer cannot dispatch")
+            frozen = freeze_outdoor_campaign_from_pilot(
+                pilot_manifest_path=args.outdoor_pilot_manifest,
+                pilot_aggregate_path=args.outdoor_pilot_aggregate,
+                output_manifest_path=args.output_manifest,
+                outdoor_output_root=args.outdoor_output_root,
+            )
+            print(json.dumps({
+                "qualification": "OUTDOOR_CAMPAIGN_READY",
+                "formal_qualification": NOT_QUALIFIED,
+                "outdoor_progress": "0/60",
                 "dispatch": False,
                 "manifest": str(frozen.path),
                 "freeze_digest": frozen.freeze_digest,
@@ -6896,7 +8068,7 @@ def cli(argv: list[str] | None = None) -> int:
             }, sort_keys=True))
             return 0
         if args.indoor_manifest:
-            if args.pilot or args.dispatch_pilot or args.output_jsonl or args.execute_formal:
+            if args.pilot or args.dispatch_pilot or args.output_jsonl or args.execute_formal or args.execute_outdoor:
                 raise V6ContractError(
                     "indoor campaign manifest cannot use Pilot/formal options"
                 )
@@ -6937,8 +8109,51 @@ def cli(argv: list[str] | None = None) -> int:
                 "dispatch_plan": plans,
             }, sort_keys=True))
             return 0
+        if args.outdoor_manifest:
+            if (
+                args.pilot or args.dispatch_pilot or args.output_jsonl
+                or args.execute_formal or args.execute_indoor
+            ):
+                raise V6ContractError(
+                    "outdoor campaign manifest cannot use Pilot/formal/indoor options"
+                )
+            if args.execute_outdoor and (
+                not args.condition_stack_id or not args.condition_stack_contract
+            ):
+                raise V6ContractError(
+                    "--execute-outdoor requires --condition-stack-id and contract"
+                )
+            if not args.execute_outdoor and (
+                args.condition_stack_id or args.condition_stack_contract
+            ):
+                raise V6ContractError(
+                    "condition stack options require --execute-outdoor"
+                )
+            campaign = load_outdoor_campaign_manifest(args.outdoor_manifest)
+            aggregate = (
+                execute_outdoor_campaign(
+                    campaign,
+                    condition_stack_id=args.condition_stack_id,
+                    condition_stack_contract=args.condition_stack_contract,
+                )
+                if args.execute_outdoor
+                else evaluate_outdoor_campaign(campaign)
+            )
+            print(json.dumps({
+                "qualification": aggregate["qualification"],
+                "formal_qualification": NOT_QUALIFIED,
+                "freeze_digest": campaign.freeze_digest,
+                "dispatch": args.execute_outdoor,
+                "aggregate": aggregate,
+                "resume_points": {
+                    row["id"]: row["next_run_index"]
+                    for row in aggregate["conditions"]
+                },
+                "dispatch_plan": outdoor_dispatch_plan(campaign, aggregate),
+            }, sort_keys=True))
+            return 0
         if args.formal_manifest:
-            if args.pilot or args.dispatch_pilot or args.output_jsonl or args.execute_indoor:
+            if args.pilot or args.dispatch_pilot or args.output_jsonl or args.execute_indoor or args.execute_outdoor:
                 raise V6ContractError(
                     "formal campaign manifest cannot use engineering-pilot options"
                 )
@@ -6992,6 +8207,8 @@ def cli(argv: list[str] | None = None) -> int:
             or args.output_pilot_aggregate
             or args.indoor_pilot_aggregate
             or args.indoor_output_root
+            or args.outdoor_pilot_aggregate
+            or args.outdoor_output_root
             or args.continuation_output_manifest
             or args.continuation_output_root
         ):
@@ -6999,6 +8216,7 @@ def cli(argv: list[str] | None = None) -> int:
         if (
             args.execute_formal
             or args.execute_indoor
+            or args.execute_outdoor
             or args.condition_stack_id
             or args.condition_stack_contract
         ):
