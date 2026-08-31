@@ -15,6 +15,7 @@ from isaac_sim.apps.navigation_sim import (
     _create_paired_appearance_capture,
     _parser,
     _simulation_app_config,
+    _verify_default_viewport_updates,
     _verify_rtx_descriptor_sets,
     run,
 )
@@ -228,10 +229,29 @@ def test_camera_cli_accepts_only_named_profiles():
         .default
         is False
     )
+    assert (
+        inspect.signature(run)
+        .parameters["disable_viewport_updates"]
+        .default
+        is False
+    )
     assert parser.parse_args([]).disable_dlss is False
+    assert parser.parse_args([]).disable_viewport_updates is False
     assert parser.parse_args([]).rtx_descriptor_sets is None
     assert parser.parse_args(["--disable-dlss"]).disable_dlss is True
     assert parser.parse_args(["--no-disable-dlss"]).disable_dlss is False
+    assert (
+        parser.parse_args(
+            ["--disable-viewport-updates"]
+        ).disable_viewport_updates
+        is True
+    )
+    assert (
+        parser.parse_args(
+            ["--no-disable-viewport-updates"]
+        ).disable_viewport_updates
+        is False
+    )
     assert (
         parser.parse_args(
             ["--paired-appearance-capture"]
@@ -258,6 +278,8 @@ def test_camera_cli_accepts_only_named_profiles():
     for abbreviated in ("--rtx-descriptor-set", "--rtx-desc"):
         with pytest.raises(SystemExit):
             parser.parse_args([abbreviated, "10000"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--disable-viewport-update"])
 
 
 def test_stage_readiness_cli_uses_typed_config_override(monkeypatch):
@@ -285,6 +307,7 @@ def test_simulation_app_enables_supported_multitick_sensor_settings_early():
     ]
 
     assert launch["multi_gpu"] is False
+    assert launch["disable_viewport_updates"] is False
     assert "anti_aliasing" not in launch
     assert launch["extra_args"] == [
         "--/renderer/raytracingMotion/enabled=true",
@@ -310,6 +333,12 @@ def test_simulation_app_enables_supported_multitick_sensor_settings_early():
         argument.startswith("--/rtx/descriptorSets=")
         for argument in descriptor_override["extra_args"]
     ) == 1
+
+    viewport_disabled = _simulation_app_config(
+        _config(), disable_viewport_updates=True
+    )
+    assert viewport_disabled["disable_viewport_updates"] is True
+    assert viewport_disabled["extra_args"] == launch["extra_args"]
 
 
 def test_rtx_descriptor_sets_verification_reports_and_fails_closed(
@@ -345,6 +374,83 @@ def test_rtx_descriptor_sets_verification_reports_and_fails_closed(
     )
 
 
+def _install_fake_active_viewport(monkeypatch, viewport):
+    monkeypatch.setitem(sys.modules, "omni", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "omni.kit", SimpleNamespace())
+    monkeypatch.setitem(
+        sys.modules, "omni.kit.viewport", SimpleNamespace()
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "omni.kit.viewport.utility",
+        SimpleNamespace(get_active_viewport=lambda: viewport),
+    )
+
+
+@pytest.mark.parametrize(
+    ("requested_disabled", "observed_enabled"),
+    ((False, True), (True, False)),
+)
+def test_viewport_verification_reports_live_match_for_both_arms(
+    monkeypatch, capsys, requested_disabled, observed_enabled
+):
+    _install_fake_active_viewport(
+        monkeypatch, SimpleNamespace(updates_enabled=observed_enabled)
+    )
+
+    _verify_default_viewport_updates(
+        headless=True, requested_disabled=requested_disabled
+    )
+
+    assert capsys.readouterr().out == (
+        "DEFAULT_VIEWPORT_UPDATES headless=True "
+        f"requested_disabled={requested_disabled!r} "
+        f"observed_enabled={observed_enabled!r} match=True\n"
+    )
+
+
+@pytest.mark.parametrize("observed_enabled", (None, 0, "false", True))
+def test_viewport_verification_fails_closed_on_missing_nonbool_or_mismatch(
+    monkeypatch, capsys, observed_enabled
+):
+    viewport = (
+        None
+        if observed_enabled is None
+        else SimpleNamespace(updates_enabled=observed_enabled)
+    )
+    _install_fake_active_viewport(monkeypatch, viewport)
+
+    with pytest.raises(RuntimeError, match="viewport updates contract mismatch"):
+        _verify_default_viewport_updates(
+            headless=True, requested_disabled=True
+        )
+
+    assert "match=False" in capsys.readouterr().out
+
+
+def test_viewport_verification_rejects_gui_disable(monkeypatch, capsys):
+    _install_fake_active_viewport(
+        monkeypatch, SimpleNamespace(updates_enabled=False)
+    )
+
+    with pytest.raises(RuntimeError, match="headless=False"):
+        _verify_default_viewport_updates(
+            headless=False, requested_disabled=True
+        )
+
+    assert "match=False" in capsys.readouterr().out
+
+
+def test_viewport_verification_runs_after_construction_and_before_ready():
+    source = inspect.getsource(run)
+
+    first = source.index("_verify_default_viewport_updates(")
+    ready = source.index('"Isaac navigation simulation ready: "')
+    second = source.rindex("_verify_default_viewport_updates(", 0, ready)
+
+    assert first < second < ready
+
+
 def test_run_passes_single_gpu_launch_contract_to_simulation_app(monkeypatch):
     captured = {}
 
@@ -371,12 +477,17 @@ def test_run_passes_single_gpu_launch_contract_to_simulation_app(monkeypatch):
             "baseline",
             disable_dlss=True,
             rtx_descriptor_sets=20000,
+            disable_viewport_updates=True,
         )
 
     assert captured["multi_gpu"] is False
     assert captured["anti_aliasing"] == 0
+    assert captured["disable_viewport_updates"] is True
     assert captured == _simulation_app_config(
-        _config(), disable_dlss=True, rtx_descriptor_sets=20000
+        _config(),
+        disable_dlss=True,
+        rtx_descriptor_sets=20000,
+        disable_viewport_updates=True,
     )
 
 
@@ -469,6 +580,11 @@ def test_run_closes_simulation_app_when_descriptor_verification_fails(
     )
     monkeypatch.setattr(
         navigation_sim,
+        "_verify_default_viewport_updates",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        navigation_sim,
         "_verify_rtx_descriptor_sets",
         lambda _requested: (_ for _ in ()).throw(RuntimeError("mismatch")),
     )
@@ -487,18 +603,59 @@ def test_run_closes_simulation_app_when_descriptor_verification_fails(
     assert closed == [1]
 
 
+def test_run_closes_simulation_app_when_viewport_verification_fails(
+    monkeypatch
+):
+    closed = []
+
+    class FakeSimulationApp:
+        def __init__(self, launch):
+            assert launch["disable_viewport_updates"] is True
+
+        def close(self, *, exit_code):
+            closed.append(exit_code)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "isaacsim",
+        SimpleNamespace(SimulationApp=FakeSimulationApp),
+    )
+    monkeypatch.setattr(
+        navigation_sim,
+        "_verify_default_viewport_updates",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("viewport mismatch")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="viewport mismatch"):
+        run(
+            _config(),
+            None,
+            None,
+            None,
+            None,
+            "baseline",
+            disable_viewport_updates=True,
+        )
+
+    assert closed == [1]
+
+
 @pytest.mark.parametrize(
     (
         "argv",
         "expected_localization_owner",
         "expected_descriptor_sets",
         "expected_paired_capture",
+        "expected_viewport_disabled",
     ),
     (
-        (["--disable-dlss"], "auto", None, False),
+        (["--disable-dlss"], "auto", None, False, False),
         (
             [
                 "--disable-dlss",
+                "--disable-viewport-updates",
                 "--localization-owner",
                 "ideal",
                 "--rtx-descriptor-sets",
@@ -507,6 +664,7 @@ def test_run_closes_simulation_app_when_descriptor_verification_fails(
             ],
             "ideal",
             20000,
+            True,
             True,
         ),
     ),
@@ -517,6 +675,7 @@ def test_main_passes_runtime_contract_directly_to_run(
     expected_localization_owner,
     expected_descriptor_sets,
     expected_paired_capture,
+    expected_viewport_disabled,
 ):
     selected_pose = SimpleNamespace(map=SimpleNamespace(calibrated=True))
     captured = {}
@@ -546,6 +705,7 @@ def test_main_passes_runtime_contract_directly_to_run(
             "disable_dlss": True,
             "rtx_descriptor_sets": expected_descriptor_sets,
             "paired_appearance_capture_enabled": expected_paired_capture,
+            "disable_viewport_updates": expected_viewport_disabled,
         },
     }
 

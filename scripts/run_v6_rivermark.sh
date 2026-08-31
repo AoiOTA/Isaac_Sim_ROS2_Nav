@@ -14,6 +14,36 @@ scenario="${2:-}"
   "usage: $0 isaac|ros static|dynamic|appearance [appearance-profile] [arguments...]"
 shift 2
 
+viewport_arm="A"
+viewport_arm_selected=false
+forwarded_arguments=()
+while (( $# )); do
+  case "$1" in
+    --viewport-arm)
+      (( $# >= 2 )) || die "--viewport-arm requires A or B"
+      viewport_arm="$2"
+      viewport_arm_selected=true
+      shift 2
+      ;;
+    --viewport-arm=*)
+      die "use --viewport-arm A or --viewport-arm B"
+      ;;
+    *)
+      forwarded_arguments+=("$1")
+      shift
+      ;;
+  esac
+done
+set -- "${forwarded_arguments[@]}"
+
+case "${viewport_arm}" in
+  A|B) ;;
+  *) die "--viewport-arm must be A or B; got: ${viewport_arm}" ;;
+esac
+if [[ "${entrypoint}" != "isaac" && "${viewport_arm_selected}" == true ]]; then
+  die "--viewport-arm is valid only for the Isaac entrypoint"
+fi
+
 case "${entrypoint}" in
   isaac|ros) ;;
   *) die "entrypoint must be isaac or ros; got: ${entrypoint}" ;;
@@ -69,7 +99,12 @@ export V6_RIVERMARK_GOALS_FILE="${goals_file}"
 export V6_RIVERMARK_APPEARANCE_PROFILE="${appearance_profile}"
 
 if [[ "${entrypoint}" == "isaac" ]]; then
+  effective_headless=false
   for argument in "$@"; do
+    case "${argument}" in
+      --headless) effective_headless=true ;;
+      --no-headless) effective_headless=false ;;
+    esac
     case "${argument}" in
       --environment-usd|--environment-usd=*|--spawn-poses-file|--spawn-poses-file=*|\
       --spawn-pose|--spawn-pose=*|--mode|--mode=*|\
@@ -79,6 +114,8 @@ if [[ "${entrypoint}" == "isaac" ]]; then
       --rtx-descriptor*|\
       --disable-dlss|--disable-dlss=*|\
       --no-disable-dlss|--no-disable-dlss=*|\
+      --disable-viewport-updates|--disable-viewport-updates=*|\
+      --no-disable-viewport-updates|--no-disable-viewport-updates=*|\
       --dynamic-obstacle-config|--dynamic-obstacle-config=*|\
       --appearance-config|--appearance-config=*|\
       --appearance-profile|--appearance-profile=*)
@@ -86,6 +123,12 @@ if [[ "${entrypoint}" == "isaac" ]]; then
         ;;
     esac
   done
+  viewport_arguments=(--no-disable-viewport-updates)
+  if [[ "${viewport_arm}" == "B" ]]; then
+    [[ "${effective_headless}" == true ]] || die \
+      "--viewport-arm B requires the effective Isaac mode to be --headless"
+    viewport_arguments=(--disable-viewport-updates)
+  fi
   "${SCRIPT_DIR}/import_assets.sh"
   "${SCRIPT_DIR}/import_assets.sh" --check
   obstacle_config="${dynamic_config}"
@@ -115,6 +158,7 @@ if [[ "${entrypoint}" == "isaac" ]]; then
     --camera-profile rgbd_navigation \
     --rtx-descriptor-sets 20000 \
     --disable-dlss \
+    "${viewport_arguments[@]}" \
     --dynamic-obstacle-config "${obstacle_config}" \
     "${dynamic_args[@]}" \
     --appearance-config "${appearance_config}" \

@@ -417,6 +417,12 @@ def _parser() -> argparse.ArgumentParser:
         help="disable DLSS anti-aliasing before Kit starts",
     )
     parser.add_argument(
+        "--disable-viewport-updates",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="request the default viewport update state before Kit starts",
+    )
+    parser.add_argument(
         "--rtx-descriptor-sets",
         type=_positive_int,
         default=None,
@@ -713,11 +719,13 @@ def _simulation_app_config(
     config: ProjectConfig,
     disable_dlss: bool = False,
     rtx_descriptor_sets: int | None = None,
+    disable_viewport_updates: bool = False,
 ) -> dict[str, object]:
     launch = {
         "headless": config.simulation.headless,
         "renderer": config.simulation.renderer,
         "multi_gpu": False,
+        "disable_viewport_updates": disable_viewport_updates,
         "extra_args": [
             "--/renderer/raytracingMotion/enabled=true",
             "--/renderer/raytracingMotion/enableHydraEngineMasking=true",
@@ -762,6 +770,41 @@ def _verify_rtx_descriptor_sets(requested: int | None) -> None:
         raise RuntimeError(
             "RTX descriptor-set setting mismatch: "
             f"requested={requested} applied={applied}"
+        )
+
+
+def _verify_default_viewport_updates(
+    *, headless: bool, requested_disabled: bool
+) -> None:
+    """Read the live viewport property and fail closed on any divergence."""
+
+    from omni.kit.viewport.utility import get_active_viewport
+
+    viewport = get_active_viewport()
+    observed_enabled = (
+        None if viewport is None else getattr(viewport, "updates_enabled", None)
+    )
+    match = (
+        type(headless) is bool
+        and type(requested_disabled) is bool
+        and type(observed_enabled) is bool
+        and observed_enabled is (not requested_disabled)
+        and not (requested_disabled and not headless)
+    )
+    print(
+        "DEFAULT_VIEWPORT_UPDATES "
+        f"headless={headless!r} "
+        f"requested_disabled={requested_disabled!r} "
+        f"observed_enabled={observed_enabled!r} "
+        f"match={match!r}",
+        flush=True,
+    )
+    if not match:
+        raise RuntimeError(
+            "default viewport updates contract mismatch: "
+            f"headless={headless!r} "
+            f"requested_disabled={requested_disabled!r} "
+            f"observed_enabled={observed_enabled!r}"
         )
 
 
@@ -819,6 +862,7 @@ def run(
     disable_dlss: bool = False,
     rtx_descriptor_sets: int | None = None,
     paired_appearance_capture_enabled: bool = False,
+    disable_viewport_updates: bool = False,
 ) -> None:
     configure_process_environment(config)
 
@@ -834,11 +878,16 @@ def run(
                 config,
                 disable_dlss,
                 rtx_descriptor_sets,
+                disable_viewport_updates,
             )
         )
     finally:
         sys.argv = original_argv
     try:
+        _verify_default_viewport_updates(
+            headless=config.simulation.headless,
+            requested_disabled=disable_viewport_updates,
+        )
         _verify_rtx_descriptor_sets(rtx_descriptor_sets)
     except Exception:
         app.close(exit_code=1)
@@ -2366,6 +2415,10 @@ def run(
 
         max_frames = config.simulation.max_frames
         frame = 0
+        _verify_default_viewport_updates(
+            headless=config.simulation.headless,
+            requested_disabled=disable_viewport_updates,
+        )
         node.get_logger().info(
             "Isaac navigation simulation ready: "
             f"navigation={config.simulation.navigation_mode}, "
@@ -3092,6 +3145,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         disable_dlss=args.disable_dlss,
         rtx_descriptor_sets=args.rtx_descriptor_sets,
         paired_appearance_capture_enabled=args.paired_appearance_capture,
+        disable_viewport_updates=args.disable_viewport_updates,
     )
     return 0
 
