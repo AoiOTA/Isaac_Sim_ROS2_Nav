@@ -69,7 +69,12 @@ export V6_RIVERMARK_GOALS_FILE="${goals_file}"
 export V6_RIVERMARK_APPEARANCE_PROFILE="${appearance_profile}"
 
 if [[ "${entrypoint}" == "isaac" ]]; then
+  effective_headless=false
   for argument in "$@"; do
+    case "${argument}" in
+      --headless) effective_headless=true ;;
+      --no-headless) effective_headless=false ;;
+    esac
     case "${argument}" in
       --environment-usd|--environment-usd=*|--spawn-poses-file|--spawn-poses-file=*|\
       --spawn-pose|--spawn-pose=*|--mode|--mode=*|\
@@ -79,6 +84,8 @@ if [[ "${entrypoint}" == "isaac" ]]; then
       --rtx-descriptor*|\
       --disable-dlss|--disable-dlss=*|\
       --no-disable-dlss|--no-disable-dlss=*|\
+      --disable-viewport-updates|--disable-viewport-updates=*|\
+      --no-disable-viewport-updates|--no-disable-viewport-updates=*|\
       --dynamic-obstacle-config|--dynamic-obstacle-config=*|\
       --appearance-config|--appearance-config=*|\
       --appearance-profile|--appearance-profile=*)
@@ -86,6 +93,10 @@ if [[ "${entrypoint}" == "isaac" ]]; then
         ;;
     esac
   done
+  viewport_args=()
+  if [[ "${effective_headless}" == true ]]; then
+    viewport_args=(--disable-viewport-updates)
+  fi
   "${SCRIPT_DIR}/import_assets.sh"
   "${SCRIPT_DIR}/import_assets.sh" --check
   obstacle_config="${dynamic_config}"
@@ -115,6 +126,7 @@ if [[ "${entrypoint}" == "isaac" ]]; then
     --camera-profile rgbd_navigation \
     --rtx-descriptor-sets 20000 \
     --disable-dlss \
+    "${viewport_args[@]}" \
     --dynamic-obstacle-config "${obstacle_config}" \
     "${dynamic_args[@]}" \
     --appearance-config "${appearance_config}" \

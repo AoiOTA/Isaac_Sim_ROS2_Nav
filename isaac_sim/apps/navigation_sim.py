@@ -417,6 +417,12 @@ def _parser() -> argparse.ArgumentParser:
         help="disable DLSS anti-aliasing before Kit starts",
     )
     parser.add_argument(
+        "--disable-viewport-updates",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="disable default viewport updates before loading a scene",
+    )
+    parser.add_argument(
         "--rtx-descriptor-sets",
         type=_positive_int,
         default=None,
@@ -713,11 +719,13 @@ def _simulation_app_config(
     config: ProjectConfig,
     disable_dlss: bool = False,
     rtx_descriptor_sets: int | None = None,
+    disable_viewport_updates: bool = False,
 ) -> dict[str, object]:
     launch = {
         "headless": config.simulation.headless,
         "renderer": config.simulation.renderer,
         "multi_gpu": False,
+        "disable_viewport_updates": disable_viewport_updates,
         "extra_args": [
             "--/renderer/raytracingMotion/enabled=true",
             "--/renderer/raytracingMotion/enableHydraEngineMasking=true",
@@ -763,6 +771,37 @@ def _verify_rtx_descriptor_sets(requested: int | None) -> None:
             "RTX descriptor-set setting mismatch: "
             f"requested={requested} applied={applied}"
         )
+
+
+def _verify_default_viewport_updates_disabled(requested: bool) -> None:
+    """Fail closed when SimulationApp did not apply the requested setting."""
+
+    applied = False
+    failure: Exception | None = None
+    if requested:
+        try:
+            from omni.kit.viewport.utility import get_active_viewport
+
+            viewport = get_active_viewport()
+            applied = (
+                viewport is not None
+                and getattr(viewport, "updates_enabled") is False
+            )
+        except Exception as exc:
+            failure = exc
+    print(
+        "DEFAULT_VIEWPORT_UPDATES_DISABLED "
+        f"requested={requested} applied={applied}",
+        flush=True,
+    )
+    if requested and not applied:
+        error = RuntimeError(
+            "default viewport updates setting mismatch: "
+            f"requested={requested} applied={applied}"
+        )
+        if failure is not None:
+            raise error from failure
+        raise error
 
 
 def _create_paired_appearance_capture(
@@ -819,6 +858,7 @@ def run(
     disable_dlss: bool = False,
     rtx_descriptor_sets: int | None = None,
     paired_appearance_capture_enabled: bool = False,
+    disable_viewport_updates: bool = False,
 ) -> None:
     configure_process_environment(config)
 
@@ -834,11 +874,13 @@ def run(
                 config,
                 disable_dlss,
                 rtx_descriptor_sets,
+                disable_viewport_updates,
             )
         )
     finally:
         sys.argv = original_argv
     try:
+        _verify_default_viewport_updates_disabled(disable_viewport_updates)
         _verify_rtx_descriptor_sets(rtx_descriptor_sets)
     except Exception:
         app.close(exit_code=1)
@@ -3092,6 +3134,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         disable_dlss=args.disable_dlss,
         rtx_descriptor_sets=args.rtx_descriptor_sets,
         paired_appearance_capture_enabled=args.paired_appearance_capture,
+        disable_viewport_updates=args.disable_viewport_updates,
     )
     return 0
 
