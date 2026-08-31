@@ -276,6 +276,33 @@ def _cognitive_admission_components(
     return components
 
 
+def _cognitive_runtime_components(
+    components: Mapping[str, Mapping[str, Any]],
+    *,
+    condition_stack_id: str,
+    stack_contract: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    result = {role: dict(configuration) for role, configuration in components.items()}
+    if not stack_contract:
+        return result
+    expected_profile = (
+        "module2_causal_obstacle_outdoor"
+        if condition_stack_id.startswith("outdoor_")
+        else "module2_causal_obstacle_active"
+    )
+    if not (
+        stack_contract.get("arm") == "M3"
+        and stack_contract.get("startup_profile") == expected_profile
+    ):
+        raise ConfigurationError(
+            "Formal/Pilot cognitive readiness requires the M3 active profile"
+        )
+    return {
+        role: {**configuration, "mode": "active"}
+        for role, configuration in result.items()
+    }
+
+
 def _validate_condition_stack_parameters(
     *,
     condition_stack_id: str,
@@ -437,7 +464,9 @@ def _message_duration_ns(value: object) -> int:
     return sec * 1_000_000_000 + nanosec
 
 
-def _cognitive_status_fallback_healthy(role: str, reason: str) -> bool:
+def _cognitive_status_fallback_healthy(
+    role: str, mode: str, reason: str
+) -> bool:
     """Accept only product-defined healthy status encodings."""
 
     tokens = reason.split(";")
@@ -465,16 +494,21 @@ def _cognitive_status_fallback_healthy(role: str, reason: str) -> bool:
             and math.isfinite(source_age_ms)
             and source_age_ms >= 0.0
             and confirmed_count >= 0
-            and values["rejection_reason"] in {"", "offered", "shadow"}
+            and values["rejection_reason"]
+            in ({"shadow"} if mode == "shadow" else {"", "offered"})
         )
     if role != "critic" or not tokens:
         return False
     if tokens[0] == "shadow":
+        if mode != "shadow":
+            return False
         tokens = tokens[1:]
         allowed_keys = {
             "maximum_obstacle_cost_delta", "obstacle_count", "aggregation",
         }
     else:
+        if mode != "active":
+            return False
         allowed_keys = {
             "cost_delta_applied", "obstacle_applied", "obstacle_suppressed",
             "prior_accepted", "context_applied", "context_suppressed",
@@ -543,6 +577,57 @@ def _cognitive_status_fallback_healthy(role: str, reason: str) -> bool:
         and values.get("cost_delta_applied") in {"true", "false"}
         and values.get("obstacle_applied") in {"true", "false"}
     )
+
+
+def _coherent_cognitive_component_state(
+    *,
+    planning: Mapping[tuple[int, str, str, int], Mapping[str, Any]],
+    sources: Mapping[tuple[int, str, str, int], Mapping[str, Any]],
+    statuses: Mapping[str, list[Mapping[str, Any]]],
+    roles: set[str],
+) -> dict[str, dict[str, Any]]:
+    """Close each producer independently over its source/planning receipt."""
+
+    result: dict[str, dict[str, Any]] = {}
+    for role in sorted(roles):
+        latest_by_key: dict[tuple[int, str, str, int], Mapping[str, Any]] = {}
+        for status in statuses.get(role, []):
+            key = status.get("key")
+            if isinstance(key, tuple) and len(key) == 4:
+                latest_by_key[key] = status
+        streak = 0
+        latest: dict[str, Any] | None = None
+        last_sequence = -1
+        for status in sorted(
+            latest_by_key.values(), key=lambda row: int(row.get("order", 0))
+        ):
+            key = status["key"]
+            sequence = int(key[3])
+            if sequence <= last_sequence:
+                continue
+            last_sequence = sequence
+            source = sources.get(key)
+            prior = planning.get(key)
+            healthy = bool(
+                status.get("local_healthy") is True
+                and isinstance(source, Mapping)
+                and source.get("healthy") is True
+                and isinstance(prior, Mapping)
+                and prior.get("healthy") is True
+            )
+            streak = streak + 1 if healthy else 0
+            latest = {
+                **dict(status),
+                "healthy": healthy,
+                "consecutive_healthy_samples": streak,
+                "source": copy.deepcopy(dict(source or {})),
+                "planning_prior": copy.deepcopy(dict(prior or {})),
+            }
+        result[role] = {
+            "consecutive_healthy_samples": streak,
+            "latest": latest or {},
+        }
+    return result
 
 
 def _mcap_inventory_evidence(root: Path) -> dict[str, Any]:
@@ -669,6 +754,22 @@ def _mcap_inventory_evidence(root: Path) -> dict[str, Any]:
                     "reset_epoch": int(message.reset_epoch),
                     "recurrent_session_id": str(message.recurrent_session_id),
                     "map_version": str(message.map_version),
+                    "frame_id": str(message.header.frame_id),
+                    "cognitive_tile_id": str(message.cognitive_tile_id),
+                    "tile_revision": int(message.tile_revision),
+                    "graph_revision": int(message.graph_revision),
+                    "schema_version": str(message.schema_version),
+                    "model_id": str(message.model_id),
+                    "risk_model_sha256": str(message.risk_model_sha256),
+                    "qualification_receipt_sha256": str(
+                        message.qualification_receipt_sha256
+                    ),
+                    "ttl_ns": _message_duration_ns(message.ttl),
+                    "validation_ttl_ns": _message_duration_ns(
+                        message.validation_ttl
+                    ),
+                    "reliability": float(message.reliability),
+                    "ood_probability": float(message.ood_probability),
                     "validation_stamp_s": _message_time_seconds(
                         message.validation_stamp
                     ),
@@ -724,6 +825,10 @@ def _mcap_inventory_evidence(root: Path) -> dict[str, Any]:
                     "input_healthy": bool(message.input_healthy),
                     "observation_valid": bool(message.observation_valid),
                     "trusted_write": bool(message.trusted_write),
+                    "place_entropy_normalized": float(
+                        message.place_entropy_normalized
+                    ),
+                    "context_uncertainty": float(message.context_uncertainty),
                 })
             elif topic == "/odom":
                 odom_stamp_ns.add(_message_time_ns(message.header.stamp))
@@ -779,6 +884,34 @@ def _recorded_source_odom_contract(
     source_odom_ns = source.get("source_odom_stamp_ns")
     validation_odom_ns = source.get("validation_odom_stamp_ns")
     mode = source.get("validation_mode")
+    if not (
+        source.get("frame_id") == "base_link"
+        and source.get("schema_version") == "bio_nav_cognitive_obstacles_v1"
+        and isinstance(source.get("sequence"), int)
+        and source["sequence"] > 0
+        and isinstance(source.get("cognitive_tile_id"), str)
+        and bool(source["cognitive_tile_id"])
+        and isinstance(source.get("tile_revision"), int)
+        and source["tile_revision"] > 0
+        and isinstance(source.get("graph_revision"), int)
+        and source["graph_revision"] > 0
+        and all(
+            isinstance(source.get(key), str) and bool(source[key])
+            for key in (
+                "model_id", "risk_model_sha256",
+                "qualification_receipt_sha256",
+            )
+        )
+        and isinstance(source.get("ttl_ns"), int)
+        and 0 < source["ttl_ns"] <= 500_000_000
+        and isinstance(source.get("validation_ttl_ns"), int)
+        and 0 < source["validation_ttl_ns"] <= 500_000_000
+        and isinstance(source.get("reliability"), (int, float))
+        and math.isfinite(float(source["reliability"]))
+        and isinstance(source.get("ood_probability"), (int, float))
+        and math.isfinite(float(source["ood_probability"]))
+    ):
+        return "source_contract_invalid"
     if not all(
         isinstance(value, int) and not isinstance(value, bool)
         for value in (
@@ -898,7 +1031,7 @@ def _recorded_cognitive_admission_evidence(
         "sequence", "stamp_s", "reset_epoch", "recurrent_session_id",
         "map_version", "module2_healthy", "input_healthy",
         "observation_valid", "trusted_write", "schema_version", "accepted",
-        "place_entropy_normalized", "context_uncertainty",
+        "place_entropy_normalized", "context_uncertainty", "healthy",
     }
     if set(planning) != required_planning:
         return {"passed": False, "error": "cognitive_planning_fields_invalid"}
@@ -926,6 +1059,7 @@ def _recorded_cognitive_admission_evidence(
         and planning.get("input_healthy") is True
         and planning.get("observation_valid") is True
         and planning.get("trusted_write") is True
+        and planning.get("healthy") is True
         and planning.get("schema_version") in {
             "bio_nav_planning_prior_v4", "bio_nav_planning_prior_v310",
         }
@@ -960,6 +1094,7 @@ def _recorded_cognitive_admission_evidence(
         return {"passed": False, "error": "cognitive_mcap_semantics_missing"}
     dispatch_ns = round(float(dispatch_s) * 1_000_000_000)
     barrier_ns = round(float(barrier_s) * 1_000_000_000)
+    ready_ns = round(float(ready_s) * 1_000_000_000)
     odom_stamps = {
         value for value in odom_rows
         if isinstance(value, int) and not isinstance(value, bool) and value > 0
@@ -977,6 +1112,24 @@ def _recorded_cognitive_admission_evidence(
         and isinstance(row.get("source_stamp_ns"), int)
         and barrier_ns < row["source_stamp_ns"] <= dispatch_ns
     }
+    if any(
+        isinstance(row, Mapping)
+        and isinstance(row.get("validation_stamp_ns"), int)
+        and ready_ns < row["validation_stamp_ns"] <= dispatch_ns
+        and (
+            (
+                row.get("reset_epoch"), row.get("recurrent_session_id"),
+                row.get("map_version"),
+            ) != identity
+            or row.get("recurrent_session_id") == forbidden_session
+            or row.get("input_healthy") is not True
+            or row.get("module2_healthy") is not True
+            or row.get("observation_valid") is not True
+            or row.get("trusted_write") is not True
+        )
+        for row in sources
+    ):
+        return {"passed": False, "error": "cognitive_bad_source_after_latch"}
     planning_by_sequence = {
         int(row["sequence"]): row
         for row in planning_rows
@@ -994,13 +1147,47 @@ def _recorded_cognitive_admission_evidence(
         and row.get("input_healthy") is True
         and row.get("observation_valid") is True
         and row.get("trusted_write") is True
+        and math.isfinite(float(row.get("place_entropy_normalized", math.nan)))
+        and math.isfinite(float(row.get("context_uncertainty", math.nan)))
     }
+    if any(
+        isinstance(row, Mapping)
+        and isinstance(row.get("stamp_ns"), int)
+        and ready_ns < row["stamp_ns"] <= dispatch_ns
+        and (
+            (
+                row.get("reset_epoch"), row.get("recurrent_session_id"),
+                row.get("map_version"),
+            ) != identity
+            or
+            row.get("module2_healthy") is not True
+            or row.get("input_healthy") is not True
+            or row.get("observation_valid") is not True
+            or row.get("trusted_write") is not True
+            or not math.isfinite(
+                float(row.get("place_entropy_normalized", math.nan))
+            )
+            or not math.isfinite(float(row.get("context_uncertainty", math.nan)))
+        )
+        for row in planning_rows
+    ):
+        return {"passed": False, "error": "cognitive_bad_planning_after_latch"}
     planning_sequence = planning.get("sequence")
     planning_row = planning_by_sequence.get(planning_sequence)
     if not (
         isinstance(planning_sequence, int)
         and planning_row is not None
-        and planning_row["stamp_ns"] == round(float(planning["stamp_s"]) * 1_000_000_000)
+        and planning_row["stamp_ns"]
+        == round(float(planning["stamp_s"]) * 1_000_000_000)
+        and all(
+            planning.get(key) == planning_row.get(key)
+            for key in (
+                "sequence", "reset_epoch", "recurrent_session_id",
+                "map_version", "module2_healthy", "input_healthy",
+                "observation_valid", "trusted_write", "schema_version",
+                "place_entropy_normalized", "context_uncertainty",
+            )
+        )
     ):
         return {"passed": False, "error": "cognitive_planning_mcap_mismatch"}
 
@@ -1024,6 +1211,15 @@ def _recorded_cognitive_admission_evidence(
             return "local_layer"
         return None
 
+    if any(
+        isinstance(row, Mapping)
+        and isinstance(row.get("status_stamp_ns"), int)
+        and ready_ns < row["status_stamp_ns"] <= dispatch_ns
+        and role_of(row) is None
+        for row in statuses
+    ):
+        return {"passed": False, "error": "cognitive_component_spoof_after_latch"}
+
     replay_components: dict[str, Any] = {}
     latest_required_fields = {
         "consumer", "role", "mode", "offered", "applied", "rejected",
@@ -1032,14 +1228,28 @@ def _recorded_cognitive_admission_evidence(
         "message_age_ms", "validation_stamp_s",
         "admission_rejection_reason", "consecutive_healthy_samples",
     }
+    source_receipt_fields = {
+        "sequence", "reset_epoch", "recurrent_session_id", "map_version",
+        "frame_id", "cognitive_tile_id", "tile_revision", "graph_revision",
+        "schema_version", "model_id", "risk_model_sha256",
+        "qualification_receipt_sha256", "ttl_ns", "validation_ttl_ns",
+        "source_age_ns", "validation_mode", "validation_stamp_s", "healthy",
+    }
+    planning_receipt_fields = required_planning
     for role in sorted(COGNITIVE_ADMISSION_COMPONENTS):
         configuration = summary_receipt["components"][role]
         if not isinstance(configuration, Mapping):
             return {"passed": False, "error": f"cognitive_component_invalid:{role}"}
         expected_latest = configuration.get("latest")
+        expected_source = configuration.get("source")
+        expected_planning = configuration.get("planning_prior")
         if (
             not isinstance(expected_latest, Mapping)
-            or not latest_required_fields <= set(expected_latest)
+            or not isinstance(expected_source, Mapping)
+            or not isinstance(expected_planning, Mapping)
+            or set(expected_latest) != latest_required_fields
+            or set(expected_source) != source_receipt_fields
+            or set(expected_planning) != planning_receipt_fields
         ):
             return {"passed": False, "error": f"cognitive_latest_fields_missing:{role}"}
         expected_mode = configuration.get("expected_mode")
@@ -1057,9 +1267,19 @@ def _recorded_cognitive_admission_evidence(
         streak = 0
         last_sequence = -1
         matched: Mapping[str, Any] | None = None
-        for row in statuses:
-            if not isinstance(row, Mapping) or role_of(row) != role:
+        matched_streak = 0
+        coherent_rows: list[dict[str, Any]] = []
+        latest_status_by_sequence: dict[int, Mapping[str, Any]] = {}
+        for candidate in statuses:
+            if not isinstance(candidate, Mapping) or role_of(candidate) != role:
                 continue
+            candidate_sequence = candidate.get("source_sequence")
+            if isinstance(candidate_sequence, int):
+                latest_status_by_sequence[candidate_sequence] = candidate
+        for row in sorted(
+            latest_status_by_sequence.values(),
+            key=lambda item: int(item.get("status_stamp_ns", 0)),
+        ):
             if not (
                 isinstance(row.get("status_stamp_ns"), int)
                 and barrier_ns < row["status_stamp_ns"] <= dispatch_ns
@@ -1093,6 +1313,7 @@ def _recorded_cognitive_admission_evidence(
                 else "source_missing"
             )
             layer_source_age_matches = True
+            critic_source_sequence_matches = True
             if role in {"global_layer", "local_layer"} and source is not None:
                 try:
                     fallback_values = dict(
@@ -1102,10 +1323,22 @@ def _recorded_cognitive_admission_evidence(
                         float(fallback_values["source_age_ms"]),
                         float(source["source_age_ns"]) * 1.0e-6,
                         rel_tol=0.0,
-                        abs_tol=1.0e-3,
+                        abs_tol=1.0e-6,
                     )
                 except (KeyError, TypeError, ValueError):
                     layer_source_age_matches = False
+            if role == "critic" and "accepted_source_sequence=" in fallback:
+                try:
+                    fallback_values = dict(
+                        token.split("=", 1)
+                        for token in fallback.split(";") if "=" in token
+                    )
+                    critic_source_sequence_matches = (
+                        int(fallback_values["accepted_source_sequence"])
+                        == int(sequence)
+                    )
+                except (KeyError, TypeError, ValueError):
+                    critic_source_sequence_matches = False
             healthy = bool(
                 source is not None
                 and planning_for_source is not None
@@ -1130,17 +1363,62 @@ def _recorded_cognitive_admission_evidence(
                     float(age_ms), recomputed_age_ms,
                     rel_tol=0.0, abs_tol=1.0e-3,
                 )
-                and _cognitive_status_fallback_healthy(role, fallback)
+                and _cognitive_status_fallback_healthy(
+                    role, str(row.get("mode", "")).strip().lower(), fallback
+                )
                 and layer_source_age_matches
+                and critic_source_sequence_matches
                 and odom_error is None
             )
+            coherent_rows.append({
+                **dict(row),
+                "key": (*identity, int(sequence)),
+                "order": int(row["status_stamp_ns"]),
+                "local_healthy": healthy,
+            })
             streak = streak + 1 if healthy else 0
             if sequence == expected_sequence:
                 matched = row
-                break
-        if matched is None or streak < COGNITIVE_ADMISSION_MIN_CONSECUTIVE:
+                matched_streak = streak
+            if row["status_stamp_ns"] > ready_ns and not healthy:
+                return {
+                    "passed": False,
+                    "error": f"cognitive_bad_status_after_latch:{role}",
+                }
+        if (
+            matched is None
+            or matched_streak < COGNITIVE_ADMISSION_MIN_CONSECUTIVE
+        ):
             return {"passed": False, "error": f"cognitive_streak_missing:{role}"}
+        coherent_state = _coherent_cognitive_component_state(
+            planning={
+                (*identity, int(sequence)): {**dict(row), "healthy": True}
+                for sequence, row in planning_by_sequence.items()
+            },
+            sources={
+                (*identity, int(sequence)): {**dict(row), "healthy": True}
+                for sequence, row in sources_by_sequence.items()
+            },
+            statuses={role: coherent_rows},
+            roles={role},
+        )[role]
+        if not (
+            coherent_state["consecutive_healthy_samples"]
+            >= COGNITIVE_ADMISSION_MIN_CONSECUTIVE
+        ):
+            return {
+                "passed": False,
+                "error": f"cognitive_shared_coherence_mismatch:{role}",
+            }
         source = sources_by_sequence[int(expected_sequence)]
+        if not (
+            0 <= dispatch_ns - int(source["validation_stamp_ns"])
+            <= round(float(maximum_age_s) * 1_000_000_000)
+        ):
+            return {
+                "passed": False,
+                "error": f"cognitive_component_stale_at_dispatch:{role}",
+            }
         reconstructed = {
             key: matched.get(key)
             for key in (
@@ -1154,15 +1432,39 @@ def _recorded_cognitive_admission_evidence(
             "role": role,
             "validation_stamp_s": source["validation_stamp_s"],
             "admission_rejection_reason": None,
-            "consecutive_healthy_samples": streak,
+            "consecutive_healthy_samples": matched_streak,
         })
         if any(expected_latest.get(key) != value for key, value in reconstructed.items()):
             return {"passed": False, "error": f"cognitive_summary_replay_mismatch:{role}"}
         replay_components[role] = reconstructed
-        if int(expected_sequence) != int(planning_sequence):
+        source_receipt = {
+            key: (True if key == "healthy" else source.get(key))
+            for key in expected_source
+        }
+        planning_for_source = planning_by_sequence[int(expected_sequence)]
+        planning_receipt = {
+            "stamp_s": planning_for_source["stamp_ns"] * 1.0e-9,
+            **{
+                key: planning_for_source.get(key)
+                for key in (
+                    "sequence", "reset_epoch", "recurrent_session_id",
+                    "map_version", "module2_healthy", "input_healthy",
+                    "observation_valid", "trusted_write", "schema_version",
+                    "place_entropy_normalized", "context_uncertainty",
+                )
+            },
+            "accepted": True,
+            "healthy": True,
+        }
+        if expected_source != source_receipt:
             return {
                 "passed": False,
-                "error": f"cognitive_planning_source_sequence_mismatch:{role}",
+                "error": f"cognitive_source_receipt_mismatch:{role}",
+            }
+        if expected_planning != planning_receipt:
+            return {
+                "passed": False,
+                "error": f"cognitive_planning_receipt_mismatch:{role}",
             }
     return {
         "passed": True,
@@ -2034,6 +2336,11 @@ class ExperimentRunner(Node):
         self._cognitive_admission_components = _cognitive_admission_components(
             nav2_configuration
         )
+        self._cognitive_admission_components = _cognitive_runtime_components(
+            self._cognitive_admission_components,
+            condition_stack_id=self._condition_stack_id,
+            stack_contract=self._condition_stack_contract,
+        )
         if (
             self._scenario.scenario_id in FINAL_V6_SCENARIO_IDS
             and set(self._cognitive_admission_components)
@@ -2772,6 +3079,7 @@ class ExperimentRunner(Node):
         if target.exists():
             raise ConfigurationError("trial dispatch receipt already exists")
         dispatch_ros_s = self._clock_seconds()
+        self._validate_cognitive_admission_before_dispatch(dispatch_ros_s)
         cognitive_receipt = self._cognitive_admission_snapshot()
         if cognitive_receipt.get("required") is True and not (
             cognitive_receipt.get("ready") is True
@@ -2818,6 +3126,38 @@ class ExperimentRunner(Node):
             ) from exc
         self._lifecycle_event("goal_dispatched")
         self._goal_dispatch_recorded = True
+
+    def _validate_cognitive_admission_before_dispatch(
+        self, dispatch_ros_s: float | None
+    ) -> None:
+        components = getattr(self, "_cognitive_admission_components", {})
+        if not components:
+            return
+        if (
+            self._cognitive_admission_ready_receipt is None
+            or self._cognitive_admission_bad_after_latch
+            or dispatch_ros_s is None
+            or not math.isfinite(float(dispatch_ros_s))
+        ):
+            raise ConfigurationError(
+                "cognitive admission became unhealthy after readiness latch"
+            )
+        self._recompute_cognitive_admission_state()
+        for role, configuration in components.items():
+            latest = self._cognitive_admission_latest.get(role, {})
+            validation_stamp_s = latest.get("validation_stamp_s")
+            if not (
+                latest.get("healthy") is True
+                and self._cognitive_admission_streaks.get(role, 0)
+                >= COGNITIVE_ADMISSION_MIN_CONSECUTIVE
+                and isinstance(validation_stamp_s, (int, float))
+                and 0.0
+                <= float(dispatch_ros_s) - float(validation_stamp_s)
+                <= float(configuration.get("maximum_age_s", 0.5))
+            ):
+                raise ConfigurationError(
+                    f"cognitive admission is not current at dispatch: {role}"
+                )
 
     def _clock_callback(self, message: Clock) -> None:
         if message.clock.sec != 0 or message.clock.nanosec != 0:
@@ -2948,60 +3288,89 @@ class ExperimentRunner(Node):
             str(message.recurrent_session_id),
             str(message.map_version),
         )
-        planning = self._latest_planning_prior_readiness
-        planning_identity = (
-            (
-                int(planning["reset_epoch"]),
-                str(planning["recurrent_session_id"]),
-                str(planning["map_version"]),
-            )
-            if planning is not None
-            else None
+        source_healthy = bool(
+            message.input_healthy
+            and message.module2_healthy
+            and message.observation_valid
+            and message.trusted_write
+            and int(message.sequence) > 0
+            and str(message.header.frame_id) == "base_link"
+            and str(message.schema_version) == "bio_nav_cognitive_obstacles_v1"
+            and str(message.cognitive_tile_id)
+            and int(message.tile_revision) > 0
+            and int(message.graph_revision) > 0
+            and str(message.model_id)
+            and str(message.risk_model_sha256)
+            and str(message.qualification_receipt_sha256)
+            and 0 < _message_duration_ns(message.ttl) <= 500_000_000
+            and 0 < _message_duration_ns(message.validation_ttl) <= 500_000_000
+            and math.isfinite(float(message.reliability))
+            and math.isfinite(float(message.ood_probability))
+            and 0.0 <= float(message.reliability) <= 1.0
+            and 0.0 <= float(message.ood_probability) <= 1.0
         )
-        if (
-            barrier_monotonic is None
-            or barrier_ros_s is None
-            or received_at <= barrier_monotonic
-            or validation_stamp_s <= barrier_ros_s
-            or not identity[1]
-            or identity[0] != self._cognitive_admission_expected_reset_epoch
-            or (
+        source_contract_valid = bool(
+            barrier_monotonic is not None
+            and barrier_ros_s is not None
+            and received_at > barrier_monotonic
+            and validation_stamp_s > barrier_ros_s
+            and bool(identity[1])
+            and identity[0] == self._cognitive_admission_expected_reset_epoch
+            and not (
                 self._cognitive_admission_forbidden_recurrent_session_id
                 and identity[1]
                 == self._cognitive_admission_forbidden_recurrent_session_id
             )
-            or identity[2] != self._scenario.map_version
-            or identity != planning_identity
-            or int(message.sequence) != int(planning.get("sequence", -1))
-            or planning.get("accepted") is not True
-            or not bool(message.input_healthy)
-            or not bool(message.module2_healthy)
-            or not bool(message.observation_valid)
-            or not bool(message.trusted_write)
-        ):
+            and identity[2] == self._scenario.map_version
+        )
+        if not source_contract_valid:
+            if (
+                self._cognitive_admission_ready_receipt is not None
+                and barrier_monotonic is not None
+                and barrier_ros_s is not None
+                and received_at > barrier_monotonic
+                and validation_stamp_s > barrier_ros_s
+            ):
+                self._cognitive_admission_bad_after_latch = True
             return
         if (
             self._cognitive_admission_current_identity is not None
             and identity != self._cognitive_admission_current_identity
         ):
-            self._cognitive_admission_streaks = {
-                role: 0 for role in self._cognitive_admission_components
-            }
-            self._cognitive_admission_last_sequences = {
-                role: -1 for role in self._cognitive_admission_components
-            }
-            self._cognitive_admission_latest = {}
-            self._cognitive_admission_sources = {}
+            return
         self._cognitive_admission_current_identity = identity
         key = (*identity, int(message.sequence))
         self._cognitive_admission_sources[key] = {
+            "key": key,
+            "sequence": int(message.sequence),
+            "reset_epoch": identity[0],
+            "recurrent_session_id": identity[1],
+            "map_version": identity[2],
+            "frame_id": str(message.header.frame_id),
+            "cognitive_tile_id": str(message.cognitive_tile_id),
+            "tile_revision": int(message.tile_revision),
+            "graph_revision": int(message.graph_revision),
+            "schema_version": str(message.schema_version),
+            "model_id": str(message.model_id),
+            "risk_model_sha256": str(message.risk_model_sha256),
+            "qualification_receipt_sha256": str(
+                message.qualification_receipt_sha256
+            ),
+            "ttl_ns": _message_duration_ns(message.ttl),
+            "validation_ttl_ns": _message_duration_ns(message.validation_ttl),
+            "source_age_ns": _message_duration_ns(message.source_age),
+            "validation_mode": int(message.validation_mode),
             "validation_stamp_s": validation_stamp_s,
             "received_at": received_at,
+            "healthy": source_healthy,
         }
         while len(self._cognitive_admission_sources) > 128:
             self._cognitive_admission_sources.pop(
                 next(iter(self._cognitive_admission_sources))
             )
+        if self._cognitive_admission_ready_receipt is not None and not source_healthy:
+            self._cognitive_admission_bad_after_latch = True
+        self._recompute_cognitive_admission_state()
 
     def _cognitive_layer_status_callback(self, message: RiskLayerStatus) -> None:
         consumer = str(message.consumer)
@@ -3038,8 +3407,16 @@ class ExperimentRunner(Node):
         )
         self._cognitive_admission_current_identity: tuple[int, str, str] | None = None
         self._cognitive_admission_sources: dict[
-            tuple[int, str, str, int], dict[str, float]
+            tuple[int, str, str, int], dict[str, Any]
         ] = {}
+        self._cognitive_admission_planning: dict[
+            tuple[int, str, str, int], dict[str, Any]
+        ] = {}
+        self._cognitive_admission_status_history: dict[
+            str, list[dict[str, Any]]
+        ] = {role: [] for role in components}
+        self._cognitive_admission_event_order = 0
+        self._cognitive_admission_bad_after_latch = False
         self._cognitive_admission_streaks = {role: 0 for role in components}
         self._cognitive_admission_last_sequences = {
             role: -1 for role in components
@@ -3068,7 +3445,6 @@ class ExperimentRunner(Node):
             str(message.recurrent_session_id),
             str(message.map_version),
         )
-        source = self._cognitive_admission_sources.get((*identity, sequence))
         reason = str(message.fallback_reason)
         status_stamp_s = self._message_stamp_seconds(message.stamp)
         barrier_monotonic = self._cognitive_admission_barrier_monotonic
@@ -3083,10 +3459,15 @@ class ExperimentRunner(Node):
             rejection_reason = "reset_barrier_unavailable"
         elif received_at <= barrier_monotonic or status_stamp_s <= barrier_ros_s:
             rejection_reason = "pre_reset_or_stale_status"
-        elif source is None:
-            rejection_reason = "source_sequence_not_current"
-        elif identity != self._cognitive_admission_current_identity:
-            rejection_reason = "stale_identity"
+        elif identity[0] != self._cognitive_admission_expected_reset_epoch:
+            rejection_reason = "reset_epoch_mismatch"
+        elif (
+            self._cognitive_admission_forbidden_recurrent_session_id
+            and identity[1] == self._cognitive_admission_forbidden_recurrent_session_id
+        ):
+            rejection_reason = "recurrent_session_reused"
+        elif identity[2] != self._scenario.map_version:
+            rejection_reason = "map_version_mismatch"
         elif str(message.consumer) != COGNITIVE_COMPONENT_CONSUMERS[role]:
             rejection_reason = "component_consumer_mismatch"
         elif str(message.mode).strip().lower() != expected_mode:
@@ -3101,27 +3482,35 @@ class ExperimentRunner(Node):
             or message_age_ms > maximum_age_ms
         ):
             rejection_reason = "validation_stamp_stale"
-        elif not _cognitive_status_fallback_healthy(role, reason):
+        elif not _cognitive_status_fallback_healthy(
+            role, str(message.mode).strip().lower(), reason
+        ):
             rejection_reason = "fallback_not_allowlisted"
+        elif role == "critic" and "accepted_source_sequence=" in reason:
+            try:
+                reason_values = dict(
+                    token.split("=", 1)
+                    for token in reason.split(";") if "=" in token
+                )
+                if int(reason_values["accepted_source_sequence"]) != sequence:
+                    rejection_reason = "critic_source_sequence_mismatch"
+            except (KeyError, ValueError):
+                rejection_reason = "critic_source_sequence_mismatch"
 
-        last_sequence = self._cognitive_admission_last_sequences.get(role, -1)
-        if sequence <= last_sequence:
-            return
-        self._cognitive_admission_last_sequences[role] = sequence
-        if rejection_reason:
-            self._cognitive_admission_streaks[role] = 0
-        else:
-            self._cognitive_admission_streaks[role] += 1
+        self._cognitive_admission_event_order += 1
         clock_s = self._clock_seconds()
-        validation_stamp_s = (
-            float(source["validation_stamp_s"]) if source is not None else None
-        )
+        key = (*identity, sequence)
+        source = self._cognitive_admission_sources.get(key)
+        validation_stamp_s = float(source["validation_stamp_s"]) if source else None
         validation_skew_ms = (
             (clock_s - validation_stamp_s) * 1000.0
             if clock_s is not None and validation_stamp_s is not None
             else None
         )
-        self._cognitive_admission_latest[role] = {
+        status = {
+            "key": key,
+            "order": self._cognitive_admission_event_order,
+            "local_healthy": not rejection_reason,
             "consumer": str(message.consumer),
             "role": role,
             "mode": str(message.mode),
@@ -3142,7 +3531,44 @@ class ExperimentRunner(Node):
             "received_after_reset_barrier": bool(
                 barrier_monotonic is not None and received_at > barrier_monotonic
             ),
-            "consecutive_healthy_samples": self._cognitive_admission_streaks[role],
+            "consecutive_healthy_samples": 0,
+        }
+        self._cognitive_admission_status_history[role].append(status)
+        if len(self._cognitive_admission_status_history[role]) > 256:
+            self._cognitive_admission_status_history[role] = (
+                self._cognitive_admission_status_history[role][-256:]
+            )
+        if self._cognitive_admission_ready_receipt is not None and rejection_reason:
+            self._cognitive_admission_bad_after_latch = True
+        self._recompute_cognitive_admission_state()
+        if (
+            self._cognitive_admission_ready_receipt is not None
+            and self._cognitive_admission_latest.get(role, {}).get("healthy")
+            is not True
+        ):
+            self._cognitive_admission_bad_after_latch = True
+
+    def _recompute_cognitive_admission_state(self) -> None:
+        roles = set(getattr(self, "_cognitive_admission_components", {}))
+        state = _coherent_cognitive_component_state(
+            planning=self._cognitive_admission_planning,
+            sources=self._cognitive_admission_sources,
+            statuses=self._cognitive_admission_status_history,
+            roles=roles,
+        )
+        self._cognitive_admission_streaks = {
+            role: int(state[role]["consecutive_healthy_samples"])
+            for role in roles
+        }
+        self._cognitive_admission_latest = {
+            role: dict(state[role]["latest"])
+            for role in roles if state[role]["latest"]
+        }
+        self._cognitive_admission_last_sequences = {
+            role: int(self._cognitive_admission_latest.get(role, {}).get(
+                "source_sequence", -1
+            ))
+            for role in roles
         }
 
     def _current_cognitive_admission_snapshot(self) -> dict[str, Any]:
@@ -3208,17 +3634,16 @@ class ExperimentRunner(Node):
 
     def _latch_cognitive_admission_receipt(self) -> None:
         components = getattr(self, "_cognitive_admission_components", {})
-        planning = getattr(self, "_latest_planning_prior_readiness", None)
         identity = getattr(self, "_cognitive_admission_current_identity", None)
         reset_receipt = getattr(self, "_reset_receipt", None)
         if (
-            not isinstance(planning, Mapping)
-            or identity is None
+            identity is None
             or not isinstance(reset_receipt, Mapping)
             or int(reset_receipt.get("generation", -1)) != identity[0]
         ):
             raise RuntimeError("cognitive admission identity is incomplete at readiness")
         component_receipts: dict[str, dict[str, Any]] = {}
+        bound_planning: list[dict[str, Any]] = []
         for role in sorted(components):
             latest = self._cognitive_admission_latest.get(role)
             if not isinstance(latest, Mapping):
@@ -3232,13 +3657,63 @@ class ExperimentRunner(Node):
                 or latest.get("admission_rejection_reason") is not None
                 or latest.get("role") != role
                 or latest.get("consumer") != COGNITIVE_COMPONENT_CONSUMERS[role]
-                or int(latest.get("source_sequence", -1))
-                != int(planning.get("sequence", -2))
+                or latest.get("healthy") is not True
+                or not isinstance(latest.get("source"), Mapping)
+                or not isinstance(latest.get("planning_prior"), Mapping)
             ):
                 raise RuntimeError(
                     f"cognitive admission status changed at readiness: {role}"
                 )
-            component_receipts[role] = copy.deepcopy(dict(latest))
+            source = dict(latest["source"])
+            planning = dict(latest["planning_prior"])
+            if (
+                int(source.get("sequence", -1))
+                != int(latest.get("source_sequence", -2))
+                or int(planning.get("sequence", -1))
+                != int(latest.get("source_sequence", -2))
+            ):
+                raise RuntimeError(
+                    f"cognitive admission tuple is incoherent at readiness: {role}"
+                )
+            status_receipt = {
+                key: copy.deepcopy(latest.get(key))
+                for key in (
+                    "consumer", "role", "mode", "offered", "applied",
+                    "rejected", "fallback_reason", "admission_rejection_reason",
+                    "source_sequence", "reset_epoch", "recurrent_session_id",
+                    "map_version", "status_stamp_s", "message_age_ms",
+                    "validation_stamp_s",
+                    "consecutive_healthy_samples",
+                )
+            }
+            source_receipt = {
+                key: copy.deepcopy(source.get(key))
+                for key in (
+                    "sequence", "reset_epoch", "recurrent_session_id",
+                    "map_version", "frame_id", "cognitive_tile_id",
+                    "tile_revision", "graph_revision", "schema_version",
+                    "model_id", "risk_model_sha256",
+                    "qualification_receipt_sha256", "ttl_ns",
+                    "validation_ttl_ns", "source_age_ns", "validation_mode",
+                    "validation_stamp_s", "healthy",
+                )
+            }
+            planning_receipt = {
+                key: copy.deepcopy(planning.get(key))
+                for key in (
+                    "stamp_s", "sequence", "reset_epoch",
+                    "recurrent_session_id", "map_version", "module2_healthy",
+                    "input_healthy", "observation_valid", "trusted_write",
+                    "schema_version", "accepted", "place_entropy_normalized",
+                    "context_uncertainty", "healthy",
+                )
+            }
+            component_receipts[role] = {
+                "latest": status_receipt,
+                "source": source_receipt,
+                "planning_prior": planning_receipt,
+            }
+            bound_planning.append(planning_receipt)
         ready_ros_s = self._clock_seconds()
         if ready_ros_s is None or not math.isfinite(ready_ros_s):
             raise RuntimeError("cognitive admission readiness requires finite ROS time")
@@ -3247,9 +3722,17 @@ class ExperimentRunner(Node):
             "three_consecutive_current_healthy_samples_per_component"
         )
         snapshot = self._current_cognitive_admission_snapshot()
+        planning = max(bound_planning, key=lambda row: float(row["stamp_s"]))
         snapshot.update({
             "reset_generation": identity[0],
             "ready_ros_s": float(ready_ros_s),
+            "module2_planning_identity": {
+                key: planning[key]
+                for key in (
+                    "sequence", "reset_epoch", "recurrent_session_id",
+                    "map_version",
+                )
+            },
             "planning_prior": {
                 key: copy.deepcopy(planning.get(key))
                 for key in (
@@ -3266,12 +3749,13 @@ class ExperimentRunner(Node):
                     "accepted",
                     "place_entropy_normalized",
                     "context_uncertainty",
+                    "healthy",
                 )
             },
             "components": {
                 role: {
                     **snapshot["components"][role],
-                    "latest": component_receipts[role],
+                    **component_receipts[role],
                 }
                 for role in sorted(components)
             },
@@ -3481,6 +3965,8 @@ class ExperimentRunner(Node):
             and bool(message.input_healthy)
             and bool(message.observation_valid)
             and bool(message.trusted_write)
+            and math.isfinite(float(message.place_entropy_normalized))
+            and math.isfinite(float(message.context_uncertainty))
         )
         self._latest_planning_prior_readiness["accepted"] = planning_accepted
         identity = (
@@ -3499,6 +3985,55 @@ class ExperimentRunner(Node):
                 self._planning_prior_ready_streak += 1
             else:
                 self._planning_prior_ready_streak = 0
+        barrier_ros_s = getattr(self, "_cognitive_admission_barrier_ros_s", None)
+        barrier_monotonic = getattr(
+            self, "_cognitive_admission_barrier_monotonic", None
+        )
+        received_at = time.monotonic()
+        post_barrier = bool(
+            barrier_ros_s is not None
+            and barrier_monotonic is not None
+            and stamp_s > barrier_ros_s
+            and received_at > barrier_monotonic
+        )
+        identity_allowed = bool(
+            identity[0]
+            == getattr(self, "_cognitive_admission_expected_reset_epoch", None)
+            and identity[2]
+            == getattr(getattr(self, "_scenario", None), "map_version", None)
+            and identity[1]
+            and identity[1]
+            != getattr(
+                self, "_cognitive_admission_forbidden_recurrent_session_id", None
+            )
+        )
+        if (
+            getattr(self, "_cognitive_admission_ready_receipt", None) is not None
+            and post_barrier
+            and (not planning_accepted or not identity_allowed)
+        ):
+            self._cognitive_admission_bad_after_latch = True
+        if (
+            post_barrier
+            and identity_allowed
+        ):
+            key = (*identity, sequence)
+            self._cognitive_admission_planning[key] = {
+                "key": key,
+                **copy.deepcopy(self._latest_planning_prior_readiness),
+                "healthy": planning_accepted,
+                "received_at": received_at,
+            }
+            while len(self._cognitive_admission_planning) > 128:
+                self._cognitive_admission_planning.pop(
+                    next(iter(self._cognitive_admission_planning))
+                )
+            if (
+                getattr(self, "_cognitive_admission_ready_receipt", None) is not None
+                and not planning_accepted
+            ):
+                self._cognitive_admission_bad_after_latch = True
+            self._recompute_cognitive_admission_state()
         if not self._navigation_active:
             return
         scalar = {
@@ -6427,6 +6962,59 @@ class ExperimentRunner(Node):
             log.close()
         return root
 
+    def _wait_for_bag_recorder_ready(self) -> None:
+        if not self._record_bag:
+            return
+
+        def ready() -> bool:
+            process = self._bag_process
+            root = self._active_evidence_root
+            if (
+                process is None
+                or process.poll() is not None
+                or root is None
+                or not any((root / "telemetry").glob("*.mcap"))
+            ):
+                return False
+            for topic in (
+                "/bio_nav/module2/planning_prior",
+                "/bio_nav/module2/cognitive_obstacles",
+                "/bio_nav/cognitive_obstacle_layer/status",
+                "/bio_nav/cognitive_risk_critic/status",
+            ):
+                endpoints = self.get_subscriptions_info_by_topic(topic)
+                if not any(
+                    "rosbag2_recorder" in str(endpoint.node_name)
+                    for endpoint in endpoints
+                ):
+                    return False
+            return True
+
+        if not self._wait_until(ready, self._service_timeout_sec):
+            process = self._bag_process
+            if process is not None and process.poll() is not None:
+                raise RuntimeError(
+                    f"rosbag recorder exited before DDS readiness: {process.returncode}"
+                )
+            raise TimeoutError("rosbag recorder did not reach observable DDS readiness")
+
+    def _restart_cognitive_admission_after_recorder_ready(self) -> None:
+        receipt = self._reset_receipt
+        barrier_ros_s = self._clock_seconds()
+        if not isinstance(receipt, Mapping) or barrier_ros_s is None:
+            raise RuntimeError("recorded cognitive admission barrier is unavailable")
+        forbidden = self._cognitive_admission_forbidden_recurrent_session_id
+        self._latest_planning_prior_readiness = None
+        self._planning_prior_ready_streak = 0
+        self._planning_prior_last_readiness_sequence = -1
+        self._planning_prior_readiness_identity = None
+        self._reset_cognitive_admission_state(
+            barrier_ros_s=float(barrier_ros_s),
+            barrier_monotonic=time.monotonic(),
+            expected_reset_epoch=int(receipt["generation"]),
+            forbidden_recurrent_session_id=forbidden,
+        )
+
     def _stop_run_bag(self) -> bool:
         process = self._bag_process
         self._bag_process = None
@@ -7094,6 +7682,12 @@ class ExperimentRunner(Node):
                 # readiness, then per-consumer cognitive admission readiness.
                 if self._navigation_execution_backend == "route_guided":
                     self._wait_for_reset_stop_gate_release()
+                if self._record_evidence:
+                    root = self._begin_run_evidence(run_index, seed)
+                    self._lifecycle_event("evidence_started")
+                    if self._record_bag:
+                        self._wait_for_bag_recorder_ready()
+                        self._restart_cognitive_admission_after_recorder_ready()
                 if self._require_module2_planning_ready and not self._wait_until(
                     lambda: self._planning_prior_ready_streak >= 5,
                     self._module2_planning_ready_timeout_sec,
@@ -7101,9 +7695,6 @@ class ExperimentRunner(Node):
                     raise RuntimeError(
                         "Module2 planning prior did not become goal-query ready"
                     )
-                if self._record_evidence:
-                    root = self._begin_run_evidence(run_index, seed)
-                    self._lifecycle_event("evidence_started")
                 self._wait_for_cognitive_admission_ready()
                 if self._record_evidence:
                     self._active_stack_episode_receipt = (

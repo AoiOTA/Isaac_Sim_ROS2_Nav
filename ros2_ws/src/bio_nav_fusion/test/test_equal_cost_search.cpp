@@ -1555,6 +1555,23 @@ TEST(CognitiveObstacleLayer, status_identity_and_age_follow_published_message)
     statuses.back().qualification_receipt_sha256,
     replay.qualification_receipt_sha256);
   expect_status_age(statuses.back(), replay);
+
+  auto precise = staticRevalidatedObstacleFixture();
+  precise.sequence += 1U;
+  const int64_t precise_validation_ns = clock->now().nanoseconds() - 10000000LL;
+  const int64_t precise_source_ns = precise_validation_ns - 1234567890LL;
+  retimeStatic(precise, precise_source_ns, precise_validation_ns);
+  Peer::offer(layer, precise);
+  ASSERT_TRUE(wait_for_status_count(4U));
+  const std::string key = ";source_age_ms=";
+  const auto start = statuses.back().fallback_reason.find(key);
+  ASSERT_NE(start, std::string::npos);
+  const auto value_start = start + key.size();
+  const auto value_end = statuses.back().fallback_reason.find(';', value_start);
+  ASSERT_NE(value_end, std::string::npos);
+  const double encoded_ms = std::stod(
+    statuses.back().fallback_reason.substr(value_start, value_end - value_start));
+  EXPECT_EQ(static_cast<int64_t>(std::llround(encoded_ms * 1000000.0)), 1234567890LL);
 }
 
 TEST(CognitiveObstacleLayer, independent_static_rehits_promote_and_persist_until_reset)

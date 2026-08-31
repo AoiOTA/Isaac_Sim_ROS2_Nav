@@ -13,6 +13,7 @@ import robot_experiments.experiment_runner as experiment_runner_module
 from robot_experiments.attempt31_rivermark_qualification import _rate_group
 from robot_experiments.experiment_runner import (
     _cognitive_admission_components,
+    _cognitive_runtime_components,
     _edge_prior_statistics,
     _episode_validity,
     _localization_node_ownership_evidence,
@@ -579,11 +580,28 @@ def _cognitive_source(
     validation_stamp=11.0,
 ):
     return SimpleNamespace(
+        header=SimpleNamespace(
+            frame_id="base_link",
+            stamp=_retirement_stamp(validation_stamp),
+        ),
         sequence=sequence,
         reset_epoch=epoch,
         recurrent_session_id=session,
         map_version=map_version,
         validation_stamp=_retirement_stamp(validation_stamp),
+        cognitive_tile_id="tile-v1",
+        tile_revision=1,
+        graph_revision=1,
+        schema_version="bio_nav_cognitive_obstacles_v1",
+        model_id="model-v1",
+        risk_model_sha256="risk-sha256",
+        qualification_receipt_sha256="qualification-sha256",
+        ttl=SimpleNamespace(sec=0, nanosec=500000000),
+        validation_ttl=SimpleNamespace(sec=0, nanosec=500000000),
+        source_age=SimpleNamespace(sec=0, nanosec=0),
+        validation_mode=1,
+        reliability=0.9,
+        ood_probability=0.1,
         input_healthy=True,
         module2_healthy=True,
         observation_valid=True,
@@ -611,11 +629,13 @@ def _cognitive_status(
     }
     if fallback_reason is None:
         fallback_reason = (
-            "shadow;maximum_obstacle_cost_delta=0;obstacle_count=0;"
-            "aggregation=max_per_step_mean_horizon"
+            "cost_delta_applied=false;zero_cost_delta;obstacle_applied=false;"
+            "obstacle_suppressed=zero_cost_delta;prior_accepted=true;"
+            f"accepted_source_sequence={sequence};maximum_obstacle_cost_delta=0;"
+            "obstacle_count=0;aggregation=max_per_step_mean_horizon"
             if role == "critic"
             else "validation_mode=2;source_age_ms=0;"
-            "rejection_reason=shadow;confirmed_count=0"
+            "rejection_reason=offered;confirmed_count=0"
         )
     return SimpleNamespace(
         consumer=consumer or consumers[role],
@@ -634,14 +654,39 @@ def _cognitive_status(
 
 
 def _publish_cognitive_sample(
-    runner, sequence, *, status_overrides=None, source_overrides=None,
+    runner, sequence, *, status_overrides=None, source_overrides=None, roles=None,
+    planning_after_source=False,
 ):
     source_overrides = source_overrides or {}
-    runner._latest_planning_prior_readiness["sequence"] = sequence
+    epoch = source_overrides.get("epoch", 2)
+    session = source_overrides.get("session", "session-2")
+    map_version = source_overrides.get("map_version", "map-v1")
+    planning = {
+        **runner._latest_planning_prior_readiness,
+        "stamp_s": source_overrides.get("validation_stamp", 11.0),
+        "sequence": sequence,
+        "reset_epoch": epoch,
+        "recurrent_session_id": session,
+        "map_version": map_version,
+        "healthy": True,
+    }
+    runner._latest_planning_prior_readiness = dict(planning)
+    planning_key = (epoch, session, map_version, sequence)
+    if (
+        not planning_after_source
+        and epoch == 2 and session != "old-session" and map_version == "map-v1"
+    ):
+        runner._cognitive_admission_planning[planning_key] = planning
     runner._cognitive_obstacle_callback(
         _cognitive_source(sequence, **source_overrides)
     )
-    for role in runner._cognitive_admission_components:
+    if (
+        planning_after_source
+        and epoch == 2 and session != "old-session" and map_version == "map-v1"
+    ):
+        runner._cognitive_admission_planning[planning_key] = planning
+        runner._recompute_cognitive_admission_state()
+    for role in (roles or runner._cognitive_admission_components):
         overrides = dict((status_overrides or {}).get(role, {}))
         status = _cognitive_status(role, sequence, **overrides)
         if role == "critic":
@@ -680,9 +725,8 @@ def test_cognitive_admission_blocks_odom_time_until_three_new_healthy_samples():
         item["consecutive_healthy_samples"] == 3
         for item in evidence["components"].values()
     )
-    assert evidence["components"]["critic"]["latest"][
-        "validation_stamp_vs_sim_time_skew_ms"
-    ] == pytest.approx(1000.0)
+    assert evidence["components"]["critic"]["source"]["sequence"] == 8
+    assert evidence["components"]["critic"]["planning_prior"]["sequence"] == 8
 
 
 @pytest.mark.parametrize(
@@ -776,6 +820,53 @@ def test_cognitive_admission_requires_planning_and_source_sequence_match():
         runner._wait_for_cognitive_admission_ready()
 
 
+def test_cognitive_admission_converges_with_out_of_order_and_lagging_critic():
+    runner = _cognitive_admission_runner()
+    for sequence in (1, 2, 3):
+        _publish_cognitive_sample(
+            runner, sequence, planning_after_source=(sequence == 1)
+        )
+    _publish_cognitive_sample(
+        runner,
+        4,
+        roles=("global_layer", "local_layer"),
+    )
+
+    runner._wait_for_cognitive_admission_ready()
+    receipt = runner._cognitive_admission_snapshot()
+
+    assert receipt["components"]["critic"]["latest"]["source_sequence"] == 3
+    assert receipt["components"]["global_layer"]["latest"]["source_sequence"] == 4
+    assert receipt["components"]["local_layer"]["latest"]["source_sequence"] == 4
+
+
+def test_bad_status_after_latch_blocks_dispatch_without_mutating_receipt():
+    runner = _cognitive_admission_runner()
+    for sequence in (1, 2, 3):
+        _publish_cognitive_sample(runner, sequence)
+    runner._wait_for_cognitive_admission_ready()
+    receipt = runner._cognitive_admission_snapshot()
+
+    _publish_cognitive_sample(
+        runner,
+        4,
+        status_overrides={
+            "critic": {
+                "fallback_reason": (
+                    "cost_delta_applied=false;zero_cost_delta;"
+                    "prior_suppressed=prior_untrusted;"
+                    "maximum_obstacle_cost_delta=0;obstacle_count=0;"
+                    "aggregation=max_per_step_mean_horizon"
+                )
+            }
+        },
+    )
+
+    assert runner._cognitive_admission_snapshot() == receipt
+    with pytest.raises(ConfigurationError, match="unhealthy after readiness"):
+        runner._validate_cognitive_admission_before_dispatch(12.1)
+
+
 @pytest.mark.parametrize(
     ("role", "overrides"),
     (
@@ -822,6 +913,25 @@ def test_cognitive_admission_rejects_each_degraded_critic_fallback(degraded):
                         "maximum_obstacle_cost_delta=0;obstacle_count=0;"
                         "aggregation=max_per_step_mean_horizon"
                     ),
+                }
+            },
+        )
+    with pytest.raises(RuntimeError, match="timed out before route dispatch"):
+        runner._wait_for_cognitive_admission_ready()
+
+
+def test_active_cognitive_admission_rejects_shadow_status_token():
+    runner = _cognitive_admission_runner()
+    for sequence in (1, 2, 3):
+        _publish_cognitive_sample(
+            runner,
+            sequence,
+            status_overrides={
+                "critic": {
+                    "fallback_reason": (
+                        "shadow;maximum_obstacle_cost_delta=0;obstacle_count=0;"
+                        "aggregation=max_per_step_mean_horizon"
+                    )
                 }
             },
         )
@@ -940,6 +1050,16 @@ def test_v6_profile_requires_both_layers_and_critic():
         "local_layer": {"mode": "shadow", "maximum_age_s": 0.5},
         "critic": {"mode": "shadow", "maximum_age_s": 0.5},
     }
+
+    active = _cognitive_runtime_components(
+        components,
+        condition_stack_id="indoor_static",
+        stack_contract={
+            "arm": "M3",
+            "startup_profile": "module2_causal_obstacle_active",
+        },
+    )
+    assert {row["mode"] for row in active.values()} == {"active"}
 
 
 def _retirement_clearance_runner(*, rejected, fallback_reason):
@@ -1603,6 +1723,36 @@ def test_clear_run_state_resets_terminal_zero_observation_fields():
     assert runner._cmd_vel_sim_last_receive_monotonic is None
     assert runner._cmd_vel_sim_last_nonzero_monotonic is None
     assert runner._cmd_vel_sim_zero_stamps == []
+
+
+def test_recorder_ready_barrier_discards_all_pre_record_readiness():
+    runner = _cognitive_admission_runner()
+    for sequence in (1, 2, 3):
+        _publish_cognitive_sample(runner, sequence)
+    assert all(value >= 3 for value in runner._cognitive_admission_streaks.values())
+    runner._cognitive_admission_ready_receipt = {"ready": True}
+    runner._clock_seconds = lambda: 12.5
+
+    runner._restart_cognitive_admission_after_recorder_ready()
+
+    assert runner._cognitive_admission_ready_receipt is None
+    assert runner._cognitive_admission_sources == {}
+    assert runner._cognitive_admission_planning == {}
+    assert all(not rows for rows in runner._cognitive_admission_status_history.values())
+    assert all(value == 0 for value in runner._cognitive_admission_streaks.values())
+    assert runner._latest_planning_prior_readiness is None
+
+
+def test_run_all_starts_and_fences_recorder_before_readiness_wait():
+    source = Path(experiment_runner_module.__file__).read_text()
+    begin = source.index("root = self._begin_run_evidence(run_index, seed)")
+    recorder_ready = source.index("self._wait_for_bag_recorder_ready()", begin)
+    restart = source.index(
+        "self._restart_cognitive_admission_after_recorder_ready()", recorder_ready
+    )
+    planning_wait = source.index("self._planning_prior_ready_streak >= 5", restart)
+    cognitive_wait = source.index("self._wait_for_cognitive_admission_ready()", planning_wait)
+    assert begin < recorder_ready < restart < planning_wait < cognitive_wait
 
 
 def test_motion_quality_measures_reverse_curves_and_turn_reversals():

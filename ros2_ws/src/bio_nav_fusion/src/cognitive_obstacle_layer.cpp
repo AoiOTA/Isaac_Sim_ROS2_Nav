@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iomanip>
 #include <limits>
 #include <set>
 #include <sstream>
@@ -1095,7 +1096,9 @@ void CognitiveObstacleLayer::publishStatus(
   status.rejection_mask = message.rejection_mask;
   std::ostringstream detail;
   detail << "validation_mode=" << static_cast<unsigned int>(message.validation_mode)
-         << ";source_age_ms=" << durationSeconds(message.source_age) * 1000.0
+         << ";source_age_ms="
+         << std::setprecision(std::numeric_limits<double>::max_digits10)
+         << durationSeconds(message.source_age) * 1000.0
          << ";rejection_reason=" << reason
          << ";confirmed_count=" << std::count_if(
     message.obstacles.begin(), message.obstacles.end(),

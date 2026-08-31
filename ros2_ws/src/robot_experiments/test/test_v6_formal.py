@@ -338,29 +338,38 @@ def _write_formal_run(
             "trusted_write": True,
             "schema_version": "bio_nav_planning_prior_v4",
             "accepted": True,
-            "place_entropy_normalized": 0.2,
-            "context_uncertainty": 0.1,
+            "place_entropy_normalized": 0.20000000298023224,
+            "context_uncertainty": 0.10000000149011612,
+            "healthy": True,
         },
         "components": {},
     }
     for role, consumer in component_consumers.items():
         cognitive_receipt["components"][role] = {
-            "expected_mode": "shadow",
+            "expected_mode": "active",
             "maximum_age_s": 0.5,
             "consecutive_healthy_samples": 3,
             "latest": {
                 "consumer": consumer,
                 "role": role,
-                "mode": "shadow",
+                "mode": "active",
                 "offered": True,
                 "applied": False,
                 "rejected": False,
                 "fallback_reason": (
-                    "shadow;maximum_obstacle_cost_delta=0;obstacle_count=0;"
-                    "aggregation=max_per_step_mean_horizon"
+                    "cost_delta_applied=false;zero_cost_delta;"
+                    "obstacle_applied=false;obstacle_suppressed=zero_cost_delta;"
+                    "prior_accepted=true;context_applied=false;"
+                    "context_suppressed=zero_cost_delta;novelty_applied=false;"
+                    "novelty_suppressed=zero_cost_delta;"
+                    "uncertainty_applied=false;"
+                    "uncertainty_suppressed=zero_cost_delta;"
+                    "direction_applied=false;direction_suppressed=zero_cost_delta;"
+                    "accepted_source_sequence=3;maximum_obstacle_cost_delta=0;"
+                    "obstacle_count=0;aggregation=max_per_step_mean_horizon"
                     if role == "critic"
                     else "validation_mode=2;source_age_ms=0.000998;"
-                    "rejection_reason=shadow;confirmed_count=0"
+                    "rejection_reason=offered;confirmed_count=0"
                 ),
                 "admission_rejection_reason": None,
                 "source_sequence": 3,
@@ -368,12 +377,54 @@ def _write_formal_run(
                 "status_stamp_s": 13.025,
                 "message_age_ms": 24.99900245666504,
                 "validation_stamp_s": 13.000000998,
-                "sim_time_s": 13.2,
-                "validation_stamp_vs_sim_time_skew_ms": 200.0,
-                "received_after_reset_barrier": True,
                 "consecutive_healthy_samples": 3,
             },
+            "source": {
+                "sequence": 3,
+                **cognitive_identity,
+                "frame_id": "base_link",
+                "cognitive_tile_id": "tile-v1",
+                "tile_revision": 1,
+                "graph_revision": 1,
+                "schema_version": "bio_nav_cognitive_obstacles_v1",
+                "model_id": "model-v1",
+                "risk_model_sha256": "risk-sha256",
+                "qualification_receipt_sha256": "qualification-sha256",
+                "ttl_ns": 500000000,
+                "validation_ttl_ns": 500000000,
+                "source_age_ns": 998,
+                "validation_mode": 2,
+                "validation_stamp_s": 13.000000998,
+                "healthy": True,
+            },
+            "planning_prior": dict(cognitive_receipt["planning_prior"]),
         }
+    if cognitive_mutation == "async_lag":
+        cognitive_receipt["planning_prior"] = {
+            **cognitive_receipt["planning_prior"],
+            "stamp_s": 13.100000998,
+            "sequence": 4,
+        }
+        cognitive_receipt["module2_planning_identity"] = {
+            "sequence": 4,
+            **cognitive_identity,
+        }
+        for role in ("global_layer", "local_layer"):
+            component = cognitive_receipt["components"][role]
+            component["consecutive_healthy_samples"] = 4
+            component["latest"].update({
+                "source_sequence": 4,
+                "status_stamp_s": 13.125,
+                "validation_stamp_s": 13.100000998,
+                "consecutive_healthy_samples": 4,
+            })
+            component["source"].update({
+                "sequence": 4,
+                "validation_stamp_s": 13.100000998,
+            })
+            component["planning_prior"] = dict(
+                cognitive_receipt["planning_prior"]
+            )
     writer = rosbag2_py.SequentialWriter()
     writer.open(
         rosbag2_py.StorageOptions(uri=str(telemetry), storage_id="mcap"),
@@ -430,8 +481,14 @@ def _write_formal_run(
     for topic, message in messages.items():
         writer.write(topic, serialize_message(message), stamp)
         stamp += 1
-    for sequence in (1, 2, 3):
-        semantic_sec = 8 if cognitive_mutation == "pre_barrier" and sequence == 1 else 10 + sequence
+    sequences = (1, 2, 3, 4) if cognitive_mutation == "async_lag" else (1, 2, 3)
+    for sequence in sequences:
+        semantic_sec = (
+            8
+            if cognitive_mutation == "pre_barrier" and sequence == 1
+            else 13 if sequence == 4 else 10 + sequence
+        )
+        semantic_nanosec = 100000000 if sequence == 4 else 0
         offered_epoch = (
             generation + 1 if cognitive_mutation == "generation_mismatch" else generation
         )
@@ -442,7 +499,7 @@ def _write_formal_run(
         )
         planning = PlanningPrior()
         planning.stamp.sec = semantic_sec
-        planning.stamp.nanosec = 998
+        planning.stamp.nanosec = semantic_nanosec + 998
         planning.sequence = (
             99
             if cognitive_mutation == "planning_mismatch" and sequence == 2
@@ -456,6 +513,12 @@ def _write_formal_run(
         planning.input_healthy = True
         planning.observation_valid = True
         planning.trusted_write = True
+        planning.place_entropy_normalized = (
+            0.7
+            if cognitive_mutation == "planning_field_tamper" and sequence == 3
+            else 0.2
+        )
+        planning.context_uncertainty = 0.1
         writer.write(
             "/bio_nav/module2/planning_prior",
             serialize_message(planning),
@@ -463,13 +526,30 @@ def _write_formal_run(
         )
         stamp += 1
         source = CognitiveObstacleArray()
+        source.header.frame_id = "base_link"
         source.header.stamp.sec = semantic_sec
+        source.header.stamp.nanosec = semantic_nanosec
         source.sequence = sequence
         source.reset_epoch = offered_epoch
         source.recurrent_session_id = offered_session
         source.map_version = cognitive_identity["map_version"]
+        source.cognitive_tile_id = "tile-v1"
+        source.tile_revision = 1
+        source.graph_revision = 1
+        source.schema_version = (
+            "tampered_schema"
+            if cognitive_mutation == "source_schema_tamper" and sequence == 2
+            else "bio_nav_cognitive_obstacles_v1"
+        )
+        source.model_id = "model-v1"
+        source.risk_model_sha256 = "risk-sha256"
+        source.qualification_receipt_sha256 = "qualification-sha256"
+        source.ttl.nanosec = 500000000
+        source.validation_ttl.nanosec = 500000000
+        source.reliability = 0.9
+        source.ood_probability = 0.1
         source.validation_stamp.sec = semantic_sec
-        source.validation_stamp.nanosec = 998
+        source.validation_stamp.nanosec = semantic_nanosec + 998
         source.source_age.nanosec = 998
         source.validation_mode = CognitiveObstacleArray.VALIDATION_STATIC_DEPTH_REVALIDATED
         source.validation_sensor_mask = CognitiveObstacleArray.VALIDATION_SENSOR_DEPTH
@@ -477,13 +557,13 @@ def _write_formal_run(
         source.source_odom_stamp.nanosec = (
             100000001
             if cognitive_mutation == "odom_over_100ms" and sequence == 2
-            else 16665668
+            else semantic_nanosec + 16665668
         )
         source.validation_odom_stamp.sec = semantic_sec
         source.validation_odom_stamp.nanosec = (
             100000002
             if cognitive_mutation == "odom_over_100ms" and sequence == 2
-            else 16666666
+            else semantic_nanosec + 16666666
         )
         source.input_healthy = True
         source.module2_healthy = True
@@ -504,16 +584,18 @@ def _write_formal_run(
             writer.write("/odom", serialize_message(odom), stamp)
             stamp += 1
         for role, consumer in component_consumers.items():
+            if cognitive_mutation == "async_lag" and sequence == 4 and role == "critic":
+                continue
             status = RiskLayerStatus()
             status.stamp.sec = semantic_sec
-            status.stamp.nanosec = 25000000
+            status.stamp.nanosec = semantic_nanosec + 25000000
             status.consumer = (
                 "spoof.FollowPath.CognitiveRiskCritic"
                 if cognitive_mutation == "component_spoof"
                 and sequence == 2 and role == "critic"
                 else consumer
             )
-            status.mode = "shadow"
+            status.mode = "active"
             status.offered = not (
                 cognitive_mutation == "offered_false"
                 and sequence == 2 and role == "critic"
@@ -531,6 +613,11 @@ def _write_formal_run(
                 else 24.999002
             )
             status.fallback_reason = (
+                "shadow;maximum_obstacle_cost_delta=0;obstacle_count=0;"
+                "aggregation=max_per_step_mean_horizon"
+                if cognitive_mutation == "shadow_in_active"
+                and sequence == 2 and role == "critic"
+                else
                 "cost_delta_applied=false;zero_cost_delta;"
                 f"prior_suppressed={cognitive_mutation.removeprefix('degraded_')};"
                 "maximum_obstacle_cost_delta=0;obstacle_count=0;"
@@ -539,11 +626,20 @@ def _write_formal_run(
                 and cognitive_mutation.startswith("degraded_")
                 and sequence == 2 and role == "critic"
                 else
-                "shadow;maximum_obstacle_cost_delta=0;obstacle_count=0;"
+                "cost_delta_applied=false;zero_cost_delta;"
+                "obstacle_applied=false;obstacle_suppressed=zero_cost_delta;"
+                "prior_accepted=true;context_applied=false;"
+                "context_suppressed=zero_cost_delta;novelty_applied=false;"
+                "novelty_suppressed=zero_cost_delta;"
+                "uncertainty_applied=false;"
+                "uncertainty_suppressed=zero_cost_delta;"
+                "direction_applied=false;direction_suppressed=zero_cost_delta;"
+                f"accepted_source_sequence={sequence};"
+                "maximum_obstacle_cost_delta=0;obstacle_count=0;"
                 "aggregation=max_per_step_mean_horizon"
                 if role == "critic"
                 else "validation_mode=2;source_age_ms=0.000998;"
-                "rejection_reason=shadow;confirmed_count=0"
+                "rejection_reason=offered;confirmed_count=0"
             )
             writer.write(
                 (
@@ -555,6 +651,27 @@ def _write_formal_run(
                 stamp,
             )
             stamp += 1
+    if cognitive_mutation == "bad_after_latch":
+        bad_planning = PlanningPrior()
+        bad_planning.stamp.sec = 13
+        bad_planning.stamp.nanosec = 250000000
+        bad_planning.sequence = 4
+        bad_planning.reset_epoch = cognitive_identity["reset_epoch"]
+        bad_planning.recurrent_session_id = cognitive_identity[
+            "recurrent_session_id"
+        ]
+        bad_planning.map_version = cognitive_identity["map_version"]
+        bad_planning.schema_version = "bio_nav_planning_prior_v4"
+        bad_planning.input_healthy = True
+        bad_planning.observation_valid = True
+        bad_planning.trusted_write = True
+        bad_planning.module2_healthy = False
+        writer.write(
+            "/bio_nav/module2/planning_prior",
+            serialize_message(bad_planning),
+            stamp,
+        )
+        stamp += 1
     for _index in range(route_completion_count - 1):
         writer.write(
             "/bio_nav/route_goal_complete",
@@ -614,7 +731,7 @@ def _write_formal_run(
     (root / "TRIAL_DISPATCHED.json").write_text(json.dumps({
         "schema": "bio_nav.trial_dispatched.v1",
         "run_index": run_index,
-        "ros_stamp_s": 14.0,
+        "ros_stamp_s": 13.3,
         "cognitive_admission_readiness": cognitive_receipt,
     }), encoding="utf-8")
     (root / "FINAL_TRIAL_METRICS.json").write_text(
@@ -4809,6 +4926,32 @@ def test_formal_primary_mcap_replays_three_cognitive_components(tmp_path):
     )
 
 
+def test_formal_binary_mcap_accepts_lagging_critic_coherent_tuple(tmp_path):
+    campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
+    root = _write_formal_run(
+        campaign.conditions[0],
+        1,
+        strict_success=True,
+        formal_freeze_digest=campaign.freeze_digest,
+        cognitive_mutation="async_lag",
+    )
+    summary = json.loads((root / "run_summary.json").read_text())
+    episode = json.loads((root / "run_manifest.json").read_text())
+
+    evidence = experiment_runner_module.validate_recorded_run_evidence(
+        root,
+        summary,
+        episode,
+        scene="indoor",
+        route_guided=True,
+        route_prior_required=True,
+        expected_leg_count=5,
+        cognitive_admission_required=True,
+    )
+
+    assert evidence["cognitive_admission_replay"]["passed"] is True
+
+
 @pytest.mark.parametrize(
     "mutation",
     (
@@ -4818,6 +4961,9 @@ def test_formal_primary_mcap_replays_three_cognitive_components(tmp_path):
         "degraded_prior_missing", "degraded_obstacle_missing",
         "age_mismatch", "pre_barrier",
         "generation_mismatch", "session_reuse", "odom_over_100ms",
+        "bad_after_latch",
+        "source_schema_tamper", "planning_field_tamper",
+        "shadow_in_active",
     ),
 )
 def test_formal_binary_mcap_replay_rejects_adversarial_cognitive_chain(
