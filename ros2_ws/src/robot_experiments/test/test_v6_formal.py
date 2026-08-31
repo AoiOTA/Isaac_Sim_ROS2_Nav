@@ -914,17 +914,48 @@ def _write_formal_run(
             13_290_000_000,
         )
         critic_status.fallback_reason = healthy_reason
-    if cognitive_mutation not in {"postdispatch_critic_missing", "postdispatch_critic_late"}:
+    critic_record_ns = (
+        13_310_000_000
+        if cognitive_mutation == "critic_same_timestamp_before_motion"
+        else 13_300_000_000
+    )
+    if cognitive_mutation not in {
+        "postdispatch_critic_missing", "postdispatch_critic_late",
+        "critic_same_timestamp_after_motion",
+    }:
         writer.write(
             "/bio_nav/cognitive_risk_critic/status",
             serialize_message(critic_status),
-            13_300_000_000,
+            critic_record_ns,
         )
     nonzero = Twist()
     nonzero.linear.x = 0.2
     writer.write("/cmd_vel_sim", serialize_message(nonzero), 13_310_000_000)
-    if cognitive_mutation == "postdispatch_critic_late":
+    if cognitive_mutation in {
+        "postdispatch_critic_late", "critic_same_timestamp_after_motion",
+    }:
+        critic_status.stamp.nanosec = (
+            310000000
+            if cognitive_mutation == "critic_same_timestamp_after_motion"
+            else 400000000
+        )
+        critic_status.message_age_ms = (
+            float(critic_status.stamp.nanosec) * 1.0e-9
+            + 13.0 - post_validation_stamp_s
+        ) * 1000.0
+        writer.write(
+            "/bio_nav/cognitive_risk_critic/status",
+            serialize_message(critic_status),
+            (
+                13_310_000_000
+                if cognitive_mutation == "critic_same_timestamp_after_motion"
+                else 13_400_000_000
+            ),
+        )
+    if cognitive_mutation == "healthy_then_late_validation_stale":
         critic_status.stamp.nanosec = 400000000
+        critic_status.rejected = True
+        critic_status.fallback_reason = "rejection_reason=validation_stale"
         critic_status.message_age_ms = (13.4 - post_validation_stamp_s) * 1000.0
         writer.write(
             "/bio_nav/cognitive_risk_critic/status",
@@ -964,6 +995,7 @@ def _write_formal_run(
             "shadow_in_active", "critic_receipt_tamper",
             "post_latch_bad_status_then_healthy",
             "postdispatch_critic_missing", "postdispatch_critic_late",
+            "critic_same_timestamp_after_motion",
         }
         or (
             cognitive_mutation is not None
@@ -5931,6 +5963,46 @@ def test_formal_binary_mcap_accepts_same_graph_repeat_after_latch(tmp_path):
     assert evidence["cognitive_admission_replay"]["passed"] is True
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "healthy_then_late_validation_stale",
+        "critic_same_timestamp_before_motion",
+    ),
+)
+def test_formal_binary_mcap_freezes_critic_admission_at_first_motion(
+    tmp_path, mutation,
+):
+    campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
+    root = _write_formal_run(
+        campaign.conditions[0],
+        1,
+        strict_success=True,
+        formal_freeze_digest=campaign.freeze_digest,
+        cognitive_mutation=mutation,
+    )
+    evidence = experiment_runner_module.validate_recorded_run_evidence(
+        root,
+        json.loads((root / "run_summary.json").read_text()),
+        json.loads((root / "run_manifest.json").read_text()),
+        scene="indoor",
+        route_guided=True,
+        route_prior_required=True,
+        expected_leg_count=5,
+        cognitive_admission_required=True,
+    )
+
+    assert evidence["cognitive_admission_replay"]["passed"] is True
+    if mutation == "healthy_then_late_validation_stale":
+        statuses = evidence["inventory"]["semantic"]["cognitive_admission"][
+            "statuses"
+        ]
+        assert any(
+            row["fallback_reason"] == "rejection_reason=validation_stale"
+            for row in statuses
+        )
+
+
 @pytest.mark.parametrize("terminals", ((False,), (True, False)))
 def test_product_failure_terminal_false_starts_zero_tail(tmp_path, terminals):
     campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
@@ -5980,6 +6052,7 @@ def test_product_failure_terminal_false_starts_zero_tail(tmp_path, terminals):
         "post_latch_graph_revision_mismatch",
         "post_latch_bad_status_then_healthy",
         "postdispatch_critic_missing", "postdispatch_critic_late",
+        "critic_same_timestamp_after_motion",
         "navigation_graph_change_after_latch",
         "navigation_graph_change_then_restore",
         "semantic_map_mismatch", "content_map_mismatch",

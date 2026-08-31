@@ -1,3 +1,4 @@
+import copy
 from dataclasses import replace
 import hashlib
 import json
@@ -1143,6 +1144,9 @@ def test_postdispatch_active_critic_rejects_shadow_status_token():
 def _arm_test_postdispatch(runner, *, ros_stamp_s=12.0):
     runner._cognitive_dispatch_monotonic = 0.0
     runner._cognitive_dispatch_ros_s = ros_stamp_s
+    runner._cognitive_dispatch_runtime_order = getattr(
+        runner, "_cognitive_runtime_event_order", 0
+    )
 
 
 def _nonzero_twist():
@@ -1272,7 +1276,7 @@ def test_postdispatch_missing_or_late_critic_is_invalid():
     )
     evidence = runner._postdispatch_critic_evidence()
     assert evidence["passed"] is False
-    assert evidence["reason"] == "healthy_critic_status_after_first_nonzero_cmd_vel"
+    assert evidence["reason"] == "healthy_critic_status_missing_after_dispatch"
 
 
 def test_postdispatch_current_critic_before_first_motion_passes():
@@ -1298,6 +1302,110 @@ def test_postdispatch_current_critic_before_first_motion_passes():
     assert evidence["first_healthy_critic"]["cognitive_content_map_id"] == (
         COGNITIVE_CONTENT_MAP_ID
     )
+
+
+def test_postdispatch_admission_ignores_late_validation_stale_status():
+    runner = _cognitive_admission_runner()
+    for sequence in (1, 2, 3):
+        _publish_cognitive_sample(
+            runner, sequence, roles=("global_layer", "local_layer")
+        )
+    runner._wait_for_cognitive_admission_ready()
+    _arm_test_postdispatch(runner)
+    _publish_cognitive_sample(
+        runner, 4, roles=("critic",),
+        status_overrides={"critic": {"stamp": 12.0}},
+    )
+    runner._clock_seconds = lambda: 12.1
+    runner._actuator_command_callback(_nonzero_twist())
+    admitted = runner._postdispatch_critic_evidence()
+    assert admitted["passed"] is True
+
+    _publish_cognitive_sample(
+        runner,
+        5,
+        roles=("critic",),
+        status_overrides={
+            "critic": {
+                "stamp": 12.2,
+                "rejected": True,
+                "fallback_reason": "rejection_reason=validation_stale",
+            }
+        },
+    )
+
+    assert runner._postdispatch_critic_evidence() == admitted
+    assert runner._cognitive_admission_status_history["critic"][-1][
+        "local_healthy"
+    ] is False
+
+
+def test_postdispatch_bad_before_healthy_is_sticky_within_window():
+    runner = _cognitive_admission_runner()
+    for sequence in (1, 2, 3):
+        _publish_cognitive_sample(
+            runner, sequence, roles=("global_layer", "local_layer")
+        )
+    runner._wait_for_cognitive_admission_ready()
+    _arm_test_postdispatch(runner)
+    _publish_cognitive_sample(
+        runner,
+        4,
+        roles=("critic",),
+        status_overrides={
+            "critic": {
+                "stamp": 12.0,
+                "fallback_reason": (
+                    "cost_delta_applied=false;zero_cost_delta;"
+                    "prior_suppressed=prior_untrusted;"
+                    "maximum_obstacle_cost_delta=0;obstacle_count=0;"
+                    "aggregation=max_per_step_mean_horizon"
+                ),
+            }
+        },
+    )
+    _publish_cognitive_sample(
+        runner, 5, roles=("critic",),
+        status_overrides={"critic": {"stamp": 12.0}},
+    )
+    runner._actuator_command_callback(_nonzero_twist())
+
+    evidence = runner._postdispatch_critic_evidence()
+    assert evidence["first_healthy_critic"]["source_sequence"] == 5
+    assert evidence["passed"] is False
+    assert evidence["rejection_or_degraded_seen"] is True
+
+
+def test_postdispatch_same_timestamp_uses_runtime_order_boundary():
+    before = _cognitive_admission_runner()
+    for sequence in (1, 2, 3):
+        _publish_cognitive_sample(
+            before, sequence, roles=("global_layer", "local_layer")
+        )
+    before._wait_for_cognitive_admission_ready()
+    _arm_test_postdispatch(before)
+    before._clock_seconds = lambda: 12.1
+    _publish_cognitive_sample(
+        before, 4, roles=("critic",),
+        status_overrides={"critic": {"stamp": 12.1}},
+    )
+    before._actuator_command_callback(_nonzero_twist())
+    assert before._postdispatch_critic_evidence()["passed"] is True
+
+    after = _cognitive_admission_runner()
+    for sequence in (1, 2, 3):
+        _publish_cognitive_sample(
+            after, sequence, roles=("global_layer", "local_layer")
+        )
+    after._wait_for_cognitive_admission_ready()
+    _arm_test_postdispatch(after)
+    after._clock_seconds = lambda: 12.1
+    after._actuator_command_callback(_nonzero_twist())
+    _publish_cognitive_sample(
+        after, 4, roles=("critic",),
+        status_overrides={"critic": {"stamp": 12.1}},
+    )
+    assert after._postdispatch_critic_evidence()["passed"] is False
 
 
 @pytest.mark.parametrize(
@@ -2417,8 +2525,14 @@ def test_recorder_dds_readiness_failure_and_exit_fail_closed(tmp_path):
         runner._wait_for_bag_recorder_ready()
 
 
-def test_run_all_returns_valid_product_failure_for_campaign_budget(
-    tmp_path, monkeypatch,
+def _run_all_evidence_runner(
+    tmp_path,
+    monkeypatch,
+    *,
+    summary,
+    result="failure",
+    navigate_result=(False, True, experiment_runner_module.GoalStatus.STATUS_CANCELED),
+    run_count=1,
 ):
     monkeypatch.setattr(experiment_runner_module.rclpy, "ok", lambda: True)
     runner = object.__new__(ExperimentRunner)
@@ -2434,7 +2548,7 @@ def test_run_all_returns_valid_product_failure_for_campaign_budget(
         scenario_id="valid_product_failure",
         scenario_type="static",
         map_version="map-v1",
-        run_matrix=(RunSelection(7302),),
+        run_matrix=tuple(RunSelection(7302 + index) for index in range(run_count)),
         seeds=(),
     )
     runner._run_indices = None
@@ -2446,43 +2560,45 @@ def test_run_all_returns_valid_product_failure_for_campaign_budget(
     runner._reset_stop_gate_status = SimpleNamespace(generation=1)
     runner._active_evidence_root = None
     runner._output_directory = tmp_path
-    runner._fail_stop = True
-    runner._evidence_root_for = lambda *_args: tmp_path / "run"
+    runner._fail_stop = False
+    runner._evidence_root_for = lambda run_index, _seed: (
+        tmp_path / f"run-{run_index}"
+    )
     runner._validate_dynamic_episode_selection = lambda: None
     runner._lifecycle_event = lambda _event: None
-    runner._reset_simulation = lambda *_args: setattr(
-        runner, "_reset_receipt", {"generation": 2}
-    )
-    runner._begin_run_evidence = lambda *_args: (
-        (tmp_path / "run").mkdir(),
-        setattr(runner, "_active_evidence_root", tmp_path / "run"),
-        tmp_path / "run",
+    reset_calls = []
+    runner._reset_simulation = lambda *_args: (
+        reset_calls.append("reset"),
+        setattr(runner, "_reset_receipt", {"generation": 2}),
+    )[-1]
+    runner._begin_run_evidence = lambda run_index, seed: (
+        runner._evidence_root_for(run_index, seed).mkdir(),
+        setattr(
+            runner,
+            "_active_evidence_root",
+            runner._evidence_root_for(run_index, seed),
+        ),
+        runner._evidence_root_for(run_index, seed),
     )[-1]
     runner._wait_for_cognitive_admission_ready = lambda: None
     runner._claim_stack_episode_sequence = lambda **_kwargs: {"sequence": 1}
     runner._start_terminal_zero_observation = lambda: setattr(
         runner, "_terminal_zero_barrier_monotonic", None
     )
-    runner._navigate = lambda: (
-        False, True, experiment_runner_module.GoalStatus.STATUS_CANCELED
-    )
+    runner._navigate = lambda: navigate_result
     runner._mark_terminal_zero_barrier = lambda *_args, **_kwargs: setattr(
         runner, "_terminal_zero_barrier_monotonic", 1.0
     )
     runner._wait_for_final_stillness = lambda: True
     runner._stop_run_bag = lambda: False
     runner._build_manifest = lambda **kwargs: {
-        "result": "failure",
+        "result": result,
         "runner_error": kwargs["runner_error"],
     }
-    runner._write_run_evidence = lambda *_args: {
-        "strict_success": False,
-        "physical_collision_free": False,
-        "episode_validity": {"valid": True},
-        "data_complete": True,
-        "checksums_verified": True,
-        "final_trial_metric_gate": {"passed": True},
-    }
+    def write_evidence(_manifest, _seed, run_index, root, _bag_complete):
+        (root / "summary.persisted").write_text(str(run_index))
+        return copy.deepcopy(summary)
+    runner._write_run_evidence = write_evidence
     runner.get_logger = lambda: SimpleNamespace(
         info=lambda _message: None,
         warning=lambda _message: None,
@@ -2490,6 +2606,24 @@ def test_run_all_returns_valid_product_failure_for_campaign_budget(
     )
     monkeypatch.setattr(
         experiment_runner_module, "write_run_report", lambda *_args, **_kwargs: None
+    )
+    return runner, reset_calls
+
+
+def test_run_all_returns_valid_product_failure_for_campaign_budget(
+    tmp_path, monkeypatch,
+):
+    runner, _reset_calls = _run_all_evidence_runner(
+        tmp_path,
+        monkeypatch,
+        summary={
+            "strict_success": False,
+            "physical_collision_free": False,
+            "episode_validity": {"valid": True},
+            "data_complete": True,
+            "checksums_verified": True,
+            "final_trial_metric_gate": {"passed": True},
+        },
     )
 
     manifests = runner.run_all()
@@ -2499,6 +2633,91 @@ def test_run_all_returns_valid_product_failure_for_campaign_budget(
         "runner_error": None,
         "dynamic_selection": {"case_id": None, "variant_id": None},
     }]
+
+
+def test_run_all_returns_valid_success(tmp_path, monkeypatch):
+    runner, _reset_calls = _run_all_evidence_runner(
+        tmp_path,
+        monkeypatch,
+        summary={
+            "strict_success": True,
+            "episode_validity": {"valid": True, "invalid_reasons": []},
+        },
+        result="success",
+        navigate_result=(
+            True, False, experiment_runner_module.GoalStatus.STATUS_SUCCEEDED,
+        ),
+    )
+
+    manifests = runner.run_all()
+
+    assert manifests[0]["result"] == "success"
+
+
+@pytest.mark.parametrize(
+    "episode_validity",
+    (
+        {"valid": False, "invalid_reasons": []},
+        {"valid": True, "invalid_reasons": ["missing_current_critic_evidence"]},
+    ),
+)
+def test_run_all_raises_after_persisting_invalid_evidence_without_fail_stop(
+    tmp_path, monkeypatch, episode_validity,
+):
+    runner, reset_calls = _run_all_evidence_runner(
+        tmp_path,
+        monkeypatch,
+        summary={
+            "strict_success": False,
+            "episode_validity": episode_validity,
+        },
+        run_count=2,
+    )
+
+    with pytest.raises(RuntimeError, match="episode evidence invalid after persistence"):
+        runner.run_all()
+
+    assert (tmp_path / "run-1/summary.persisted").is_file()
+    assert not (tmp_path / "run-2").exists()
+    assert reset_calls == ["reset"]
+
+
+def test_run_all_preserves_primary_exception_when_cleanup_and_evidence_fail(
+    tmp_path, monkeypatch,
+):
+    class PrimaryRunError(RuntimeError):
+        pass
+
+    class CleanupError(RuntimeError):
+        pass
+
+    runner, _reset_calls = _run_all_evidence_runner(
+        tmp_path,
+        monkeypatch,
+        summary={
+            "episode_validity": {
+                "valid": False,
+                "invalid_reasons": ["runner_internal_error"],
+            },
+        },
+    )
+    primary = PrimaryRunError("primary-run-failure")
+
+    def fail_navigation():
+        raise primary
+
+    def fail_cleanup():
+        raise CleanupError("cleanup-failure")
+
+    runner._navigate = fail_navigation
+    runner._stop_run_bag = fail_cleanup
+
+    with pytest.raises(PrimaryRunError, match="primary-run-failure") as raised:
+        runner.run_all()
+
+    assert raised.value is primary
+    assert any("cleanup-failure" in note for note in raised.value.__notes__)
+    assert (tmp_path / "run-1/summary.persisted").is_file()
 
 
 def test_motion_quality_measures_reverse_curves_and_turn_reversals():

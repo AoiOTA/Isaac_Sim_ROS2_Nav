@@ -2062,15 +2062,30 @@ def _recorded_cognitive_admission_evidence(
         and isinstance(stored_critic.get("maximum_age_s"), (int, float))
     ):
         return {"passed": False, "error": "postdispatch_critic_receipt_invalid"}
-    end_ns = max(
+    first_nonzero = min(
         (
-            int(row["record_timestamp_ns"])
-            for rows in (sources, planning_rows, statuses, cmd_vel_rows)
-            for row in rows
+            row for row in cmd_vel_rows
             if isinstance(row, Mapping)
+            and row.get("is_zero") is False
             and isinstance(row.get("record_timestamp_ns"), int)
+            and row["record_timestamp_ns"] >= dispatch_ns
         ),
-        default=dispatch_ns,
+        key=lambda row: int(row.get("record_order", 0)),
+        default=None,
+    )
+    end_ns = (
+        int(first_nonzero["record_timestamp_ns"])
+        if isinstance(first_nonzero, Mapping)
+        else max(
+            (
+                int(row["record_timestamp_ns"])
+                for rows in (sources, planning_rows, statuses, cmd_vel_rows)
+                for row in rows
+                if isinstance(row, Mapping)
+                and isinstance(row.get("record_timestamp_ns"), int)
+            ),
+            default=dispatch_ns,
+        )
     )
     post_sources = [
         row for row in sources
@@ -2102,6 +2117,14 @@ def _recorded_cognitive_admission_evidence(
         and role_of(row) == "critic"
         and isinstance(row.get("record_timestamp_ns"), int)
         and dispatch_ns <= row["record_timestamp_ns"] <= end_ns
+        and (
+            first_nonzero is None
+            or (
+                isinstance(row.get("record_order"), int)
+                and int(row["record_order"])
+                < int(first_nonzero["record_order"])
+            )
+        )
     ]
     first_healthy_critic: Mapping[str, Any] | None = None
     critic_bad = False
@@ -2130,31 +2153,12 @@ def _recorded_cognitive_admission_evidence(
         critic_bad = critic_bad or not healthy
         if healthy and first_healthy_critic is None:
             first_healthy_critic = row
-    first_nonzero = min(
-        (
-            row for row in cmd_vel_rows
-            if isinstance(row, Mapping)
-            and row.get("is_zero") is False
-            and isinstance(row.get("record_timestamp_ns"), int)
-            and row["record_timestamp_ns"] >= dispatch_ns
-        ),
-        key=lambda row: int(row.get("record_order", 0)),
-        default=None,
-    )
     critic_before_motion = bool(
         first_healthy_critic is not None
         and (
             first_nonzero is None
             or int(first_healthy_critic["record_order"])
             < int(first_nonzero["record_order"])
-            or (
-                int(first_healthy_critic["record_order"])
-                > int(first_nonzero["record_order"])
-                and abs(
-                    int(first_healthy_critic["record_timestamp_ns"])
-                    - int(first_nonzero["record_timestamp_ns"])
-                ) <= CRITIC_COMMAND_SAME_CYCLE_TOLERANCE_NS
-            )
         )
     )
     stored_first = stored_critic.get("first_healthy_critic")
@@ -3816,6 +3820,9 @@ class ExperimentRunner(Node):
         if not self._record_evidence:
             self._cognitive_dispatch_ros_s = self._clock_seconds()
             self._cognitive_dispatch_monotonic = time.monotonic()
+            self._cognitive_dispatch_runtime_order = getattr(
+                self, "_cognitive_runtime_event_order", 0
+            )
             self._lifecycle_event("goal_dispatched")
             self._goal_dispatch_recorded = True
             return
@@ -3879,6 +3886,9 @@ class ExperimentRunner(Node):
         self._lifecycle_event("goal_dispatched")
         self._cognitive_dispatch_ros_s = dispatch_ros_s
         self._cognitive_dispatch_monotonic = time.monotonic()
+        self._cognitive_dispatch_runtime_order = getattr(
+            self, "_cognitive_runtime_event_order", 0
+        )
         self._goal_dispatch_recorded = True
 
     def _validate_cognitive_admission_before_dispatch(
@@ -4013,6 +4023,8 @@ class ExperimentRunner(Node):
                     "ros_stamp_s": ros_stamp_s,
                     "received_monotonic": now,
                 }
+                self._refresh_postdispatch_critic_evidence()
+                self._postdispatch_critic_admission_frozen = True
             self._cmd_vel_sim_last_nonzero_monotonic = now
             self._cmd_vel_sim_zero_stamps.clear()
             if (
@@ -4235,9 +4247,11 @@ class ExperimentRunner(Node):
         self._cognitive_runtime_event_order = 0
         self._cognitive_dispatch_monotonic: float | None = None
         self._cognitive_dispatch_ros_s: float | None = None
+        self._cognitive_dispatch_runtime_order: int | None = None
         self._first_nonzero_cmd_vel_event: dict[str, Any] | None = None
         self._first_healthy_critic_event: dict[str, Any] | None = None
         self._postdispatch_critic_bad = False
+        self._postdispatch_critic_admission_frozen = False
         self._cognitive_admission_bad_after_latch = False
         self._cognitive_admission_streaks = {role: 0 for role in components}
         self._cognitive_admission_last_sequences = {
@@ -4419,8 +4433,18 @@ class ExperimentRunner(Node):
 
     def _refresh_postdispatch_critic_evidence(self, *, finalize: bool = False) -> None:
         dispatch_monotonic = getattr(self, "_cognitive_dispatch_monotonic", None)
-        if dispatch_monotonic is None:
+        if (
+            dispatch_monotonic is None
+            or getattr(self, "_postdispatch_critic_admission_frozen", False)
+        ):
             return
+        dispatch_order = getattr(self, "_cognitive_dispatch_runtime_order", None)
+        first_nonzero = getattr(self, "_first_nonzero_cmd_vel_event", None)
+        first_nonzero_order = (
+            int(first_nonzero["runtime_order"])
+            if isinstance(first_nonzero, Mapping)
+            else None
+        )
         candidates = [
             status
             for status in self._cognitive_admission_status_history.get("critic", [])
@@ -4431,6 +4455,15 @@ class ExperimentRunner(Node):
                 self._cognitive_dispatch_ros_s is None
                 or float(status["status_stamp_s"])
                 >= float(self._cognitive_dispatch_ros_s)
+            )
+            and isinstance(status.get("runtime_order"), int)
+            and (
+                dispatch_order is None
+                or int(status["runtime_order"]) > int(dispatch_order)
+            )
+            and (
+                first_nonzero_order is None
+                or int(status["runtime_order"]) < first_nonzero_order
             )
         ]
         for status in sorted(
@@ -4454,9 +4487,7 @@ class ExperimentRunner(Node):
                     "recurrent_session_id": status.get("recurrent_session_id"),
                     "cognitive_content_map_id": status.get("map_version"),
                 }
-            if status.get("local_healthy") is not True or (
-                finalize and not healthy
-            ):
+            if not healthy:
                 self._postdispatch_critic_bad = True
 
     def _postdispatch_critic_evidence(self) -> dict[str, Any]:
@@ -4486,15 +4517,13 @@ class ExperimentRunner(Node):
                 and isinstance(command_stamp, (int, float))
                 and abs(float(critic_stamp) - float(command_stamp))
                 <= CRITIC_COMMAND_SAME_CYCLE_TOLERANCE_NS * 1.0e-9
-                and int(first_critic["runtime_order"])
-                > int(first_nonzero["runtime_order"])
+                and ordered_before_command
             )
         timing_passed = bool(
             isinstance(first_critic, Mapping)
             and (
                 first_nonzero is None
                 or ordered_before_command
-                or same_cycle
             )
         )
         bad = bool(getattr(self, "_postdispatch_critic_bad", False))
@@ -8984,6 +9013,7 @@ class ExperimentRunner(Node):
                     self._mark_terminal_zero_barrier("navigate_action_return")
                 final_still = self._wait_for_final_stillness()
             except Exception as exc:  # Preserve a manifest for every attempted run.
+                run_exception = exc
                 if not rclpy.ok():
                     raise KeyboardInterrupt from exc
                 # A failure before evidence recording means no goal could have
@@ -8992,11 +9022,18 @@ class ExperimentRunner(Node):
                     raise
                 if isinstance(exc, ExperimentIsolationError):
                     isolation_error = exc
-                run_exception = exc
                 runner_error = f"{type(exc).__name__}:{exc}"
                 self.get_logger().error(runner_error)
             finally:
-                bag_complete = self._stop_run_bag()
+                try:
+                    bag_complete = self._stop_run_bag()
+                except Exception as cleanup_exc:
+                    if run_exception is None:
+                        raise
+                    run_exception.add_note(
+                        "bag cleanup also failed while preserving the primary "
+                        f"run error: {type(cleanup_exc).__name__}:{cleanup_exc}"
+                    )
             manifest = self._build_manifest(
                 run_index=run_index,
                 seed=seed,
@@ -9026,6 +9063,27 @@ class ExperimentRunner(Node):
                 raise run_exception.with_traceback(run_exception.__traceback__)
             if isolation_error is not None:
                 raise isolation_error
+            episode_validity = (
+                run_summary.get("episode_validity")
+                if isinstance(run_summary, Mapping)
+                else None
+            )
+            invalid_reasons = (
+                episode_validity.get("invalid_reasons", [])
+                if isinstance(episode_validity, Mapping)
+                else []
+            )
+            if (
+                isinstance(episode_validity, Mapping)
+                and (
+                    episode_validity.get("valid") is False
+                    or bool(invalid_reasons)
+                )
+            ):
+                raise RuntimeError(
+                    "episode evidence invalid after persistence: "
+                    f"run_index={run_index}, invalid_reasons={invalid_reasons}"
+                )
             if self._fail_stop and not _fail_stop_evidence_valid(run_summary):
                 raise RuntimeError(
                     "fail-stop campaign trial failed after dispatch: "
