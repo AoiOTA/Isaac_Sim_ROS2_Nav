@@ -16,6 +16,7 @@ from robot_experiments.experiment_runner import (
     _cognitive_runtime_components,
     _edge_prior_statistics,
     _episode_validity,
+    _fail_stop_evidence_valid,
     _localization_node_ownership_evidence,
     _mcap_inventory_evidence,
     _mcap_required_topic_coverage,
@@ -559,6 +560,12 @@ def _cognitive_admission_runner(*, components=None):
         "observation_valid": True,
         "trusted_write": True,
         "schema_version": "bio_nav_planning_prior_v4",
+        "model_id": "model-v1",
+        "cognitive_tile_id": "tile-v1",
+        "tile_revision": 1,
+        "graph_revision": 1,
+        "risk_model_sha256": "risk-sha256",
+        "qualification_receipt_sha256": "qualification-sha256",
         "accepted": True,
         "place_entropy_normalized": 0.2,
         "context_uncertainty": 0.1,
@@ -621,6 +628,8 @@ def _cognitive_status(
     map_version="map-v1",
     stamp=11.5,
     consumer=None,
+    risk_model_sha256="risk-sha256",
+    qualification_receipt_sha256="qualification-sha256",
 ):
     consumers = {
         "global_layer": "/global_costmap/global_costmap:cognitive_obstacle_layer",
@@ -650,6 +659,8 @@ def _cognitive_status(
         map_version=map_version,
         stamp=_retirement_stamp(stamp),
         message_age_ms=25.0,
+        risk_model_sha256=risk_model_sha256,
+        qualification_receipt_sha256=qualification_receipt_sha256,
     )
 
 
@@ -727,6 +738,21 @@ def test_cognitive_admission_blocks_odom_time_until_three_new_healthy_samples():
     )
     assert evidence["components"]["critic"]["source"]["sequence"] == 8
     assert evidence["components"]["critic"]["planning_prior"]["sequence"] == 8
+    assert {
+        key: evidence["planning_prior"][key]
+        for key in (
+            "model_id", "cognitive_tile_id", "tile_revision",
+            "graph_revision", "risk_model_sha256",
+            "qualification_receipt_sha256",
+        )
+    } == {
+        "model_id": "model-v1",
+        "cognitive_tile_id": "tile-v1",
+        "tile_revision": 1,
+        "graph_revision": 1,
+        "risk_model_sha256": "risk-sha256",
+        "qualification_receipt_sha256": "qualification-sha256",
+    }
 
 
 @pytest.mark.parametrize(
@@ -820,6 +846,20 @@ def test_cognitive_admission_requires_planning_and_source_sequence_match():
         runner._wait_for_cognitive_admission_ready()
 
 
+@pytest.mark.parametrize("role", ("global_layer", "local_layer", "critic"))
+def test_cognitive_admission_requires_status_receipt_identity_match(role):
+    runner = _cognitive_admission_runner()
+    for sequence in (1, 2, 3):
+        _publish_cognitive_sample(
+            runner,
+            sequence,
+            status_overrides={role: {"risk_model_sha256": "other-risk"}},
+        )
+
+    with pytest.raises(RuntimeError, match="timed out before route dispatch"):
+        runner._wait_for_cognitive_admission_ready()
+
+
 def test_cognitive_admission_converges_with_out_of_order_and_lagging_critic():
     runner = _cognitive_admission_runner()
     for sequence in (1, 2, 3):
@@ -863,6 +903,26 @@ def test_bad_status_after_latch_blocks_dispatch_without_mutating_receipt():
     )
 
     assert runner._cognitive_admission_snapshot() == receipt
+    with pytest.raises(ConfigurationError, match="unhealthy after readiness"):
+        runner._validate_cognitive_admission_before_dispatch(12.1)
+
+
+def test_different_nonforbidden_session_after_latch_blocks_old_receipt():
+    runner = _cognitive_admission_runner()
+    for sequence in (1, 2, 3):
+        _publish_cognitive_sample(runner, sequence)
+    runner._wait_for_cognitive_admission_ready()
+
+    _publish_cognitive_sample(
+        runner,
+        4,
+        source_overrides={"session": "different-session"},
+        status_overrides={
+            role: {"session": "different-session"}
+            for role in runner._cognitive_admission_components
+        },
+    )
+
     with pytest.raises(ConfigurationError, match="unhealthy after readiness"):
         runner._validate_cognitive_admission_before_dispatch(12.1)
 
@@ -1002,6 +1062,30 @@ def test_cognitive_admission_timeout_cannot_reach_dispatch_and_records_reason():
     assert "cognitive_admission_readiness_failed" in _episode_validity(summary)[
         "invalid_reasons"
     ]
+
+
+def test_runner_error_is_invalid_and_valid_product_failure_does_not_fail_stop():
+    invalid = {
+        "runner_error": "RuntimeError:internal",
+        "terminal_zero_confirmed": True,
+        "reset_receipt": {"generation": 2},
+        "reset_receipt_confirmed": True,
+        "contact_sensor_evidence_confirmed": True,
+        "fixed_map_to_odom_evidence_confirmed": True,
+        "data_complete": True,
+        "checksums_verified": True,
+    }
+    assert "runner_internal_error" in _episode_validity(invalid)["invalid_reasons"]
+
+    product_failure = {
+        "strict_success": False,
+        "physical_collision_free": False,
+        "episode_validity": {"valid": True},
+        "data_complete": True,
+        "checksums_verified": True,
+        "final_trial_metric_gate": {"passed": True},
+    }
+    assert _fail_stop_evidence_valid(product_failure)
 
 
 def test_cognitive_admission_component_off_exemption_comes_from_profile():
@@ -1753,6 +1837,181 @@ def test_run_all_starts_and_fences_recorder_before_readiness_wait():
     planning_wait = source.index("self._planning_prior_ready_streak >= 5", restart)
     cognitive_wait = source.index("self._wait_for_cognitive_admission_ready()", planning_wait)
     assert begin < recorder_ready < restart < planning_wait < cognitive_wait
+
+
+def test_run_all_clears_pre_recorder_streak_before_planning_wait(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(experiment_runner_module.rclpy, "ok", lambda: True)
+    runner = _cognitive_admission_runner()
+    for sequence in (1, 2, 3):
+        _publish_cognitive_sample(runner, sequence)
+    runner._clock_ready = True
+    runner._clock_timeout_sec = 1.0
+    runner._verify_dynamic_runtime_contract = lambda: None
+    runner._verify_appearance_runtime_contract = lambda: None
+    runner._verify_collision_monitor_active = lambda: None
+    runner._authorization_only = False
+    runner._require_pregoal_authorization = False
+    runner._scenario = SimpleNamespace(
+        scenario_id="recorder_fence",
+        scenario_type="static",
+        map_version="map-v1",
+        run_matrix=(RunSelection(7301),),
+        seeds=(),
+    )
+    runner._run_indices = None
+    runner._record_evidence = True
+    runner._record_bag = True
+    runner._resume = False
+    runner._navigation_execution_backend = "navigate_to_pose"
+    runner._require_module2_planning_ready = True
+    runner._module2_planning_ready_timeout_sec = 0.1
+    runner._reset_stop_gate_status = SimpleNamespace(generation=1)
+    runner._active_evidence_root = None
+    runner._output_directory = tmp_path
+    runner._fail_stop = False
+    runner._get_logger_messages = []
+    runner.get_logger = lambda: SimpleNamespace(
+        info=lambda message: runner._get_logger_messages.append(message),
+        warning=lambda _message: None,
+        error=lambda _message: None,
+    )
+    root = tmp_path / "run"
+    runner._evidence_root_for = lambda *_args: root
+    runner._validate_dynamic_episode_selection = lambda: None
+    runner._lifecycle_event = lambda _event: None
+    runner._reset_simulation = lambda *_args: setattr(
+        runner, "_reset_receipt", {"generation": 2}
+    )
+    runner._begin_run_evidence = lambda *_args: (
+        root.mkdir(), setattr(runner, "_active_evidence_root", root), root
+    )[-1]
+    events = []
+    runner._wait_for_bag_recorder_ready = lambda: events.append("recorder_ready")
+    original_restart = runner._restart_cognitive_admission_after_recorder_ready
+    runner._restart_cognitive_admission_after_recorder_ready = lambda: (
+        events.append("restart"), original_restart()
+    )[-1]
+    runner._wait_until = lambda predicate, _timeout: (
+        predicate() if predicate() else False
+    )
+    runner._stop_run_bag = lambda: False
+    runner._build_manifest = lambda **_kwargs: {"result": "failure"}
+    runner._write_run_evidence = lambda *_args: {
+        "episode_validity": {"valid": False}
+    }
+    monkeypatch.setattr(
+        experiment_runner_module, "write_run_report", lambda *_args, **_kwargs: None
+    )
+
+    with pytest.raises(RuntimeError, match="planning prior"):
+        runner.run_all()
+
+    assert events == ["recorder_ready", "restart"]
+    assert all(value == 0 for value in runner._cognitive_admission_streaks.values())
+    assert runner._cognitive_admission_ready_receipt is None
+
+
+def test_recorder_dds_readiness_failure_and_exit_fail_closed(tmp_path):
+    runner = object.__new__(ExperimentRunner)
+    runner._record_bag = True
+    runner._active_evidence_root = tmp_path
+    runner._service_timeout_sec = 0.1
+    runner._wait_until = lambda predicate, _timeout: predicate()
+    runner.get_subscriptions_info_by_topic = lambda _topic: []
+
+    runner._bag_process = SimpleNamespace(poll=lambda: 7, returncode=7)
+    with pytest.raises(RuntimeError, match="exited before DDS readiness"):
+        runner._wait_for_bag_recorder_ready()
+
+    runner._bag_process = SimpleNamespace(poll=lambda: None, returncode=None)
+    with pytest.raises(TimeoutError, match="observable DDS readiness"):
+        runner._wait_for_bag_recorder_ready()
+
+
+def test_run_all_returns_valid_product_failure_for_campaign_budget(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(experiment_runner_module.rclpy, "ok", lambda: True)
+    runner = object.__new__(ExperimentRunner)
+    runner._clock_ready = True
+    runner._clock_timeout_sec = 1.0
+    runner._wait_until = lambda predicate, _timeout: predicate()
+    runner._verify_dynamic_runtime_contract = lambda: None
+    runner._verify_appearance_runtime_contract = lambda: None
+    runner._verify_collision_monitor_active = lambda: None
+    runner._authorization_only = False
+    runner._require_pregoal_authorization = False
+    runner._scenario = SimpleNamespace(
+        scenario_id="valid_product_failure",
+        scenario_type="static",
+        map_version="map-v1",
+        run_matrix=(RunSelection(7302),),
+        seeds=(),
+    )
+    runner._run_indices = None
+    runner._record_evidence = True
+    runner._record_bag = False
+    runner._resume = False
+    runner._navigation_execution_backend = "navigate_to_pose"
+    runner._require_module2_planning_ready = False
+    runner._reset_stop_gate_status = SimpleNamespace(generation=1)
+    runner._active_evidence_root = None
+    runner._output_directory = tmp_path
+    runner._fail_stop = True
+    runner._evidence_root_for = lambda *_args: tmp_path / "run"
+    runner._validate_dynamic_episode_selection = lambda: None
+    runner._lifecycle_event = lambda _event: None
+    runner._reset_simulation = lambda *_args: setattr(
+        runner, "_reset_receipt", {"generation": 2}
+    )
+    runner._begin_run_evidence = lambda *_args: (
+        (tmp_path / "run").mkdir(),
+        setattr(runner, "_active_evidence_root", tmp_path / "run"),
+        tmp_path / "run",
+    )[-1]
+    runner._wait_for_cognitive_admission_ready = lambda: None
+    runner._claim_stack_episode_sequence = lambda **_kwargs: {"sequence": 1}
+    runner._start_terminal_zero_observation = lambda: setattr(
+        runner, "_terminal_zero_barrier_monotonic", None
+    )
+    runner._navigate = lambda: (
+        False, True, experiment_runner_module.GoalStatus.STATUS_CANCELED
+    )
+    runner._mark_terminal_zero_barrier = lambda *_args, **_kwargs: setattr(
+        runner, "_terminal_zero_barrier_monotonic", 1.0
+    )
+    runner._wait_for_final_stillness = lambda: True
+    runner._stop_run_bag = lambda: False
+    runner._build_manifest = lambda **kwargs: {
+        "result": "failure",
+        "runner_error": kwargs["runner_error"],
+    }
+    runner._write_run_evidence = lambda *_args: {
+        "strict_success": False,
+        "physical_collision_free": False,
+        "episode_validity": {"valid": True},
+        "data_complete": True,
+        "checksums_verified": True,
+        "final_trial_metric_gate": {"passed": True},
+    }
+    runner.get_logger = lambda: SimpleNamespace(
+        info=lambda _message: None,
+        warning=lambda _message: None,
+        error=lambda _message: None,
+    )
+    monkeypatch.setattr(
+        experiment_runner_module, "write_run_report", lambda *_args, **_kwargs: None
+    )
+
+    manifests = runner.run_all()
+
+    assert manifests == [{
+        "result": "failure",
+        "runner_error": None,
+        "dynamic_selection": {"case_id": None, "variant_id": None},
+    }]
 
 
 def test_motion_quality_measures_reverse_curves_and_turn_reversals():

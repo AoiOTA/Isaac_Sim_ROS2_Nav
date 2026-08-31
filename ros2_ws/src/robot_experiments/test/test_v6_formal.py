@@ -247,6 +247,7 @@ def _write_formal_run(
     stack_session_id: str = "a" * 64,
     collision_detected: bool = False,
     route_completion_count: int = 5,
+    route_completion_values: tuple[bool, ...] | None = None,
     path_deviation_percent: float = 10.0,
     cognitive_mutation: str | None = None,
     reset_generation: int | None = None,
@@ -299,7 +300,12 @@ def _write_formal_run(
     route_cost.applied_module2_delta_m = 0.5
     route_cost_message.costs = [route_cost]
     messages["/bio_nav/route_edge_costs"] = route_cost_message
-    messages["/bio_nav/route_goal_complete"] = Bool(data=True)
+    terminal_values = route_completion_values or tuple(
+        True for _ in range(route_completion_count)
+    )
+    if not terminal_values:
+        raise ValueError("route completion fixture requires at least one terminal")
+    messages["/bio_nav/route_goal_complete"] = Bool(data=terminal_values[0])
     cognitive_identity = {
         "reset_epoch": generation,
         "recurrent_session_id": f"recurrent-session-{generation}",
@@ -337,6 +343,12 @@ def _write_formal_run(
             "observation_valid": True,
             "trusted_write": True,
             "schema_version": "bio_nav_planning_prior_v4",
+            "model_id": "model-v1",
+            "cognitive_tile_id": "tile-v1",
+            "tile_revision": 1,
+            "graph_revision": 1,
+            "risk_model_sha256": "risk-sha256",
+            "qualification_receipt_sha256": "qualification-sha256",
             "accepted": True,
             "place_entropy_normalized": 0.20000000298023224,
             "context_uncertainty": 0.10000000149011612,
@@ -371,6 +383,8 @@ def _write_formal_run(
                     else "validation_mode=2;source_age_ms=0.000998;"
                     "rejection_reason=offered;confirmed_count=0"
                 ),
+                "risk_model_sha256": "risk-sha256",
+                "qualification_receipt_sha256": "qualification-sha256",
                 "admission_rejection_reason": None,
                 "source_sequence": 3,
                 **cognitive_identity,
@@ -509,6 +523,16 @@ def _write_formal_run(
         planning.recurrent_session_id = offered_session
         planning.map_version = cognitive_identity["map_version"]
         planning.schema_version = "bio_nav_planning_prior_v4"
+        planning.model_id = (
+            "unrelated-model"
+            if cognitive_mutation == "planning_chain_tamper" and sequence == 2
+            else "model-v1"
+        )
+        planning.cognitive_tile_id = "tile-v1"
+        planning.tile_revision = 1
+        planning.graph_revision = 1
+        planning.risk_model_sha256 = "risk-sha256"
+        planning.qualification_receipt_sha256 = "qualification-sha256"
         planning.module2_healthy = True
         planning.input_healthy = True
         planning.observation_valid = True
@@ -522,7 +546,7 @@ def _write_formal_run(
         writer.write(
             "/bio_nav/module2/planning_prior",
             serialize_message(planning),
-            stamp,
+            semantic_sec * 1_000_000_000 + semantic_nanosec + 2_000_000,
         )
         stamp += 1
         source = CognitiveObstacleArray()
@@ -572,7 +596,7 @@ def _write_formal_run(
         writer.write(
             "/bio_nav/module2/cognitive_obstacles",
             serialize_message(source),
-            stamp,
+            semantic_sec * 1_000_000_000 + semantic_nanosec + 3_000_000,
         )
         stamp += 1
         for endpoint in (
@@ -641,6 +665,20 @@ def _write_formal_run(
                 else "validation_mode=2;source_age_ms=0.000998;"
                 "rejection_reason=offered;confirmed_count=0"
             )
+            status.risk_model_sha256 = (
+                "unrelated-risk"
+                if cognitive_mutation in {
+                    "critic_receipt_tamper", "layer_receipt_tamper",
+                }
+                and sequence == 2
+                and (
+                    role == "critic"
+                    if cognitive_mutation == "critic_receipt_tamper"
+                    else role == "global_layer"
+                )
+                else "risk-sha256"
+            )
+            status.qualification_receipt_sha256 = "qualification-sha256"
             writer.write(
                 (
                     "/bio_nav/cognitive_risk_critic/status"
@@ -648,7 +686,8 @@ def _write_formal_run(
                     else "/bio_nav/cognitive_obstacle_layer/status"
                 ),
                 serialize_message(status),
-                stamp,
+                semantic_sec * 1_000_000_000
+                + semantic_nanosec + 25_000_000,
             )
             stamp += 1
     if cognitive_mutation == "bad_after_latch":
@@ -662,6 +701,12 @@ def _write_formal_run(
         ]
         bad_planning.map_version = cognitive_identity["map_version"]
         bad_planning.schema_version = "bio_nav_planning_prior_v4"
+        bad_planning.model_id = "model-v1"
+        bad_planning.cognitive_tile_id = "tile-v1"
+        bad_planning.tile_revision = 1
+        bad_planning.graph_revision = 1
+        bad_planning.risk_model_sha256 = "risk-sha256"
+        bad_planning.qualification_receipt_sha256 = "qualification-sha256"
         bad_planning.input_healthy = True
         bad_planning.observation_valid = True
         bad_planning.trusted_write = True
@@ -669,13 +714,53 @@ def _write_formal_run(
         writer.write(
             "/bio_nav/module2/planning_prior",
             serialize_message(bad_planning),
-            stamp,
+            13_250_000_000,
         )
         stamp += 1
-    for _index in range(route_completion_count - 1):
+    if cognitive_mutation == "post_latch_bad_then_same_seq_healthy":
+        source.schema_version = "tampered_schema"
+        writer.write(
+            "/bio_nav/module2/cognitive_obstacles",
+            serialize_message(source),
+            13_190_000_000,
+        )
+        source.schema_version = "bio_nav_cognitive_obstacles_v1"
+        writer.write(
+            "/bio_nav/module2/cognitive_obstacles",
+            serialize_message(source),
+            13_195_000_000,
+        )
+    if cognitive_mutation == "post_latch_bad_planning_then_healthy":
+        planning.module2_healthy = False
+        writer.write(
+            "/bio_nav/module2/planning_prior",
+            serialize_message(planning),
+            13_190_000_000,
+        )
+        planning.module2_healthy = True
+        writer.write(
+            "/bio_nav/module2/planning_prior",
+            serialize_message(planning),
+            13_195_000_000,
+        )
+    if cognitive_mutation == "post_latch_bad_status_then_healthy":
+        healthy_reason = status.fallback_reason
+        status.fallback_reason = "prior_untrusted"
+        writer.write(
+            "/bio_nav/cognitive_risk_critic/status",
+            serialize_message(status),
+            13_190_000_000,
+        )
+        status.fallback_reason = healthy_reason
+        writer.write(
+            "/bio_nav/cognitive_risk_critic/status",
+            serialize_message(status),
+            13_195_000_000,
+        )
+    for terminal_value in terminal_values[1:]:
         writer.write(
             "/bio_nav/route_goal_complete",
-            serialize_message(Bool(data=True)),
+            serialize_message(Bool(data=terminal_value)),
             stamp,
         )
         stamp += 1
@@ -4952,6 +5037,35 @@ def test_formal_binary_mcap_accepts_lagging_critic_coherent_tuple(tmp_path):
     assert evidence["cognitive_admission_replay"]["passed"] is True
 
 
+@pytest.mark.parametrize("terminals", ((False,), (True, False)))
+def test_product_failure_terminal_false_starts_zero_tail(tmp_path, terminals):
+    campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
+    root = _write_formal_run(
+        campaign.conditions[0],
+        1,
+        strict_success=False,
+        formal_freeze_digest=campaign.freeze_digest,
+        route_completion_values=terminals,
+    )
+    summary = json.loads((root / "run_summary.json").read_text())
+    episode = json.loads((root / "run_manifest.json").read_text())
+
+    evidence = experiment_runner_module.validate_recorded_run_evidence(
+        root,
+        summary,
+        episode,
+        scene="indoor",
+        route_guided=True,
+        route_prior_required=True,
+        expected_leg_count=5,
+        require_strict_success=False,
+        cognitive_admission_required=True,
+    )
+
+    assert evidence["inventory"]["semantic"]["route_complete_false_count"] == 1
+    assert evidence["inventory"]["semantic"]["terminal_zero_count"] == 2
+
+
 @pytest.mark.parametrize(
     "mutation",
     (
@@ -4964,6 +5078,11 @@ def test_formal_binary_mcap_accepts_lagging_critic_coherent_tuple(tmp_path):
         "bad_after_latch",
         "source_schema_tamper", "planning_field_tamper",
         "shadow_in_active",
+        "post_latch_bad_then_same_seq_healthy",
+        "planning_chain_tamper", "critic_receipt_tamper",
+        "layer_receipt_tamper",
+        "post_latch_bad_planning_then_healthy",
+        "post_latch_bad_status_then_healthy",
     ),
 )
 def test_formal_binary_mcap_replay_rejects_adversarial_cognitive_chain(

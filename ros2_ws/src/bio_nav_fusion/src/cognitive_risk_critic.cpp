@@ -201,6 +201,7 @@ void CognitiveRiskCritic::obstacleCallback(
       if (reset_rebind_candidate) {
         obstacles_.reset();
         accepted_.reset();
+        last_rejected_offer_ = RejectedOffer{};
         expected_ = candidate_identity;
         route_identity_ = candidate_identity;
         pending_rebind_ = false;

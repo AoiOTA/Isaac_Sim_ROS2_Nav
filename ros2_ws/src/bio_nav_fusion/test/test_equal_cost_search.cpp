@@ -3290,6 +3290,8 @@ TEST(CognitiveRiskCritic, reset_rebind_requires_unchanged_route_context_prior)
     bio_nav_fusion::CognitiveRiskCriticTestPeer::identity(critic).recurrent_session_id,
     "session-reset");
   EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::cursor(critic).source_sequence, 1U);
+  EXPECT_FALSE(
+    bio_nav_fusion::CognitiveRiskCriticTestPeer::lastRejected(critic).valid);
   EXPECT_GT(scoreAt(critic, 1.0F, 0.0F), 1.0F);
 
   bio_nav_fusion::CognitiveRiskCriticTestPeer::offerObstacle(
