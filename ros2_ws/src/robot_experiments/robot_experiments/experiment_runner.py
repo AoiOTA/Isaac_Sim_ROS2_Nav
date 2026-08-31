@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+import copy
 import csv
 import fcntl
 import gzip
@@ -185,12 +186,24 @@ RECORDED_TOPIC_TYPES = {
     "/bio_nav/canonical_route": "bio_nav_interfaces/msg/CanonicalRoute",
     "/bio_nav/route_progress": "bio_nav_interfaces/msg/RouteProgress",
     "/amcl_pose": "geometry_msgs/msg/PoseWithCovarianceStamped",
+    "/bio_nav/module2/cognitive_obstacles": (
+        "bio_nav_interfaces/msg/CognitiveObstacleArray"
+    ),
+    "/bio_nav/cognitive_obstacle_layer/status": (
+        "bio_nav_interfaces/msg/RiskLayerStatus"
+    ),
+    "/bio_nav/cognitive_risk_critic/status": (
+        "bio_nav_interfaces/msg/RiskLayerStatus"
+    ),
 }
 FINAL_V6_SCENARIO_IDS = frozenset(
     f"{prefix}_{category}"
     for prefix in ("v6_final_kujiale", "final_rivermark")
     for category in ("static", "dynamic", "appearance")
 )
+COGNITIVE_ADMISSION_COMPONENTS = frozenset({
+    "global_layer", "local_layer", "critic",
+})
 KNOWN_OUTDOOR_LOCALIZATION_CONFLICTS = frozenset({"amcl", "slam_toolbox"})
 
 
@@ -398,6 +411,16 @@ def _mcap_required_topic_coverage(
 MCAP_MAGIC = b"\x89MCAP0\r\n"
 
 
+def _message_time_seconds(value: object) -> float:
+    return float(getattr(value, "sec", 0)) + float(
+        getattr(value, "nanosec", 0)
+    ) * 1.0e-9
+
+
+def _message_duration_seconds(value: object) -> float:
+    return _message_time_seconds(value)
+
+
 def _mcap_inventory_evidence(root: Path) -> dict[str, Any]:
     metadata_path = root / "telemetry" / "metadata.yaml"
     try:
@@ -457,12 +480,24 @@ def _mcap_inventory_evidence(root: Path) -> dict[str, Any]:
         terminal_nonzero = 0
         positive_requested = 0
         positive_applied = 0
+        cognitive_sources: list[dict[str, Any]] = []
+        cognitive_statuses: list[dict[str, Any]] = []
         semantic_types = {
             "/simulation/collision": "std_msgs/msg/Bool",
             "/bio_nav/route_goal_complete": "std_msgs/msg/Bool",
             "/cmd_vel_sim": "geometry_msgs/msg/Twist",
             "/bio_nav/route_edge_costs": "bio_nav_interfaces/msg/RouteEdgeCostArray",
         }
+        cognitive_types = {
+            topic: RECORDED_TOPIC_TYPES[topic]
+            for topic in (
+                "/bio_nav/module2/cognitive_obstacles",
+                "/bio_nav/cognitive_obstacle_layer/status",
+                "/bio_nav/cognitive_risk_critic/status",
+            )
+            if topic in topic_types
+        }
+        semantic_types.update(cognitive_types)
         for topic, expected_type in semantic_types.items():
             if topic_types.get(topic) != expected_type:
                 raise RuntimeError(f"topic_type:{topic}:{topic_types.get(topic)}")
@@ -500,6 +535,37 @@ def _mcap_inventory_evidence(root: Path) -> dict[str, Any]:
                     float(item.applied_module2_delta_m) > 0.0
                     for item in message.costs
                 )
+            elif topic == "/bio_nav/module2/cognitive_obstacles":
+                cognitive_sources.append({
+                    "sequence": int(message.sequence),
+                    "reset_epoch": int(message.reset_epoch),
+                    "recurrent_session_id": str(message.recurrent_session_id),
+                    "map_version": str(message.map_version),
+                    "validation_stamp_s": _message_time_seconds(
+                        message.validation_stamp
+                    ),
+                    "source_stamp_s": _message_time_seconds(message.header.stamp),
+                    "source_age_s": _message_duration_seconds(message.source_age),
+                })
+            elif topic in {
+                "/bio_nav/cognitive_obstacle_layer/status",
+                "/bio_nav/cognitive_risk_critic/status",
+            }:
+                cognitive_statuses.append({
+                    "topic": topic,
+                    "consumer": str(message.consumer),
+                    "mode": str(message.mode),
+                    "offered": bool(message.offered),
+                    "applied": bool(message.applied),
+                    "rejected": bool(message.rejected),
+                    "source_sequence": int(message.source_sequence),
+                    "reset_epoch": int(message.reset_epoch),
+                    "recurrent_session_id": str(message.recurrent_session_id),
+                    "map_version": str(message.map_version),
+                    "status_stamp_s": _message_time_seconds(message.stamp),
+                    "message_age_ms": float(message.message_age_ms),
+                    "fallback_reason": str(message.fallback_reason),
+                })
     except Exception as exc:
         return {"passed": False, "error": f"mcap_reader_failed:{type(exc).__name__}:{exc}"}
     reported_counts = {
@@ -533,7 +599,231 @@ def _mcap_inventory_evidence(root: Path) -> dict[str, Any]:
             "terminal_nonzero_count": terminal_nonzero,
             "positive_requested_count": positive_requested,
             "positive_applied_count": positive_applied,
+            "cognitive_admission": {
+                "sources": cognitive_sources,
+                "statuses": cognitive_statuses,
+            },
         },
+    }
+
+
+def _recorded_cognitive_admission_evidence(
+    root: Path,
+    inventory: Mapping[str, Any],
+    summary: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Replay the pre-dispatch cognitive readiness contract from primary MCAP."""
+
+    try:
+        trial = json.loads((root / "TRIAL_DISPATCHED.json").read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"passed": False, "error": f"trial_dispatch_invalid:{type(exc).__name__}"}
+    summary_receipt = summary.get("cognitive_admission_readiness")
+    manifest_receipt = manifest.get("cognitive_admission_readiness")
+    trial_receipt = trial.get("cognitive_admission_readiness")
+    if not all(
+        isinstance(value, Mapping)
+        for value in (summary_receipt, manifest_receipt, trial_receipt)
+    ):
+        return {"passed": False, "error": "cognitive_receipt_missing"}
+    if not (
+        summary_receipt == manifest_receipt == trial_receipt
+        and summary_receipt.get("required") is True
+        and summary_receipt.get("ready") is True
+        and summary_receipt.get("status") == "ready"
+        and summary_receipt.get("minimum_consecutive_samples")
+        == COGNITIVE_ADMISSION_MIN_CONSECUTIVE
+        and set(summary_receipt.get("required_components", []))
+        == COGNITIVE_ADMISSION_COMPONENTS
+        and set(summary_receipt.get("components", {}))
+        == COGNITIVE_ADMISSION_COMPONENTS
+    ):
+        return {"passed": False, "error": "cognitive_receipt_contract_mismatch"}
+    required_receipt_fields = {
+        "required", "required_components", "minimum_consecutive_samples",
+        "barrier_ros_s", "expected_reset_epoch",
+        "forbidden_previous_recurrent_session_id",
+        "module2_planning_identity", "status", "ready", "reason",
+        "reset_generation", "ready_ros_s", "planning_prior", "components",
+    }
+    if not required_receipt_fields <= set(summary_receipt):
+        return {"passed": False, "error": "cognitive_receipt_fields_missing"}
+    dispatch_s = trial.get("ros_stamp_s")
+    ready_s = summary_receipt.get("ready_ros_s")
+    planning = summary_receipt.get("planning_prior")
+    if not (
+        isinstance(dispatch_s, (int, float))
+        and not isinstance(dispatch_s, bool)
+        and math.isfinite(float(dispatch_s))
+        and isinstance(ready_s, (int, float))
+        and not isinstance(ready_s, bool)
+        and math.isfinite(float(ready_s))
+        and float(ready_s) <= float(dispatch_s)
+        and isinstance(planning, Mapping)
+        and planning.get("module2_healthy") is True
+        and isinstance(planning.get("stamp_s"), (int, float))
+        and not isinstance(planning.get("stamp_s"), bool)
+        and 0.0 < float(planning["stamp_s"]) <= float(dispatch_s)
+    ):
+        return {"passed": False, "error": "cognitive_dispatch_boundary_invalid"}
+    required_planning = {
+        "sequence", "stamp_s", "reset_epoch", "recurrent_session_id",
+        "map_version", "module2_healthy", "place_entropy_normalized",
+        "context_uncertainty",
+    }
+    if set(planning) != required_planning:
+        return {"passed": False, "error": "cognitive_planning_fields_invalid"}
+    if summary_receipt.get("module2_planning_identity") != {
+        key: planning.get(key)
+        for key in ("sequence", "reset_epoch", "recurrent_session_id", "map_version")
+    }:
+        return {"passed": False, "error": "cognitive_planning_identity_mismatch"}
+    identity = (
+        planning.get("reset_epoch"),
+        planning.get("recurrent_session_id"),
+        planning.get("map_version"),
+    )
+    if not (
+        isinstance(identity[0], int)
+        and not isinstance(identity[0], bool)
+        and identity[0] > 0
+        and isinstance(identity[1], str)
+        and bool(identity[1])
+        and isinstance(identity[2], str)
+        and bool(identity[2])
+        and summary_receipt.get("reset_generation") == identity[0]
+        and summary_receipt.get("expected_reset_epoch") == identity[0]
+    ):
+        return {"passed": False, "error": "cognitive_identity_invalid"}
+    semantic = inventory.get("semantic", {})
+    replay = semantic.get("cognitive_admission", {}) if isinstance(semantic, Mapping) else {}
+    sources = replay.get("sources", []) if isinstance(replay, Mapping) else []
+    statuses = replay.get("statuses", []) if isinstance(replay, Mapping) else []
+    if not isinstance(sources, list) or not isinstance(statuses, list):
+        return {"passed": False, "error": "cognitive_mcap_semantics_missing"}
+    sources_by_sequence = {
+        int(row["sequence"]): row
+        for row in sources
+        if isinstance(row, Mapping)
+        and (
+            row.get("reset_epoch"), row.get("recurrent_session_id"),
+            row.get("map_version"),
+        ) == identity
+        and isinstance(row.get("validation_stamp_s"), (int, float))
+        and 0.0 < float(row["validation_stamp_s"]) <= float(dispatch_s)
+    }
+
+    def role_of(row: Mapping[str, Any]) -> str | None:
+        consumer = str(row.get("consumer", ""))
+        topic = str(row.get("topic", ""))
+        if topic == "/bio_nav/cognitive_risk_critic/status":
+            return "critic"
+        if "global_costmap" in consumer:
+            return "global_layer"
+        if "local_costmap" in consumer:
+            return "local_layer"
+        return None
+
+    replay_components: dict[str, Any] = {}
+    latest_required_fields = {
+        "consumer", "mode", "offered", "applied", "rejected",
+        "fallback_reason", "source_sequence", "reset_epoch",
+        "recurrent_session_id", "map_version", "status_stamp_s",
+        "message_age_ms", "validation_stamp_s",
+        "admission_rejection_reason", "consecutive_healthy_samples",
+    }
+    for role in sorted(COGNITIVE_ADMISSION_COMPONENTS):
+        configuration = summary_receipt["components"][role]
+        if not isinstance(configuration, Mapping):
+            return {"passed": False, "error": f"cognitive_component_invalid:{role}"}
+        expected_latest = configuration.get("latest")
+        if (
+            not isinstance(expected_latest, Mapping)
+            or not latest_required_fields <= set(expected_latest)
+        ):
+            return {"passed": False, "error": f"cognitive_latest_fields_missing:{role}"}
+        expected_mode = configuration.get("expected_mode")
+        maximum_age_s = configuration.get("maximum_age_s")
+        if not (
+            isinstance(expected_mode, str)
+            and expected_mode
+            and isinstance(maximum_age_s, (int, float))
+            and not isinstance(maximum_age_s, bool)
+            and math.isfinite(float(maximum_age_s))
+            and float(maximum_age_s) > 0.0
+        ):
+            return {"passed": False, "error": f"cognitive_component_config_invalid:{role}"}
+        expected_sequence = expected_latest.get("source_sequence")
+        streak = 0
+        last_sequence = -1
+        matched: Mapping[str, Any] | None = None
+        for row in statuses:
+            if not isinstance(row, Mapping) or role_of(row) != role:
+                continue
+            status_stamp = row.get("status_stamp_s")
+            if not (
+                isinstance(status_stamp, (int, float))
+                and 0.0 < float(status_stamp) <= float(dispatch_s)
+            ):
+                continue
+            sequence = row.get("source_sequence")
+            if not isinstance(sequence, int) or sequence <= last_sequence:
+                continue
+            last_sequence = sequence
+            source = sources_by_sequence.get(sequence) if isinstance(sequence, int) else None
+            age_ms = row.get("message_age_ms")
+            fallback = str(row.get("fallback_reason", "")).lower()
+            healthy = bool(
+                source is not None
+                and (
+                    row.get("reset_epoch"), row.get("recurrent_session_id"),
+                    row.get("map_version"),
+                ) == identity
+                and row.get("mode") == expected_mode
+                and row.get("rejected") is False
+                and isinstance(age_ms, (int, float))
+                and not isinstance(age_ms, bool)
+                and math.isfinite(float(age_ms))
+                and 0.0 <= float(age_ms) <= float(maximum_age_s) * 1000.0
+                and not any(
+                    token in fallback
+                    for token in COGNITIVE_ADMISSION_BAD_REASON_TOKENS
+                )
+            )
+            streak = streak + 1 if healthy else 0
+            if sequence == expected_sequence:
+                matched = row
+                break
+        if matched is None or streak < COGNITIVE_ADMISSION_MIN_CONSECUTIVE:
+            return {"passed": False, "error": f"cognitive_streak_missing:{role}"}
+        source = sources_by_sequence[int(expected_sequence)]
+        reconstructed = {
+            key: matched.get(key)
+            for key in (
+                "consumer", "mode", "offered", "applied", "rejected",
+                "fallback_reason", "source_sequence", "reset_epoch",
+                "recurrent_session_id", "map_version", "status_stamp_s",
+                "message_age_ms",
+            )
+        }
+        reconstructed.update({
+            "validation_stamp_s": source["validation_stamp_s"],
+            "admission_rejection_reason": None,
+            "consecutive_healthy_samples": streak,
+        })
+        if any(expected_latest.get(key) != value for key, value in reconstructed.items()):
+            return {"passed": False, "error": f"cognitive_summary_replay_mismatch:{role}"}
+        replay_components[role] = reconstructed
+    return {
+        "passed": True,
+        "dispatch_ros_s": float(dispatch_s),
+        "identity": {
+            "reset_epoch": identity[0],
+            "recurrent_session_id": identity[1],
+            "map_version": identity[2],
+        },
+        "components": replay_components,
     }
 
 
@@ -547,11 +837,21 @@ def validate_recorded_run_evidence(
     route_prior_required: bool,
     expected_leg_count: int,
     require_strict_success: bool = True,
+    cognitive_admission_required: bool = False,
 ) -> dict[str, Any]:
     """Cross-check primary evidence and optionally require strict success."""
 
     reasons: list[str] = []
     inventory = _mcap_inventory_evidence(root)
+    cognitive_replay = (
+        _recorded_cognitive_admission_evidence(
+            root, inventory, summary, manifest
+        )
+        if cognitive_admission_required and inventory.get("passed") is True
+        else {"passed": not cognitive_admission_required}
+    )
+    if cognitive_replay.get("passed") is not True:
+        reasons.append("recorded_cognitive_admission_invalid")
     coverage = _mcap_required_topic_coverage(
         root / "telemetry" / "metadata.yaml",
         scene=scene,
@@ -792,6 +1092,7 @@ def validate_recorded_run_evidence(
         "inventory": inventory,
         "required_topic_coverage": coverage,
         "route_prior_application": route_prior,
+        "cognitive_admission_replay": cognitive_replay,
     }
 
 
@@ -1384,6 +1685,14 @@ class ExperimentRunner(Node):
         self._cognitive_admission_components = _cognitive_admission_components(
             nav2_configuration
         )
+        if (
+            self._scenario.scenario_id in FINAL_V6_SCENARIO_IDS
+            and set(self._cognitive_admission_components)
+            != COGNITIVE_ADMISSION_COMPONENTS
+        ):
+            raise ConfigurationError(
+                "final V6 scenarios require global/local cognitive layers and critic"
+            )
         self._robot_config_hash = configuration_sha256(robot_config)
         self._robot_footprint = load_robot_footprint(robot_config)
         self._nav2_config_hash = configuration_sha256(nav2_config)
@@ -2111,6 +2420,18 @@ class ExperimentRunner(Node):
         target = self._active_evidence_root / "TRIAL_DISPATCHED.json"
         if target.exists():
             raise ConfigurationError("trial dispatch receipt already exists")
+        dispatch_ros_s = self._clock_seconds()
+        cognitive_receipt = self._cognitive_admission_snapshot()
+        if cognitive_receipt.get("required") is True and not (
+            cognitive_receipt.get("ready") is True
+            and isinstance(cognitive_receipt.get("ready_ros_s"), (int, float))
+            and isinstance(dispatch_ros_s, (int, float))
+            and math.isfinite(float(dispatch_ros_s))
+            and float(cognitive_receipt["ready_ros_s"]) <= float(dispatch_ros_s)
+        ):
+            raise ConfigurationError(
+                "trial dispatch is not fenced by a latched cognitive readiness receipt"
+            )
         receipt = {
             "schema": "bio_nav.trial_dispatched.v1",
             "scenario_id": self._scenario.scenario_id,
@@ -2130,7 +2451,8 @@ class ExperimentRunner(Node):
             "wall_time_utc": datetime.now(timezone.utc).isoformat(),
             "wall_ns": time.time_ns(),
             "monotonic_ns": time.monotonic_ns(),
-            "ros_stamp_s": self._clock_seconds(),
+            "ros_stamp_s": dispatch_ros_s,
+            "cognitive_admission_readiness": cognitive_receipt,
         }
         try:
             with target.open("x", encoding="utf-8") as stream:
@@ -2366,6 +2688,7 @@ class ExperimentRunner(Node):
             role: -1 for role in components
         }
         self._cognitive_admission_latest: dict[str, dict[str, Any]] = {}
+        self._cognitive_admission_ready_receipt: dict[str, Any] | None = None
         self._cognitive_admission_result_status = (
             "exempt" if not components else "pending"
         )
@@ -2461,7 +2784,7 @@ class ExperimentRunner(Node):
             "consecutive_healthy_samples": self._cognitive_admission_streaks[role],
         }
 
-    def _cognitive_admission_snapshot(self) -> dict[str, Any]:
+    def _current_cognitive_admission_snapshot(self) -> dict[str, Any]:
         components = getattr(self, "_cognitive_admission_components", {})
         planning = getattr(self, "_latest_planning_prior_readiness", None)
         return {
@@ -2516,6 +2839,75 @@ class ExperimentRunner(Node):
             },
         }
 
+    def _cognitive_admission_snapshot(self) -> dict[str, Any]:
+        receipt = getattr(self, "_cognitive_admission_ready_receipt", None)
+        if receipt is not None:
+            return copy.deepcopy(receipt)
+        return self._current_cognitive_admission_snapshot()
+
+    def _latch_cognitive_admission_receipt(self) -> None:
+        components = getattr(self, "_cognitive_admission_components", {})
+        planning = getattr(self, "_latest_planning_prior_readiness", None)
+        identity = getattr(self, "_cognitive_admission_current_identity", None)
+        reset_receipt = getattr(self, "_reset_receipt", None)
+        if (
+            not isinstance(planning, Mapping)
+            or identity is None
+            or not isinstance(reset_receipt, Mapping)
+            or int(reset_receipt.get("generation", -1)) != identity[0]
+        ):
+            raise RuntimeError("cognitive admission identity is incomplete at readiness")
+        component_receipts: dict[str, dict[str, Any]] = {}
+        for role in sorted(components):
+            latest = self._cognitive_admission_latest.get(role)
+            if not isinstance(latest, Mapping):
+                raise RuntimeError(f"cognitive admission status missing at readiness: {role}")
+            if (
+                int(latest.get("reset_epoch", -1)) != identity[0]
+                or str(latest.get("recurrent_session_id", "")) != identity[1]
+                or str(latest.get("map_version", "")) != identity[2]
+                or int(latest.get("consecutive_healthy_samples", 0))
+                < COGNITIVE_ADMISSION_MIN_CONSECUTIVE
+                or latest.get("admission_rejection_reason") is not None
+            ):
+                raise RuntimeError(
+                    f"cognitive admission status changed at readiness: {role}"
+                )
+            component_receipts[role] = copy.deepcopy(dict(latest))
+        ready_ros_s = self._clock_seconds()
+        if ready_ros_s is None or not math.isfinite(ready_ros_s):
+            raise RuntimeError("cognitive admission readiness requires finite ROS time")
+        self._cognitive_admission_result_status = "ready"
+        self._cognitive_admission_result_reason = (
+            "three_consecutive_current_healthy_samples_per_component"
+        )
+        snapshot = self._current_cognitive_admission_snapshot()
+        snapshot.update({
+            "reset_generation": identity[0],
+            "ready_ros_s": float(ready_ros_s),
+            "planning_prior": {
+                key: copy.deepcopy(planning.get(key))
+                for key in (
+                    "stamp_s",
+                    "sequence",
+                    "reset_epoch",
+                    "recurrent_session_id",
+                    "map_version",
+                    "module2_healthy",
+                    "place_entropy_normalized",
+                    "context_uncertainty",
+                )
+            },
+            "components": {
+                role: {
+                    **snapshot["components"][role],
+                    "latest": component_receipts[role],
+                }
+                for role in sorted(components)
+            },
+        })
+        self._cognitive_admission_ready_receipt = copy.deepcopy(snapshot)
+
     def _wait_for_cognitive_admission_ready(self) -> None:
         components = getattr(self, "_cognitive_admission_components", {})
         if not components:
@@ -2535,10 +2927,7 @@ class ExperimentRunner(Node):
         if self._wait_until(
             ready, self._cognitive_admission_ready_timeout_sec
         ):
-            self._cognitive_admission_result_status = "ready"
-            self._cognitive_admission_result_reason = (
-                "three_consecutive_current_healthy_samples_per_component"
-            )
+            self._latch_cognitive_admission_receipt()
             return
         self._cognitive_admission_result_status = "timeout"
         missing = [
@@ -3598,6 +3987,28 @@ class ExperimentRunner(Node):
             if previous_cognitive_obstacles is not None
             else None
         )
+        previous_planning = getattr(self, "_latest_planning_prior_readiness", None)
+        previous_planning_session = (
+            str(previous_planning.get("recurrent_session_id", ""))
+            if isinstance(previous_planning, Mapping)
+            else None
+        )
+        previous_ready_receipt = getattr(
+            self, "_cognitive_admission_ready_receipt", None
+        )
+        previous_receipt_session = None
+        if isinstance(previous_ready_receipt, Mapping):
+            planning_receipt = previous_ready_receipt.get("planning_prior")
+            if isinstance(planning_receipt, Mapping):
+                previous_receipt_session = str(
+                    planning_receipt.get("recurrent_session_id", "")
+                )
+        previous_cognitive_session = ExperimentRunner._resolve_previous_cognitive_session(
+            planning_prior=previous_planning_session,
+            cognitive_source=previous_cognitive_session,
+            ready_receipt=previous_receipt_session,
+            required=bool(getattr(self, "_cognitive_admission_components", {})),
+        )
         self._cancel_stale_navigation_goal()
         self._clear_localization_buffer()
         self._set_reset_seed(seed, case_id, variant_id, appearance_profile_id)
@@ -3678,6 +4089,36 @@ class ExperimentRunner(Node):
             expected_reset_epoch=int(receipt["generation"]),
             forbidden_recurrent_session_id=previous_cognitive_session,
         )
+
+    @staticmethod
+    def _resolve_previous_cognitive_session(
+        *,
+        planning_prior: str | None,
+        cognitive_source: str | None,
+        ready_receipt: str | None,
+        required: bool,
+    ) -> str | None:
+        sessions = {
+            name: value
+            for name, value in (
+                ("planning_prior", planning_prior),
+                ("cognitive_source", cognitive_source),
+                ("ready_receipt", ready_receipt),
+            )
+            if value
+        }
+        if required and not sessions:
+            raise RuntimeError(
+                "cognitive recurrent-session baseline is unavailable before reset"
+            )
+        if len(set(sessions.values())) > 1:
+            raise RuntimeError(
+                "cognitive recurrent-session baseline mismatch before reset: "
+                + ",".join(
+                    f"{name}={value}" for name, value in sorted(sessions.items())
+                )
+            )
+        return next(iter(sessions.values()), None)
 
     def _pose_message(self, specification) -> PoseStamped:
         pose = PoseStamped()
@@ -4241,17 +4682,6 @@ class ExperimentRunner(Node):
 
     def _wait_for_reset_stop_gate_release(self) -> None:
         """Fence route dispatch on the release for this reset generation."""
-
-        if (
-            not self._reset_stop_gate_status_received
-            and self._reset_stop_gate_status_subscription.get_publisher_count() == 0
-        ):
-            receipt = self._reset_receipt
-            if receipt is not None:
-                self._reset_stop_gate_release_confirmed_generation = int(
-                    receipt["generation"]
-                )
-            return
         receipt = self._reset_receipt
         barrier = self._reset_call_barrier_monotonic
         if receipt is None or barrier is None:

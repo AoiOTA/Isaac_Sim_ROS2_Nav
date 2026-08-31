@@ -265,8 +265,8 @@ def _write_formal_run(
     )
     import rosbag2_py
     from bio_nav_interfaces.msg import (
-        CanonicalRoute, NavigationGraph, RouteEdgeCost, RouteEdgeCostArray,
-        RouteProgress,
+        CanonicalRoute, CognitiveObstacleArray, NavigationGraph, RiskLayerStatus,
+        RouteEdgeCost, RouteEdgeCostArray, RouteProgress,
     )
     from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
     from nav_msgs.msg import Odometry
@@ -297,6 +297,68 @@ def _write_formal_run(
     route_cost_message.costs = [route_cost]
     messages["/bio_nav/route_edge_costs"] = route_cost_message
     messages["/bio_nav/route_goal_complete"] = Bool(data=True)
+    cognitive_identity = {
+        "reset_epoch": run_index,
+        "recurrent_session_id": f"recurrent-session-{run_index}",
+        "map_version": load_scenario(condition.scenario_file).map_version,
+    }
+    component_consumers = {
+        "global_layer": "/global_costmap/global_costmap:cognitive_obstacle_layer",
+        "local_layer": "/local_costmap/local_costmap:cognitive_obstacle_layer",
+        "critic": "FollowPath/CognitiveRiskCritic",
+    }
+    cognitive_receipt = {
+        "required": True,
+        "required_components": ["critic", "global_layer", "local_layer"],
+        "minimum_consecutive_samples": 3,
+        "barrier_ros_s": 9.0,
+        "expected_reset_epoch": run_index,
+        "forbidden_previous_recurrent_session_id": (
+            f"recurrent-session-{run_index - 1}" if run_index > 1 else "pre-reset"
+        ),
+        "module2_planning_identity": {
+            "sequence": 99,
+            **cognitive_identity,
+        },
+        "status": "ready",
+        "ready": True,
+        "reason": "three_consecutive_current_healthy_samples_per_component",
+        "reset_generation": run_index,
+        "ready_ros_s": 13.2,
+        "planning_prior": {
+            "stamp_s": 13.0,
+            "sequence": 99,
+            **cognitive_identity,
+            "module2_healthy": True,
+            "place_entropy_normalized": 0.2,
+            "context_uncertainty": 0.1,
+        },
+        "components": {},
+    }
+    for role, consumer in component_consumers.items():
+        cognitive_receipt["components"][role] = {
+            "expected_mode": "shadow",
+            "maximum_age_s": 0.5,
+            "consecutive_healthy_samples": 3,
+            "latest": {
+                "consumer": consumer,
+                "mode": "shadow",
+                "offered": True,
+                "applied": False,
+                "rejected": False,
+                "fallback_reason": "zero_cost_delta",
+                "admission_rejection_reason": None,
+                "source_sequence": 3,
+                **cognitive_identity,
+                "status_stamp_s": 13.1,
+                "message_age_ms": 25.0,
+                "validation_stamp_s": 13.0,
+                "sim_time_s": 13.2,
+                "validation_stamp_vs_sim_time_skew_ms": 200.0,
+                "received_after_reset_barrier": True,
+                "consecutive_healthy_samples": 3,
+            },
+        }
     writer = rosbag2_py.SequentialWriter()
     writer.open(
         rosbag2_py.StorageOptions(uri=str(telemetry), storage_id="mcap"),
@@ -317,6 +379,27 @@ def _write_formal_run(
             serialization_format="cdr",
             offered_qos_profiles=[],
         ))
+    for topic, type_name in (
+        (
+            "/bio_nav/module2/cognitive_obstacles",
+            "bio_nav_interfaces/msg/CognitiveObstacleArray",
+        ),
+        (
+            "/bio_nav/cognitive_obstacle_layer/status",
+            "bio_nav_interfaces/msg/RiskLayerStatus",
+        ),
+        (
+            "/bio_nav/cognitive_risk_critic/status",
+            "bio_nav_interfaces/msg/RiskLayerStatus",
+        ),
+    ):
+        writer.create_topic(rosbag2_py.TopicMetadata(
+            id=0,
+            name=topic,
+            type=type_name,
+            serialization_format="cdr",
+            offered_qos_profiles=[],
+        ))
     writer.create_topic(rosbag2_py.TopicMetadata(
         id=0,
         name="/cmd_vel_sim",
@@ -328,6 +411,45 @@ def _write_formal_run(
     for topic, message in messages.items():
         writer.write(topic, serialize_message(message), stamp)
         stamp += 1
+    for sequence in (1, 2, 3):
+        source = CognitiveObstacleArray()
+        source.header.stamp.sec = 10 + sequence
+        source.sequence = sequence
+        source.reset_epoch = cognitive_identity["reset_epoch"]
+        source.recurrent_session_id = cognitive_identity["recurrent_session_id"]
+        source.map_version = cognitive_identity["map_version"]
+        source.validation_stamp.sec = 10 + sequence
+        writer.write(
+            "/bio_nav/module2/cognitive_obstacles",
+            serialize_message(source),
+            stamp,
+        )
+        stamp += 1
+        for role, consumer in component_consumers.items():
+            status = RiskLayerStatus()
+            status.stamp.sec = 10 + sequence
+            status.stamp.nanosec = 100000000
+            status.consumer = consumer
+            status.mode = "shadow"
+            status.offered = True
+            status.applied = False
+            status.rejected = False
+            status.source_sequence = sequence
+            status.reset_epoch = cognitive_identity["reset_epoch"]
+            status.recurrent_session_id = cognitive_identity["recurrent_session_id"]
+            status.map_version = cognitive_identity["map_version"]
+            status.message_age_ms = 25.0
+            status.fallback_reason = "zero_cost_delta"
+            writer.write(
+                (
+                    "/bio_nav/cognitive_risk_critic/status"
+                    if role == "critic"
+                    else "/bio_nav/cognitive_obstacle_layer/status"
+                ),
+                serialize_message(status),
+                stamp,
+            )
+            stamp += 1
     for _index in range(route_completion_count - 1):
         writer.write(
             "/bio_nav/route_goal_complete",
@@ -384,6 +506,12 @@ def _write_formal_run(
         target = root / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("fixture\n", encoding="utf-8")
+    (root / "TRIAL_DISPATCHED.json").write_text(json.dumps({
+        "schema": "bio_nav.trial_dispatched.v1",
+        "run_index": run_index,
+        "ros_stamp_s": 14.0,
+        "cognitive_admission_readiness": cognitive_receipt,
+    }), encoding="utf-8")
     (root / "FINAL_TRIAL_METRICS.json").write_text(
         '{"passed": true}\n', encoding="utf-8"
     )
@@ -422,6 +550,7 @@ def _write_formal_run(
         "stack_session_id": stack_session_id,
         "formal_freeze_digest": formal_freeze_digest,
         "path_deviation_percent": path_deviation_percent,
+        "cognitive_admission_readiness": cognitive_receipt,
     }
     episode = {
         "scenario_id": condition.scenario_id,
@@ -446,6 +575,7 @@ def _write_formal_run(
         "formal_freeze_digest": formal_freeze_digest,
         "reset_receipt": {"generation": run_index},
         "metrics": {"path_deviation_percent": path_deviation_percent},
+        "cognitive_admission_readiness": cognitive_receipt,
     }
     robot_hash, nav2_hash, runtime_hashes = (
         v6_formal_module._expected_scenario_runtime_hashes(condition)
@@ -4231,7 +4361,7 @@ def test_formal_execution_rejects_live_session_change_before_subprocess(
     assert calls == []
 
 
-def test_formal_execution_raises_when_post_dispatch_aggregate_blocks(
+def test_formal_execution_preserves_valid_product_failure_and_continues(
     tmp_path, monkeypatch
 ):
     campaign = load_formal_campaign_manifest(
@@ -4254,17 +4384,19 @@ def test_formal_execution_raises_when_post_dispatch_aggregate_blocks(
 
     monkeypatch.setattr(v6_formal_module.subprocess, "run", fake_run)
 
-    with pytest.raises(V6ContractError, match="blocked after dispatch"):
-        execute_formal_campaign(
-            campaign,
-            condition_stack_id="indoor_static",
-            condition_stack_contract=contract,
-        )
+    aggregate = execute_formal_campaign(
+        campaign,
+        condition_stack_id="indoor_static",
+        condition_stack_contract=contract,
+    )
 
     assert len(calls) == 1
+    static = aggregate["conditions"][0]
+    assert static["runs"][0]["status"] == "product_failure"
+    assert static["next_run_index"] == 2
 
 
-def test_formal_execution_requires_exactly_one_new_strict_target(
+def test_formal_execution_requires_exactly_one_new_valid_target(
     tmp_path, monkeypatch
 ):
     campaign = load_formal_campaign_manifest(
@@ -4274,7 +4406,7 @@ def test_formal_execution_requires_exactly_one_new_strict_target(
     monkeypatch.setenv("ROS_DOMAIN_ID", "150")
     monkeypatch.setattr(v6_formal_module.subprocess, "run", lambda *args, **kwargs: None)
 
-    with pytest.raises(V6ContractError, match="exactly one strict-success"):
+    with pytest.raises(V6ContractError, match="exactly one valid target"):
         execute_formal_campaign(
             campaign,
             condition_stack_id="indoor_static",
@@ -4416,7 +4548,7 @@ def test_formal_aggregate_resumes_after_valid_strict_episode(tmp_path):
         (False, False, "invalid_evidence"),
     ],
 )
-def test_formal_aggregate_stops_at_product_or_evidence_failure(
+def test_formal_aggregate_continues_valid_failure_and_stops_invalid(
     tmp_path, strict_success, valid, expected_status
 ):
     campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
@@ -4433,10 +4565,14 @@ def test_formal_aggregate_stops_at_product_or_evidence_failure(
     first_result = aggregate["conditions"][0]
 
     assert first_result["runs"][0]["status"] == expected_status
-    assert first_result["next_run_index"] is None
-    assert aggregate["blockers"] == [
-        f"{first.condition_id}:run-1:{expected_status}"
-    ]
+    if valid:
+        assert first_result["next_run_index"] == 2
+        assert aggregate["blockers"] == []
+    else:
+        assert first_result["next_run_index"] is None
+        assert aggregate["blockers"] == [
+            f"{first.condition_id}:run-1:invalid_evidence"
+        ]
 
 
 def test_formal_aggregate_rejects_changed_stack_session(tmp_path):
@@ -4527,6 +4663,89 @@ def test_primary_mcap_reader_normalizes_metadata_zero_message_topics(tmp_path):
     assert inventory["topic_counts"]["/recorded_but_unused"] == 0
 
 
+def test_formal_primary_mcap_replays_three_cognitive_components(tmp_path):
+    campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
+    root = _write_formal_run(
+        campaign.conditions[0],
+        1,
+        strict_success=True,
+        formal_freeze_digest=campaign.freeze_digest,
+    )
+    summary = json.loads((root / "run_summary.json").read_text())
+    episode = json.loads((root / "run_manifest.json").read_text())
+
+    evidence = experiment_runner_module.validate_recorded_run_evidence(
+        root,
+        summary,
+        episode,
+        scene="indoor",
+        route_guided=True,
+        route_prior_required=True,
+        expected_leg_count=5,
+        cognitive_admission_required=True,
+    )
+
+    replay = evidence["cognitive_admission_replay"]
+    assert replay["passed"] is True
+    assert set(replay["components"]) == {
+        "global_layer", "local_layer", "critic",
+    }
+    assert all(
+        row["consecutive_healthy_samples"] == 3
+        for row in replay["components"].values()
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("required_false", "component_set", "missing_field", "summary_mismatch"),
+)
+def test_formal_primary_mcap_fails_closed_on_cognitive_receipt_tamper(
+    tmp_path, mutation,
+):
+    campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
+    root = _write_formal_run(
+        campaign.conditions[0],
+        1,
+        strict_success=True,
+        formal_freeze_digest=campaign.freeze_digest,
+    )
+    summary = json.loads((root / "run_summary.json").read_text())
+    episode = json.loads((root / "run_manifest.json").read_text())
+    if mutation == "required_false":
+        summary["cognitive_admission_readiness"]["required"] = False
+        episode["cognitive_admission_readiness"]["required"] = False
+    elif mutation == "component_set":
+        summary["cognitive_admission_readiness"]["required_components"].pop()
+        episode["cognitive_admission_readiness"]["required_components"].pop()
+    elif mutation == "missing_field":
+        summary["cognitive_admission_readiness"]["components"]["critic"][
+            "latest"
+        ].pop("fallback_reason")
+        episode["cognitive_admission_readiness"]["components"]["critic"][
+            "latest"
+        ].pop("fallback_reason")
+    else:
+        summary["cognitive_admission_readiness"]["components"]["critic"][
+            "latest"
+        ]["message_age_ms"] = 26.0
+
+    with pytest.raises(
+        experiment_runner_module.ConfigurationError,
+        match="cognitive_admission",
+    ):
+        experiment_runner_module.validate_recorded_run_evidence(
+            root,
+            summary,
+            episode,
+            scene="indoor",
+            route_guided=True,
+            route_prior_required=True,
+            expected_leg_count=5,
+            cognitive_admission_required=True,
+        )
+
+
 def test_formal_checksum_rejects_unlisted_regular_file(tmp_path):
     campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
     root = _write_formal_run(
@@ -4571,26 +4790,56 @@ def test_formal_aggregate_rejects_run_freeze_digest_mismatch(tmp_path):
     assert aggregate["conditions"][0]["runs"][0]["status"] == "invalid_evidence"
 
 
-def test_unauthorized_complete_campaign_never_reports_pass(tmp_path):
+def test_formal_condition_thresholds_pass_only_when_authorized(tmp_path):
     campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
     for condition in campaign.conditions:
+        required = v6_formal_module.FORMAL_SUCCESS_THRESHOLDS[
+            condition.condition_id
+        ]
         for run_index in range(1, 21):
             _write_formal_run(
                 condition,
                 run_index,
-                strict_success=True,
+                strict_success=run_index <= required,
                 formal_freeze_digest=campaign.freeze_digest,
             )
 
     aggregate = evaluate_formal_campaign(campaign)
 
-    assert aggregate["strict_successes"] == 120
+    assert aggregate["strict_successes"] == 110
+    assert all(row["qualification"] == "PASS" for row in aggregate["conditions"])
     assert aggregate["execution_authorization"] == "NOT_AUTHORIZED"
     assert aggregate["formal_qualification"] == "INCOMPLETE"
     authorized = evaluate_formal_campaign(
         replace(campaign, authorization="AUTHORIZED")
     )
     assert authorized["formal_qualification"] == "PASS"
+
+
+@pytest.mark.parametrize(
+    ("condition_index", "failure_count"),
+    ((0, 2), (2, 3), (3, 3)),
+    ids=("static-second", "dynamic-third", "appearance-third"),
+)
+def test_formal_early_unreachable_uses_condition_failure_budget(
+    tmp_path, condition_index, failure_count,
+):
+    campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
+    condition = campaign.conditions[condition_index]
+    for run_index in range(1, failure_count + 1):
+        _write_formal_run(
+            condition,
+            run_index,
+            strict_success=False,
+            formal_freeze_digest=campaign.freeze_digest,
+        )
+
+    aggregate = evaluate_formal_campaign(campaign)
+    row = aggregate["conditions"][condition_index]
+
+    assert row["product_failures"] == failure_count
+    assert row["next_run_index"] is None
+    assert row["blockers"] == ["early_fail_unreachable"]
 
 
 def test_runtime_contract_rejects_nonbaseline_navigation_features(tmp_path):

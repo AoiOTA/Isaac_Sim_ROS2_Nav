@@ -524,18 +524,18 @@ def test_route_dispatch_malformed_status_fails_before_write_or_publish():
     assert events == ["malformed"]
 
 
-def test_route_dispatch_skips_gate_only_when_never_seen_and_no_publisher():
+def test_route_dispatch_missing_status_blocks_even_when_no_publisher():
     runner, events = _route_guided_gate_runner(
         status=None,
         status_received=False,
         publisher_count=0,
     )
 
-    result = ExperimentRunner._navigate_route_guided(runner)
+    with pytest.raises(TimeoutError, match="release timed out"):
+        ExperimentRunner._navigate_route_guided(runner)
 
-    assert result[0] is True
-    assert events == ["dispatch", "publish"]
-    assert runner._completed_dynamic_obstacle_ids == {"dynamic_box"}
+    assert events == []
+    assert runner._completed_dynamic_obstacle_ids == set()
 
 
 class _ImmediateFuture:

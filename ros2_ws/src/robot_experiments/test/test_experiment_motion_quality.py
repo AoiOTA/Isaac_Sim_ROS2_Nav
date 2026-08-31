@@ -548,10 +548,16 @@ def _cognitive_admission_runner(*, components=None):
     runner._clock_seconds = lambda: 12.0
     runner._latest_cognitive_layer_statuses = {}
     runner._latest_planning_prior_readiness = {
+        "stamp_s": 11.0,
+        "sequence": 9,
         "reset_epoch": 2,
         "recurrent_session_id": "session-2",
         "map_version": "map-v1",
+        "module2_healthy": True,
+        "place_entropy_normalized": 0.2,
+        "context_uncertainty": 0.1,
     }
+    runner._reset_receipt = {"generation": 2}
     runner._cognitive_admission_ready_timeout_sec = 0.25
     runner._wait_until = lambda predicate, _timeout: predicate()
     runner._reset_cognitive_admission_state(
@@ -705,6 +711,70 @@ def test_cognitive_admission_accepts_healthy_zero_cost_no_cell_samples_only_at_t
         and item["latest"]["fallback_reason"] == "zero_cost_delta"
         for item in evidence["components"].values()
     )
+
+
+def test_cognitive_admission_latches_receipt_against_later_bad_status():
+    runner = _cognitive_admission_runner()
+    for sequence in (1, 2, 3):
+        _publish_cognitive_sample(runner, sequence)
+    runner._wait_for_cognitive_admission_ready()
+    receipt = runner._cognitive_admission_snapshot()
+
+    _publish_cognitive_sample(
+        runner,
+        4,
+        status_overrides={
+            role: {
+                "rejected": True,
+                "fallback_reason": "rejection_reason=odom_time",
+            }
+            for role in runner._cognitive_admission_components
+        },
+    )
+
+    assert runner._cognitive_admission_snapshot() == receipt
+    assert receipt["reset_generation"] == 2
+    assert receipt["planning_prior"]["sequence"] == 9
+    assert {
+        role: item["latest"]["source_sequence"]
+        for role, item in receipt["components"].items()
+    } == {"critic": 3, "global_layer": 3, "local_layer": 3}
+
+
+@pytest.mark.parametrize(
+    ("planning", "source", "receipt", "required", "expected"),
+    (
+        ("session", None, None, True, "session"),
+        ("session", "session", "session", True, "session"),
+        (None, None, None, False, None),
+    ),
+)
+def test_previous_cognitive_session_baseline_accepts_nonempty_consistent_values(
+    planning, source, receipt, required, expected,
+):
+    assert ExperimentRunner._resolve_previous_cognitive_session(
+        planning_prior=planning,
+        cognitive_source=source,
+        ready_receipt=receipt,
+        required=required,
+    ) == expected
+
+
+def test_previous_cognitive_session_baseline_rejects_missing_or_mismatch():
+    with pytest.raises(RuntimeError, match="baseline is unavailable"):
+        ExperimentRunner._resolve_previous_cognitive_session(
+            planning_prior=None,
+            cognitive_source=None,
+            ready_receipt=None,
+            required=True,
+        )
+    with pytest.raises(RuntimeError, match="baseline mismatch"):
+        ExperimentRunner._resolve_previous_cognitive_session(
+            planning_prior="old",
+            cognitive_source="new",
+            ready_receipt="old",
+            required=True,
+        )
 
 
 def test_cognitive_admission_timeout_cannot_reach_dispatch_and_records_reason():

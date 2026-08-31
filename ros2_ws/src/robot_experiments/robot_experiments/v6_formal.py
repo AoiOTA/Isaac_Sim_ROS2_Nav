@@ -78,6 +78,10 @@ INDOOR_SUCCESS_THRESHOLDS = {
     "indoor_dynamic": 18,
     "indoor_appearance": 18,
 }
+FORMAL_SUCCESS_THRESHOLDS = {
+    condition_id: (19 if condition_id.endswith("_static") else 18)
+    for condition_id in FORMAL_CONDITION_IDS
+}
 INDOOR_FAILURE_BUDGETS = {
     condition_id: FORMAL_RUNS_PER_CONDITION - threshold
     for condition_id, threshold in INDOOR_SUCCESS_THRESHOLDS.items()
@@ -2993,6 +2997,7 @@ def _validate_sufficient_pilot_episode(
             route_guided=True,
             route_prior_required=True,
             expected_leg_count=5,
+            cognitive_admission_required=True,
         )
     except (ConfigurationError, ImportError) as exc:
         raise V6ContractError(f"Pilot episode primary evidence failed: {exc}") from exc
@@ -3049,7 +3054,7 @@ def _validate_sufficient_pilot_episode(
         _expected_scenario_runtime_hashes(condition)
     )
     static_reference_ok = True
-    if condition.condition_id == "indoor_static":
+    if condition.category == "static":
         summary_metric = summary.get("path_deviation_percent")
         episode_metric = episode.get("metrics", {}).get("path_deviation_percent")
         static_reference_ok = bool(
@@ -4646,6 +4651,7 @@ def _evaluate_campaign(
                             route_prior_required=True,
                             expected_leg_count=5,
                             require_strict_success=False,
+                            cognitive_admission_required=True,
                         )
                         primary_evidence_ok = True
                         primary_evidence_detail = ""
@@ -4745,7 +4751,7 @@ def _evaluate_campaign(
                 )
                 static_metric = None
                 static_metric_ok = True
-                if indoor_only and condition.condition_id == "indoor_static":
+                if condition.category == "static":
                     summary_metric = summary.get("path_deviation_percent")
                     episode_metric = episode.get("metrics", {}).get(
                         "path_deviation_percent"
@@ -4785,10 +4791,7 @@ def _evaluate_campaign(
                     valid
                     and primary_evidence.get("strict_success") is True
                     and (
-                        not (
-                            indoor_only
-                            and condition.condition_id == "indoor_static"
-                        )
+                        condition.category != "static"
                         or (
                             static_metric is not None
                             and static_metric < 20.0
@@ -4802,8 +4805,6 @@ def _evaluate_campaign(
                         static_path_deviations.append(static_metric)
                 elif valid:
                     status = "product_failure"
-                    if not indoor_only:
-                        condition_blockers.append(f"run-{run_index}:product_failure")
                 else:
                     status = "invalid_evidence"
                     condition_blockers.append(f"run-{run_index}:invalid_evidence")
@@ -4864,14 +4865,10 @@ def _evaluate_campaign(
         required_successes = (
             INDOOR_SUCCESS_THRESHOLDS[condition.condition_id]
             if indoor_only
-            else FORMAL_RUNS_PER_CONDITION
+            else FORMAL_SUCCESS_THRESHOLDS[condition.condition_id]
         )
-        failure_budget = (
-            INDOOR_FAILURE_BUDGETS[condition.condition_id]
-            if indoor_only
-            else 0
-        )
-        if indoor_only and not any(
+        failure_budget = FORMAL_RUNS_PER_CONDITION - required_successes
+        if not any(
             "invalid_evidence" in blocker for blocker in condition_blockers
         ):
             failures = valid_episodes - strict_successes
@@ -4883,7 +4880,7 @@ def _evaluate_campaign(
             ):
                 condition_blockers.append("early_fail_unreachable")
         path_statistics = None
-        if indoor_only and condition.condition_id == "indoor_static":
+        if condition.category == "static":
             ordered = sorted(static_path_deviations)
             path_statistics = {
                 "count": len(ordered),
@@ -4898,12 +4895,11 @@ def _evaluate_campaign(
                 "threshold_exclusive": 20.0,
             }
         condition_pass = bool(
-            indoor_only
-            and valid_episodes == FORMAL_RUNS_PER_CONDITION
+            valid_episodes == FORMAL_RUNS_PER_CONDITION
             and strict_successes >= required_successes
             and not condition_blockers
             and (
-                condition.condition_id != "indoor_static"
+                condition.category != "static"
                 or (
                     path_statistics is not None
                     and path_statistics["count"] == strict_successes
@@ -4943,15 +4939,15 @@ def _evaluate_campaign(
             ),
             "runs": runs,
         }
+        condition_result.update({
+            "product_failures": valid_episodes - strict_successes,
+            "required_strict_successes": required_successes,
+            "failure_budget": failure_budget,
+            "qualification": "PASS" if condition_pass else "INCOMPLETE",
+        })
+        if path_statistics is not None:
+            condition_result["path_deviation_percent"] = path_statistics
         if indoor_only:
-            condition_result.update({
-                "product_failures": valid_episodes - strict_successes,
-                "required_strict_successes": required_successes,
-                "failure_budget": failure_budget,
-                "qualification": "PASS" if condition_pass else "INCOMPLETE",
-            })
-            if path_statistics is not None:
-                condition_result["path_deviation_percent"] = path_statistics
             if continuation and condition.condition_id == "indoor_static":
                 successor_sessions = stack_session_ids - {
                     continuation["preserved_run"]["stack_session_id"]
@@ -4972,7 +4968,7 @@ def _evaluate_campaign(
                     ),
                 }
         condition_results.append(condition_result)
-    expected_episodes = 60 if indoor_only else 120
+    expected_episodes = len(manifest.conditions) * FORMAL_RUNS_PER_CONDITION
     result = {
         "schema_version": (
             INDOOR_CAMPAIGN_SCHEMA_VERSION
@@ -4986,7 +4982,8 @@ def _evaluate_campaign(
                 "PASS"
                 if (
                     manifest.authorization == FORMAL_EXECUTION_AUTHORIZED
-                    and total_strict == expected_episodes
+                    and all(condition["qualification"] == "PASS" for condition in condition_results)
+                    and total_valid == expected_episodes
                     and not blockers
                 )
                 else "INCOMPLETE"
@@ -5243,12 +5240,15 @@ def execute_formal_campaign(
         for run in condition["runs"]
         if run["status"] != "pending"
     }
-    expected = {
-        (condition_stack_id, row["run_index"], "strict_success")
-    }
-    if before_completed - after_completed or after_completed - before_completed != expected:
+    added = after_completed - before_completed
+    if (
+        before_completed - after_completed
+        or len(added) != 1
+        or next(iter(added))[:2] != (condition_stack_id, row["run_index"])
+        or next(iter(added))[2] not in {"strict_success", "product_failure"}
+    ):
         raise V6ContractError(
-            "formal episode did not add exactly one strict-success target run"
+            "formal episode did not add exactly one valid target run"
         )
     return after
 
@@ -6887,7 +6887,9 @@ def cli(argv: list[str] | None = None) -> int:
             print(json.dumps({
                 "qualification": "FORMAL_READY_MANIFEST",
                 "execution_authorization": frozen.authorization,
-                "formal_progress": "0/120",
+                "formal_progress": (
+                    f"0/{len(frozen.conditions) * FORMAL_RUNS_PER_CONDITION}"
+                ),
                 "dispatch": False,
                 "manifest": str(frozen.path),
                 "freeze_digest": frozen.freeze_digest,
