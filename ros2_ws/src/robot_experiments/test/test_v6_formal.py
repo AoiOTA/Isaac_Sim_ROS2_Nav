@@ -326,11 +326,11 @@ def _write_formal_run(
         "map_version": cognitive_content_map_id,
     }
     source_graph_id = (
-        f"{semantic_map_version}:gvg_v1"
-        if cognitive_mutation == "graph_provenance_current"
+        ""
+        if cognitive_mutation == "graph_provenance_empty"
         else "wrong-physical-graph"
         if cognitive_mutation == "graph_provenance_mismatch"
-        else ""
+        else f"{semantic_map_version}:gvg_v1"
     )
     source_graph_revision = 1 if source_graph_id else 0
     topology_revision = 1 if source_graph_id else 0
@@ -398,12 +398,20 @@ def _write_formal_run(
             "semantic_navigation_map_match": True,
             "cognitive_content_map_match": True,
             "graph_provenance_status": (
-                "legacy_empty" if not source_graph_id else "current"
+                "missing"
+                if not source_graph_id
+                else "mismatch"
+                if cognitive_mutation == "graph_provenance_mismatch"
+                else "current"
             ),
             "graph_provenance_match": (
-                cognitive_mutation != "graph_provenance_mismatch"
+                cognitive_mutation not in {
+                    "graph_provenance_empty", "graph_provenance_mismatch",
+                }
             ),
-            "passed": True,
+            "passed": cognitive_mutation not in {
+                "graph_provenance_empty", "graph_provenance_mismatch",
+            },
         },
         "components": {},
     }
@@ -744,6 +752,34 @@ def _write_formal_run(
                 + semantic_nanosec + 25_000_000,
             )
             stamp += 1
+    if cognitive_mutation in {
+        "navigation_graph_change_after_latch",
+        "navigation_graph_change_then_restore",
+        "navigation_graph_same_repeat_after_latch",
+    }:
+        changed_graph = NavigationGraph()
+        changed_graph.graph_id = f"{semantic_map_version}:gvg_v1"
+        changed_graph.revision = (
+            1
+            if cognitive_mutation == "navigation_graph_same_repeat_after_latch"
+            else 2
+        )
+        changed_graph.map_version = semantic_map_version
+        writer.write(
+            "/bio_nav/navigation_graph",
+            serialize_message(changed_graph),
+            13_250_000_000,
+        )
+        if cognitive_mutation == "navigation_graph_change_then_restore":
+            restored_graph = NavigationGraph()
+            restored_graph.graph_id = f"{semantic_map_version}:gvg_v1"
+            restored_graph.revision = 1
+            restored_graph.map_version = semantic_map_version
+            writer.write(
+                "/bio_nav/navigation_graph",
+                serialize_message(restored_graph),
+                13_260_000_000,
+            )
     if cognitive_mutation == "bad_after_latch":
         bad_planning = PlanningPrior()
         bad_planning.stamp.sec = 13
@@ -796,6 +832,30 @@ def _write_formal_run(
             "/bio_nav/module2/planning_prior",
             serialize_message(planning),
             13_195_000_000,
+        )
+    if cognitive_mutation in {
+        "post_latch_empty_graph_provenance",
+        "post_latch_graph_revision_mismatch",
+    }:
+        planning.source_physical_graph_id = (
+            ""
+            if cognitive_mutation == "post_latch_empty_graph_provenance"
+            else source_graph_id
+        )
+        planning.source_physical_graph_revision = (
+            0
+            if cognitive_mutation == "post_latch_empty_graph_provenance"
+            else 2
+        )
+        planning.topology_revision = (
+            0
+            if cognitive_mutation == "post_latch_empty_graph_provenance"
+            else 1
+        )
+        writer.write(
+            "/bio_nav/module2/planning_prior",
+            serialize_message(planning),
+            13_190_000_000,
         )
     post_sequence = 4 if cognitive_mutation == "async_lag" else 3
     post_validation_stamp_s = 13.100000998 if post_sequence == 4 else 13.000000998
@@ -5848,6 +5908,29 @@ def test_formal_binary_mcap_accepts_current_graph_provenance(tmp_path):
     assert namespaces["source_physical_graph_id"].endswith(":gvg_v1")
 
 
+def test_formal_binary_mcap_accepts_same_graph_repeat_after_latch(tmp_path):
+    campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
+    root = _write_formal_run(
+        campaign.conditions[0],
+        1,
+        strict_success=True,
+        formal_freeze_digest=campaign.freeze_digest,
+        cognitive_mutation="navigation_graph_same_repeat_after_latch",
+    )
+    evidence = experiment_runner_module.validate_recorded_run_evidence(
+        root,
+        json.loads((root / "run_summary.json").read_text()),
+        json.loads((root / "run_manifest.json").read_text()),
+        scene="indoor",
+        route_guided=True,
+        route_prior_required=True,
+        expected_leg_count=5,
+        cognitive_admission_required=True,
+    )
+
+    assert evidence["cognitive_admission_replay"]["passed"] is True
+
+
 @pytest.mark.parametrize("terminals", ((False,), (True, False)))
 def test_product_failure_terminal_false_starts_zero_tail(tmp_path, terminals):
     campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
@@ -5893,10 +5976,14 @@ def test_product_failure_terminal_false_starts_zero_tail(tmp_path, terminals):
         "planning_chain_tamper", "critic_receipt_tamper",
         "layer_receipt_tamper",
         "post_latch_bad_planning_then_healthy",
+        "post_latch_empty_graph_provenance",
+        "post_latch_graph_revision_mismatch",
         "post_latch_bad_status_then_healthy",
         "postdispatch_critic_missing", "postdispatch_critic_late",
+        "navigation_graph_change_after_latch",
+        "navigation_graph_change_then_restore",
         "semantic_map_mismatch", "content_map_mismatch",
-        "graph_provenance_mismatch",
+        "graph_provenance_empty", "graph_provenance_mismatch",
     ),
 )
 def test_formal_binary_mcap_replay_rejects_adversarial_cognitive_chain(

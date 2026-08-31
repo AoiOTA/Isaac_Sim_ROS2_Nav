@@ -87,6 +87,19 @@ def _planning_prior(*, stamp_sec: int, healthy: bool):
         observation_valid=healthy,
         trusted_write=healthy,
         schema_version="bio_nav_planning_prior_v4",
+        model_id="model-v1",
+        cognitive_tile_id="tile-v1",
+        tile_revision=1,
+        graph_revision=1,
+        source_physical_graph_id="graph-v1",
+        source_physical_graph_revision=1,
+        topology_revision=1,
+        risk_model_sha256="risk-sha256",
+        qualification_receipt_sha256="qualification-sha256",
+        context_trusted=False,
+        trust_rejection_mask=0,
+        risk_healthy=False,
+        risk_rejection_mask=0,
         place_entropy_normalized=0.58,
         context_uncertainty=0.58,
         place_belief=[],
@@ -99,6 +112,7 @@ def test_planning_readiness_uses_consecutive_fresh_healthy_priors_only():
         _latest_planning_prior_readiness=None,
         _planning_prior_ready_streak=0,
         _navigation_active=False,
+        _navigation_graph=SimpleNamespace(graph_id="graph-v1", revision=1),
     )
 
     for stamp_sec in range(1, 6):
@@ -118,9 +132,22 @@ def test_planning_readiness_uses_consecutive_fresh_healthy_priors_only():
         "observation_valid": True,
         "trusted_write": True,
         "schema_version": "bio_nav_planning_prior_v4",
+        "model_id": "model-v1",
+        "cognitive_tile_id": "tile-v1",
+        "tile_revision": 1,
+        "graph_revision": 1,
+        "source_physical_graph_id": "graph-v1",
+        "source_physical_graph_revision": 1,
+        "topology_revision": 1,
+        "risk_model_sha256": "risk-sha256",
+        "qualification_receipt_sha256": "qualification-sha256",
         "accepted": True,
         "place_entropy_normalized": 0.58,
         "context_uncertainty": 0.58,
+        "context_trusted": False,
+        "trust_rejection_mask": 0,
+        "risk_healthy": False,
+        "risk_rejection_mask": 0,
     }
 
     ExperimentRunner._planning_prior_callback(
@@ -131,6 +158,14 @@ def test_planning_readiness_uses_consecutive_fresh_healthy_priors_only():
     untrusted = _planning_prior(stamp_sec=7, healthy=True)
     untrusted.trusted_write = False
     ExperimentRunner._planning_prior_callback(runner, untrusted)
+    assert runner._planning_prior_ready_streak == 1
+    assert runner._latest_planning_prior_readiness["accepted"] is True
+
+    missing_graph = _planning_prior(stamp_sec=8, healthy=True)
+    missing_graph.source_physical_graph_id = ""
+    missing_graph.source_physical_graph_revision = 0
+    missing_graph.topology_revision = 0
+    ExperimentRunner._planning_prior_callback(runner, missing_graph)
     assert runner._planning_prior_ready_streak == 0
     assert runner._latest_planning_prior_readiness["accepted"] is False
 

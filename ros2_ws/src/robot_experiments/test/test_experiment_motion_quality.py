@@ -580,9 +580,9 @@ def _cognitive_admission_runner(*, components=None):
         "cognitive_tile_id": "tile-v1",
         "tile_revision": 1,
         "graph_revision": 1,
-        "source_physical_graph_id": "",
-        "source_physical_graph_revision": 0,
-        "topology_revision": 0,
+        "source_physical_graph_id": f"{SEMANTIC_NAVIGATION_MAP_VERSION}:gvg_v1",
+        "source_physical_graph_revision": 1,
+        "topology_revision": 1,
         "risk_model_sha256": "risk-sha256",
         "qualification_receipt_sha256": "qualification-sha256",
         "accepted": True,
@@ -731,6 +731,46 @@ def _publish_cognitive_sample(
             runner._cognitive_critic_status_callback(status)
         else:
             runner._cognitive_layer_status_callback(status)
+
+
+def _planning_prior_message(
+    sequence: int,
+    *,
+    source_physical_graph_id: str | None = None,
+    source_physical_graph_revision: int = 1,
+    topology_revision: int = 1,
+):
+    prior = experiment_runner_module.PlanningPrior()
+    prior.stamp.sec = 12
+    prior.sequence = sequence
+    prior.reset_epoch = 2
+    prior.recurrent_session_id = "session-2"
+    prior.map_version = COGNITIVE_CONTENT_MAP_ID
+    prior.schema_version = "bio_nav_planning_prior_v4"
+    prior.model_id = "model-v1"
+    prior.cognitive_tile_id = "tile-v1"
+    prior.tile_revision = 1
+    prior.graph_revision = 1
+    prior.source_physical_graph_id = (
+        f"{SEMANTIC_NAVIGATION_MAP_VERSION}:gvg_v1"
+        if source_physical_graph_id is None
+        else source_physical_graph_id
+    )
+    prior.source_physical_graph_revision = source_physical_graph_revision
+    prior.topology_revision = topology_revision
+    prior.risk_model_sha256 = "risk-sha256"
+    prior.qualification_receipt_sha256 = "qualification-sha256"
+    prior.module2_healthy = True
+    prior.input_healthy = True
+    prior.observation_valid = True
+    prior.trusted_write = False
+    prior.context_trusted = False
+    prior.trust_rejection_mask = 0
+    prior.risk_healthy = False
+    prior.risk_rejection_mask = 0
+    prior.place_entropy_normalized = 0.2
+    prior.context_uncertainty = 0.1
+    return prior
 
 
 def test_cognitive_admission_blocks_odom_time_until_three_new_healthy_samples():
@@ -956,6 +996,67 @@ def test_different_nonforbidden_session_after_latch_blocks_old_receipt():
 
 
 @pytest.mark.parametrize(
+    "prior",
+    (
+        _planning_prior_message(
+            4,
+            source_physical_graph_id="",
+            source_physical_graph_revision=0,
+            topology_revision=0,
+        ),
+        _planning_prior_message(4, source_physical_graph_revision=2),
+        _planning_prior_message(4, topology_revision=2),
+    ),
+)
+def test_noncurrent_planning_after_latch_invalidates_dispatch(prior):
+    runner = _cognitive_admission_runner()
+    for sequence in (1, 2, 3):
+        _publish_cognitive_sample(runner, sequence)
+    runner._wait_for_cognitive_admission_ready()
+
+    runner._planning_prior_callback(prior)
+
+    assert runner._cognitive_admission_bad_after_latch is True
+    with pytest.raises(ConfigurationError, match="unhealthy after readiness"):
+        runner._validate_cognitive_admission_before_dispatch(12.1)
+
+
+def test_navigation_graph_change_after_latch_invalidates_dispatch():
+    runner = _cognitive_admission_runner()
+    for sequence in (1, 2, 3):
+        _publish_cognitive_sample(runner, sequence)
+    runner._wait_for_cognitive_admission_ready()
+
+    runner._navigation_graph_callback(SimpleNamespace(
+        graph_id=f"{SEMANTIC_NAVIGATION_MAP_VERSION}:gvg_v1",
+        revision=2,
+        map_version=SEMANTIC_NAVIGATION_MAP_VERSION,
+        edges=[],
+    ))
+
+    assert runner._cognitive_admission_bad_after_latch is True
+    with pytest.raises(ConfigurationError, match="unhealthy after readiness"):
+        runner._validate_cognitive_admission_before_dispatch(12.1)
+
+
+def test_dispatch_rechecks_latched_planning_against_current_navigation_graph():
+    runner = _cognitive_admission_runner()
+    for sequence in (1, 2, 3):
+        _publish_cognitive_sample(runner, sequence)
+    runner._wait_for_cognitive_admission_ready()
+    runner._navigation_graph = SimpleNamespace(
+        graph_id=f"{SEMANTIC_NAVIGATION_MAP_VERSION}:gvg_v1",
+        revision=2,
+        map_version=SEMANTIC_NAVIGATION_MAP_VERSION,
+    )
+
+    with pytest.raises(
+        ConfigurationError, match="physical graph provenance changed"
+    ):
+        runner._validate_cognitive_admission_before_dispatch(12.1)
+
+
+@pytest.mark.parametrize(
     ("role", "overrides"),
     (
         ("global_layer", {"consumer": "/fake/global_costmap:cognitive_obstacle_layer"}),
@@ -1063,6 +1164,54 @@ def test_predispatch_readiness_does_not_wait_for_unscored_critic():
     assert receipt["deferred_postdispatch_components"] == ["critic"]
 
 
+@pytest.mark.parametrize(
+    "provenance",
+    (
+        {
+            "source_physical_graph_id": "",
+            "source_physical_graph_revision": 0,
+            "topology_revision": 0,
+        },
+        {
+            "source_physical_graph_id": f"{SEMANTIC_NAVIGATION_MAP_VERSION}:gvg_v1",
+            "source_physical_graph_revision": 2,
+            "topology_revision": 1,
+        },
+        {
+            "source_physical_graph_id": f"{SEMANTIC_NAVIGATION_MAP_VERSION}:gvg_v1",
+            "source_physical_graph_revision": 1,
+            "topology_revision": 2,
+        },
+    ),
+)
+def test_predispatch_readiness_rejects_noncurrent_graph_provenance(provenance):
+    runner = _cognitive_admission_runner()
+    runner._latest_planning_prior_readiness.update(provenance)
+    for sequence in (1, 2, 3):
+        _publish_cognitive_sample(
+            runner, sequence, roles=("global_layer", "local_layer")
+        )
+
+    with pytest.raises(
+        RuntimeError, match="namespace or graph provenance mismatch"
+    ):
+        runner._wait_for_cognitive_admission_ready()
+
+
+def test_planning_graph_provenance_accepts_exact_current_graph():
+    assert experiment_runner_module._planning_graph_provenance_matches(
+        {
+            "source_physical_graph_id": f"{SEMANTIC_NAVIGATION_MAP_VERSION}:gvg_v1",
+            "source_physical_graph_revision": 1,
+            "topology_revision": 1,
+        },
+        {
+            "graph_id": f"{SEMANTIC_NAVIGATION_MAP_VERSION}:gvg_v1",
+            "revision": 1,
+        },
+    ) is True
+
+
 def test_periodic_untrusted_prior_is_healthy_without_goal_conditioning():
     runner = _cognitive_admission_runner()
     for sequence in range(1, 6):
@@ -1085,9 +1234,11 @@ def test_periodic_untrusted_prior_is_healthy_without_goal_conditioning():
         prior.trusted_write = False
         prior.context_trusted = False
         prior.trust_rejection_mask = 0
-        prior.source_physical_graph_id = ""
-        prior.source_physical_graph_revision = 0
-        prior.topology_revision = 0
+        prior.source_physical_graph_id = (
+            f"{SEMANTIC_NAVIGATION_MAP_VERSION}:gvg_v1"
+        )
+        prior.source_physical_graph_revision = 1
+        prior.topology_revision = 1
         prior.place_entropy_normalized = 0.2
         prior.context_uncertainty = 0.1
         runner._planning_prior_callback(prior)
@@ -1180,6 +1331,60 @@ def test_previous_cognitive_session_baseline_rejects_missing_or_mismatch():
             ready_receipt="old",
             required=True,
         )
+
+
+def test_next_reset_uses_latched_periodic_planning_session_baseline(monkeypatch):
+    runner = _cognitive_admission_runner()
+    for sequence in (1, 2, 3):
+        _publish_cognitive_sample(
+            runner, sequence, roles=("global_layer", "local_layer")
+        )
+    runner._wait_for_cognitive_admission_ready()
+    receipt = runner._cognitive_admission_ready_receipt
+    assert receipt["periodic_planning_health"]["recurrent_session_id"] == (
+        "session-2"
+    )
+
+    runner._latest_planning_prior_readiness = None
+    runner._latest_cognitive_obstacles = None
+    runner._localization_seed_epoch = 1
+    runner._cancel_stale_navigation_goal = lambda: None
+    runner._clear_localization_buffer = lambda: None
+    runner._set_reset_seed = lambda *_args: setattr(
+        runner, "_localization_seed_epoch", 2
+    )
+    runner._lifecycle_event = lambda *_args: None
+    response = SimpleNamespace(success=True, message="reset")
+    future = SimpleNamespace(result=lambda: response)
+    runner._reset_client = SimpleNamespace(
+        wait_for_service=lambda **_kwargs: True,
+        call_async=lambda _request: future,
+    )
+    runner._service_timeout_sec = 0.1
+    runner._reset_service_name = "/simulation/reset"
+    runner._wait_future = lambda *_args: True
+    runner._clear_navigation_costmaps = lambda: None
+    runner._clear_run_state = lambda: None
+    runner._wait_until = lambda predicate, _timeout: predicate()
+    runner._localization_seed_event_grace_sec = 0.1
+    runner._latest_map_to_odom_stamp = lambda: 1.0
+    runner._clock_seconds = lambda: 20.0
+    runner._wait_for_reset_recovery = lambda *_args: None
+    runner._wait_for_nav2_managed_nodes_active = lambda: None
+    runner._global_costmap_covers_mission = lambda: True
+    runner._reset_recovery_timeout_sec = 0.1
+    monkeypatch.setattr(
+        experiment_runner_module,
+        "parse_reset_receipt",
+        lambda *_args, **_kwargs: {"generation": 3},
+    )
+
+    runner._reset_simulation(8601)
+
+    assert runner._cognitive_admission_forbidden_recurrent_session_id == (
+        "session-2"
+    )
+    assert runner._cognitive_admission_expected_reset_epoch == 3
 
 
 def test_cognitive_admission_timeout_cannot_reach_dispatch_and_records_reason():
@@ -2632,9 +2837,11 @@ def test_stack_local_episode_sequence_claims_fresh_cold_then_hot_receipts(tmp_pa
             "passed": True,
             "semantic_navigation_map_version": SEMANTIC_NAVIGATION_MAP_VERSION,
             "cognitive_content_map_id": COGNITIVE_CONTENT_MAP_ID,
-            "source_physical_graph_id": "",
-            "source_physical_graph_revision": 0,
-            "topology_revision": 0,
+            "source_physical_graph_id": (
+                f"{SEMANTIC_NAVIGATION_MAP_VERSION}:gvg_v1"
+            ),
+            "source_physical_graph_revision": 1,
+            "topology_revision": 1,
             "active_effect_scope": "obstacle_only",
         }
     }

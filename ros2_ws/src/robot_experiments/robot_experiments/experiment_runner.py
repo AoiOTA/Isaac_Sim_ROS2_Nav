@@ -1110,6 +1110,7 @@ def _recorded_planning_healthy(
     forbidden_session: object,
     barrier_ns: int,
     dispatch_ns: int,
+    navigation_graph: Mapping[str, Any],
 ) -> bool:
     entropy = row.get("place_entropy_normalized")
     uncertainty = row.get("context_uncertainty")
@@ -1150,6 +1151,7 @@ def _recorded_planning_healthy(
         and isinstance(uncertainty, (int, float))
         and not isinstance(uncertainty, bool)
         and math.isfinite(float(uncertainty))
+        and _planning_graph_provenance_matches(row, navigation_graph)
     )
 
 
@@ -1159,21 +1161,38 @@ def _planning_graph_provenance_matches(
     graph_id = planning.get("source_physical_graph_id")
     graph_revision = planning.get("source_physical_graph_revision")
     topology_revision = planning.get("topology_revision")
-    if graph_id in {None, ""} and graph_revision in {None, 0} and topology_revision in {
-        None, 0,
-    }:
-        return True
+    navigation_graph_id = navigation_graph.get("graph_id")
+    navigation_revision = navigation_graph.get("revision")
     return bool(
         isinstance(graph_id, str)
         and bool(graph_id)
-        and graph_id == navigation_graph.get("graph_id")
+        and isinstance(navigation_graph_id, str)
+        and bool(navigation_graph_id)
+        and graph_id == navigation_graph_id
         and isinstance(graph_revision, int)
         and not isinstance(graph_revision, bool)
-        and graph_revision == navigation_graph.get("revision")
+        and graph_revision > 0
+        and isinstance(navigation_revision, int)
+        and not isinstance(navigation_revision, bool)
+        and navigation_revision > 0
+        and graph_revision == navigation_revision
         and isinstance(topology_revision, int)
         and not isinstance(topology_revision, bool)
-        and topology_revision == navigation_graph.get("revision")
+        and topology_revision > 0
+        and topology_revision == navigation_revision
     )
+
+
+def _navigation_graph_identity(navigation_graph: object) -> dict[str, Any]:
+    if isinstance(navigation_graph, Mapping):
+        return {
+            "graph_id": navigation_graph.get("graph_id"),
+            "revision": navigation_graph.get("revision"),
+        }
+    return {
+        "graph_id": getattr(navigation_graph, "graph_id", None),
+        "revision": getattr(navigation_graph, "revision", None),
+    }
 
 
 def _cognitive_namespace_evidence(
@@ -1203,7 +1222,7 @@ def _cognitive_namespace_evidence(
         graph
         and _planning_graph_provenance_matches(planning, graph)
     )
-    legacy_graph_provenance = bool(
+    missing_graph_provenance = bool(
         planning.get("source_physical_graph_id") in {None, ""}
         and planning.get("source_physical_graph_revision") in {None, 0}
         and planning.get("topology_revision") in {None, 0}
@@ -1223,7 +1242,11 @@ def _cognitive_namespace_evidence(
         "semantic_navigation_map_match": semantic_match,
         "cognitive_content_map_match": content_match,
         "graph_provenance_status": (
-            "legacy_empty" if legacy_graph_provenance else "current"
+            "missing"
+            if missing_graph_provenance
+            else "current"
+            if graph_provenance_match
+            else "mismatch"
         ),
         "graph_provenance_match": graph_provenance_match,
         "passed": bool(semantic_match and content_match and graph_provenance_match),
@@ -1476,6 +1499,41 @@ def _recorded_cognitive_admission_evidence(
         value for value in odom_rows
         if isinstance(value, int) and not isinstance(value, bool) and value > 0
     }
+    navigation_graph = max(
+        (
+            row for row in navigation_graph_rows
+            if isinstance(row, Mapping)
+            and isinstance(row.get("record_timestamp_ns"), int)
+            and row["record_timestamp_ns"] <= dispatch_ns
+        ),
+        key=lambda row: int(row.get("record_order", 0)),
+        default={},
+    )
+    latched_namespaces = summary_receipt.get("identity_namespaces")
+    latched_graph = (
+        {
+            "graph_id": latched_namespaces.get("navigation_graph_id"),
+            "revision": latched_namespaces.get("navigation_graph_revision"),
+        }
+        if isinstance(latched_namespaces, Mapping)
+        else {}
+    )
+    if not (
+        isinstance(latched_graph.get("graph_id"), str)
+        and bool(latched_graph["graph_id"])
+        and isinstance(latched_graph.get("revision"), int)
+        and not isinstance(latched_graph["revision"], bool)
+        and latched_graph["revision"] > 0
+    ):
+        return {"passed": False, "error": "cognitive_latched_graph_identity_invalid"}
+    if any(
+        isinstance(row, Mapping)
+        and isinstance(row.get("record_timestamp_ns"), int)
+        and ready_ns < row["record_timestamp_ns"] <= dispatch_ns
+        and _navigation_graph_identity(row) != latched_graph
+        for row in navigation_graph_rows
+    ):
+        return {"passed": False, "error": "cognitive_graph_changed_after_latch"}
     eligible_sources = [
         row for row in sources
         if isinstance(row, Mapping)
@@ -1497,6 +1555,7 @@ def _recorded_cognitive_admission_evidence(
             forbidden_session=forbidden_session,
             barrier_ns=barrier_ns,
             dispatch_ns=dispatch_ns,
+            navigation_graph=navigation_graph,
         )
     ]
     sources_by_sequence: dict[int, Mapping[str, Any]] = {}
@@ -1533,16 +1592,6 @@ def _recorded_cognitive_admission_evidence(
         )
     ):
         return {"passed": False, "error": "cognitive_planning_mcap_mismatch"}
-    navigation_graph = max(
-        (
-            row for row in navigation_graph_rows
-            if isinstance(row, Mapping)
-            and isinstance(row.get("record_timestamp_ns"), int)
-            and row["record_timestamp_ns"] <= dispatch_ns
-        ),
-        key=lambda row: int(row.get("record_order", 0)),
-        default=None,
-    )
     source_for_namespace = sources_by_sequence.get(planning_sequence)
     namespace_evidence = _cognitive_namespace_evidence(
         semantic_navigation_map_version=manifest.get("map_version"),
@@ -1707,6 +1756,7 @@ def _recorded_cognitive_admission_evidence(
             forbidden_session=forbidden_session,
             barrier_ns=barrier_ns,
             dispatch_ns=dispatch_ns,
+            navigation_graph=navigation_graph,
         )
         for row in planning_rows
     ):
@@ -2043,6 +2093,7 @@ def _recorded_cognitive_admission_evidence(
             forbidden_session=forbidden_session,
             barrier_ns=barrier_ns,
             dispatch_ns=end_ns,
+            navigation_graph=navigation_graph,
         )
     ]
     critic_rows = [
@@ -3850,12 +3901,38 @@ class ExperimentRunner(Node):
             raise ConfigurationError(
                 "cognitive admission became unhealthy after readiness latch"
             )
+        navigation_graph = _navigation_graph_identity(
+            getattr(self, "_navigation_graph", None)
+        )
+        latched_planning = self._cognitive_admission_ready_receipt.get(
+            "periodic_planning_health"
+        )
+        current_planning = getattr(self, "_latest_planning_prior_readiness", None)
+        if not (
+            isinstance(latched_planning, Mapping)
+            and _planning_graph_provenance_matches(
+                latched_planning, navigation_graph
+            )
+            and isinstance(current_planning, Mapping)
+            and _planning_graph_provenance_matches(
+                current_planning, navigation_graph
+            )
+        ):
+            self._cognitive_admission_bad_after_latch = True
+            raise ConfigurationError(
+                "cognitive physical graph provenance changed before dispatch"
+            )
         self._recompute_cognitive_admission_state()
         for role, configuration in components.items():
             latest = self._cognitive_admission_latest.get(role, {})
             validation_stamp_s = latest.get("validation_stamp_s")
+            planning = latest.get("planning_prior")
             if not (
                 latest.get("healthy") is True
+                and isinstance(planning, Mapping)
+                and _planning_graph_provenance_matches(
+                    planning, navigation_graph
+                )
                 and self._cognitive_admission_streaks.get(role, 0)
                 >= COGNITIVE_ADMISSION_MIN_CONSECUTIVE
                 and isinstance(validation_stamp_s, (int, float))
@@ -4806,6 +4883,16 @@ class ExperimentRunner(Node):
 
     def _navigation_graph_callback(self, message: NavigationGraph) -> None:
         self._navigation_graph = message
+        receipt = getattr(self, "_cognitive_admission_ready_receipt", None)
+        if isinstance(receipt, Mapping):
+            planning = receipt.get("periodic_planning_health")
+            if not (
+                isinstance(planning, Mapping)
+                and _planning_graph_provenance_matches(
+                    planning, _navigation_graph_identity(message)
+                )
+            ):
+                self._cognitive_admission_bad_after_latch = True
 
     def _canonical_route_callback(self, message: CanonicalRoute) -> None:
         self._canonical_route_epoch += 1
@@ -4935,6 +5022,12 @@ class ExperimentRunner(Node):
             and int(message.trust_rejection_mask) == 0
             and math.isfinite(float(message.place_entropy_normalized))
             and math.isfinite(float(message.context_uncertainty))
+            and _planning_graph_provenance_matches(
+                self._latest_planning_prior_readiness,
+                _navigation_graph_identity(
+                    getattr(self, "_navigation_graph", None)
+                ),
+            )
         )
         self._latest_planning_prior_readiness["accepted"] = planning_accepted
         identity = (
@@ -5912,7 +6005,9 @@ class ExperimentRunner(Node):
         )
         previous_receipt_session = None
         if isinstance(previous_ready_receipt, Mapping):
-            planning_receipt = previous_ready_receipt.get("planning_prior")
+            planning_receipt = previous_ready_receipt.get(
+                "periodic_planning_health"
+            )
             if isinstance(planning_receipt, Mapping):
                 previous_receipt_session = str(
                     planning_receipt.get("recurrent_session_id", "")

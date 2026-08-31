@@ -58,7 +58,8 @@ separate result semantics.
 ## Evidence boundary
 
 Final source validation reported `476 passed` plus a separate `59 passed`, an
-isolated affected build PASS, and `74` C++ tests PASS. Earlier readiness review
+isolated affected build PASS, and `72` gtest cases across `2` CTest targets
+PASS. Earlier readiness review
 findings drove the recovery, but no fresh independent review of final
 `7ca46e6` was performed. These are code/test/build claims, not live, Pilot, or
 Formal qualification.
