@@ -10,6 +10,12 @@
 - ContactSensor `/simulation/collision` 是物理碰撞真值；SAT、AABB 和几何 overlap 只用于诊断。Collision Monitor stop、导航失败和物理接触分别报告。
 - reset 和 cleanup 只管理本仓在当前 run 创建及拥有的状态和资源。
 
+## Fail-Fast 增量
+
+- 只有调用点明确列出的具体 TF 暂不可用或 optional 输入契约错误，且已有定义清楚的安全降级时，才可窄范围捕获；不得把其他异常并入该路径。
+- 内部 callback、action、控制或 safety bug 必须到达生命周期 owner；先执行最小安全停车，再以非零状态失败，不得只记录日志后继续。
+- collision、timeout、unreachable 和导航失败保持各自产品领域语义，不得改写成内部崩溃、invalid 或成功。
+
 ## 本仓事实来源
 
 - `docs/RUNBOOK.md` 维护当前可执行环境、启动、reset、cleanup 和实验命令。
