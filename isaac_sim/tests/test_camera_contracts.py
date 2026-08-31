@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import os
 from pathlib import Path
 import sys
@@ -14,6 +15,7 @@ from isaac_sim.apps.navigation_sim import (
     _apply_cli_overrides,
     _create_paired_appearance_capture,
     _parser,
+    _publish_viewport_runtime_attestation,
     _simulation_app_config,
     _verify_default_viewport_updates,
     _verify_rtx_descriptor_sets,
@@ -441,6 +443,64 @@ def test_viewport_verification_rejects_gui_disable(monkeypatch, capsys):
     assert "match=False" in capsys.readouterr().out
 
 
+def test_viewport_runtime_attestation_is_atomic_0600_and_process_bound(
+    tmp_path, monkeypatch
+):
+    winner = tmp_path / "winner.json"
+    winner.write_text(json.dumps({"winner": {"viewport_arm": "B"}}))
+    output = tmp_path / "viewport_runtime_attestation.json"
+    monkeypatch.setattr(
+        navigation_sim,
+        "_self_process_identity",
+        lambda: {
+            "pid": 123,
+            "pgid": 120,
+            "start_ticks": 456,
+            "boot_id": "boot",
+            "cmdline_sha256": "c" * 64,
+            "executable": "/python",
+        },
+    )
+    payload = _publish_viewport_runtime_attestation(
+        output_path=output,
+        instance_uuid="550e8400-e29b-41d4-a716-446655440000",
+        start_wall_time_ns=123456789,
+        scene="rivermark:static",
+        run_root=tmp_path,
+        launcher_path=Path(__file__),
+        winner_manifest_path=winner,
+        readbacks=(
+            {
+                "phase": "post_construction",
+                "requested_disabled": True,
+                "observed_enabled": False,
+                "match": True,
+            },
+            {
+                "phase": "pre_ready",
+                "requested_disabled": True,
+                "observed_enabled": False,
+                "match": True,
+            },
+        ),
+    )
+    assert output.stat().st_mode & 0o777 == 0o600
+    assert json.loads(output.read_text()) == payload
+    assert payload["pid"] == 123
+    assert payload["module3"]["head"]
+    with pytest.raises(RuntimeError, match="invalid or reused"):
+        _publish_viewport_runtime_attestation(
+            output_path=output,
+            instance_uuid=payload["instance_uuid"],
+            start_wall_time_ns=123456789,
+            scene="rivermark:static",
+            run_root=tmp_path,
+            launcher_path=Path(__file__),
+            winner_manifest_path=winner,
+            readbacks=payload["readbacks"],
+        )
+
+
 def test_viewport_verification_runs_after_construction_and_before_ready():
     source = inspect.getsource(run)
 
@@ -581,7 +641,11 @@ def test_run_closes_simulation_app_when_descriptor_verification_fails(
     monkeypatch.setattr(
         navigation_sim,
         "_verify_default_viewport_updates",
-        lambda **_kwargs: None,
+        lambda **_kwargs: {
+            "requested_disabled": False,
+            "observed_enabled": True,
+            "match": True,
+        },
     )
     monkeypatch.setattr(
         navigation_sim,
@@ -704,9 +768,15 @@ def test_main_passes_runtime_contract_directly_to_run(
         "run_kwargs": {
             "disable_dlss": True,
             "rtx_descriptor_sets": expected_descriptor_sets,
-            "paired_appearance_capture_enabled": expected_paired_capture,
-            "disable_viewport_updates": expected_viewport_disabled,
-        },
+                "paired_appearance_capture_enabled": expected_paired_capture,
+                "disable_viewport_updates": expected_viewport_disabled,
+                "viewport_arm_identity": None,
+                "viewport_runtime_attestation_path": None,
+                "viewport_winner_manifest_path": None,
+                "viewport_run_root": None,
+                "viewport_scene": None,
+                "viewport_launcher_path": None,
+            },
     }
 
 

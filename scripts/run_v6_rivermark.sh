@@ -16,6 +16,9 @@ shift 2
 
 viewport_arm="A"
 viewport_arm_selected=false
+viewport_runtime_attestation=""
+viewport_winner_manifest=""
+viewport_run_root=""
 forwarded_arguments=()
 while (( $# )); do
   case "$1" in
@@ -27,6 +30,21 @@ while (( $# )); do
       ;;
     --viewport-arm=*)
       die "use --viewport-arm A or --viewport-arm B"
+      ;;
+    --viewport-runtime-attestation)
+      (( $# >= 2 )) || die "--viewport-runtime-attestation requires a path"
+      viewport_runtime_attestation="$2"
+      shift 2
+      ;;
+    --viewport-winner-manifest)
+      (( $# >= 2 )) || die "--viewport-winner-manifest requires a path"
+      viewport_winner_manifest="$2"
+      shift 2
+      ;;
+    --viewport-run-root)
+      (( $# >= 2 )) || die "--viewport-run-root requires a path"
+      viewport_run_root="$2"
+      shift 2
       ;;
     *)
       forwarded_arguments+=("$1")
@@ -42,6 +60,9 @@ case "${viewport_arm}" in
 esac
 if [[ "${entrypoint}" != "isaac" && "${viewport_arm_selected}" == true ]]; then
   die "--viewport-arm is valid only for the Isaac entrypoint"
+fi
+if [[ "${entrypoint}" != "isaac" && -n "${viewport_runtime_attestation}${viewport_winner_manifest}${viewport_run_root}" ]]; then
+  die "viewport runtime attestation options are valid only for the Isaac entrypoint"
 fi
 
 case "${entrypoint}" in
@@ -127,7 +148,32 @@ if [[ "${entrypoint}" == "isaac" ]]; then
   if [[ "${viewport_arm}" == "B" ]]; then
     [[ "${effective_headless}" == true ]] || die \
       "--viewport-arm B requires the effective Isaac mode to be --headless"
-    viewport_arguments=(--disable-viewport-updates)
+    [[ "${viewport_runtime_attestation}" == /* \
+        && "${viewport_winner_manifest}" == /* \
+        && "${viewport_run_root}" == /* ]] || die \
+      "--viewport-arm B requires absolute runtime-attestation, winner-manifest, and run-root paths"
+    [[ -d "${viewport_run_root}" ]] || die \
+      "viewport run root does not exist: ${viewport_run_root}"
+    viewport_run_root="$(cd "${viewport_run_root}" && pwd -P)"
+    viewport_runtime_attestation="$(readlink -m -- "${viewport_runtime_attestation}")"
+    [[ "${viewport_runtime_attestation}" == \
+        "${viewport_run_root}/viewport_runtime_attestation.json" ]] || die \
+      "viewport runtime attestation must be RUN_ROOT/viewport_runtime_attestation.json"
+    [[ ! -e "${viewport_runtime_attestation}" && ! -L "${viewport_runtime_attestation}" ]] || die \
+      "viewport runtime attestation path already exists"
+    require_file "${viewport_winner_manifest}"
+    viewport_winner_manifest="$(readlink -f -- "${viewport_winner_manifest}")"
+    viewport_arguments=(
+      --disable-viewport-updates
+      --viewport-arm-identity B
+      --viewport-runtime-attestation "${viewport_runtime_attestation}"
+      --viewport-winner-manifest "${viewport_winner_manifest}"
+      --viewport-run-root "${viewport_run_root}"
+      --viewport-scene "rivermark:${scenario}"
+      --viewport-launcher "$(readlink -f -- "$0")"
+    )
+  elif [[ -n "${viewport_runtime_attestation}${viewport_winner_manifest}${viewport_run_root}" ]]; then
+    die "viewport runtime attestation options require --viewport-arm B"
   fi
   "${SCRIPT_DIR}/import_assets.sh"
   "${SCRIPT_DIR}/import_assets.sh" --check

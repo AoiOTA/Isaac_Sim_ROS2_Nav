@@ -7334,6 +7334,20 @@ class ExperimentRunner(Node):
                     stream.write(contract_bytes)
                     stream.flush()
                     os.fsync(stream.fileno())
+                viewport_path = self._condition_stack_contract.get(
+                    "viewport_runtime_attestation_path"
+                )
+                if viewport_path not in {None, "not_applicable"}:
+                    viewport_bytes = Path(str(viewport_path)).read_bytes()
+                    descriptor = os.open(
+                        root / "viewport_runtime_attestation.json",
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                        0o600,
+                    )
+                    with os.fdopen(descriptor, "wb") as stream:
+                        stream.write(viewport_bytes)
+                        stream.flush()
+                        os.fsync(stream.fileno())
             except OSError as exc:
                 raise ConfigurationError(
                     "failed to snapshot condition stack contract"
@@ -7606,6 +7620,18 @@ class ExperimentRunner(Node):
                 manifest.get("stack_episode_receipt", {})
             ),
             "confirmed": bool(condition_stack_id and stack_session_id),
+            "condition_stack_contract_path": (
+                str(self._condition_stack_contract_path)
+                if getattr(self, "_condition_stack_contract_path", None) is not None
+                else None
+            ),
+            "condition_stack_contract_sha256": (
+                hashlib.sha256(
+                    self._condition_stack_contract_path.read_bytes()
+                ).hexdigest()
+                if getattr(self, "_condition_stack_contract_path", None) is not None
+                else None
+            ),
             "viewport_arm": stack_contract.get("viewport_arm"),
             "disable_viewport_updates_requested": stack_contract.get(
                 "disable_viewport_updates_requested"
@@ -7615,6 +7641,16 @@ class ExperimentRunner(Node):
             ),
             "viewport_startup_attestation_sha256": stack_contract.get(
                 "viewport_startup_attestation_sha256"
+            ),
+            "viewport_runtime_attestation_sha256": stack_contract.get(
+                "viewport_runtime_attestation_sha256"
+            ),
+            "viewport_instance_uuid": stack_contract.get("viewport_instance_uuid"),
+            "viewport_pid": stack_contract.get("viewport_pid"),
+            "viewport_pgid": stack_contract.get("viewport_pgid"),
+            "viewport_start_ticks": stack_contract.get("viewport_start_ticks"),
+            "viewport_winner_manifest_sha256": stack_contract.get(
+                "viewport_winner_manifest_sha256"
             ),
         }
         manifest["condition_stack_attestation"] = condition_stack_attestation
@@ -7667,6 +7703,10 @@ class ExperimentRunner(Node):
             }
         if getattr(self, "_condition_stack_contract_path", None) is not None:
             required_files.add("stack_contract.json")
+            if self._condition_stack_contract.get(
+                "viewport_runtime_attestation_path"
+            ) not in {None, "not_applicable"}:
+                required_files.add("viewport_runtime_attestation.json")
         data_complete = (
             (bag_complete or not self._record_bag)
             and required_topic_coverage["passed"]
@@ -8023,9 +8063,16 @@ class ExperimentRunner(Node):
         return {
             "schema": "bio_nav.v6_stack_episode_receipt.v1",
             "sequence": sequence,
+            "startup_kind": "cold" if sequence == 1 else "hot_reset",
             "baseline": baseline,
             "stack_session_id": self._stack_session_id,
             "sequence_path": str(sequence_path),
+            "condition_stack_contract_path": str(
+                self._condition_stack_contract_path
+            ),
+            "condition_stack_contract_sha256": hashlib.sha256(
+                self._condition_stack_contract_path.read_bytes()
+            ).hexdigest(),
             "t2_selector_path": self._condition_stack_contract.get("t2_selector_path"),
             "t2_selector_sha256": self._condition_stack_contract.get(
                 "t2_selector_sha256"
@@ -8039,6 +8086,20 @@ class ExperimentRunner(Node):
             ),
             "viewport_startup_attestation_sha256": self._condition_stack_contract.get(
                 "viewport_startup_attestation_sha256"
+            ),
+            "viewport_runtime_attestation_sha256": self._condition_stack_contract.get(
+                "viewport_runtime_attestation_sha256"
+            ),
+            "viewport_instance_uuid": self._condition_stack_contract.get(
+                "viewport_instance_uuid"
+            ),
+            "viewport_pid": self._condition_stack_contract.get("viewport_pid"),
+            "viewport_pgid": self._condition_stack_contract.get("viewport_pgid"),
+            "viewport_start_ticks": self._condition_stack_contract.get(
+                "viewport_start_ticks"
+            ),
+            "viewport_winner_manifest_sha256": self._condition_stack_contract.get(
+                "viewport_winner_manifest_sha256"
             ),
         }
 

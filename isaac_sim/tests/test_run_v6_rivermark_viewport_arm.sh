@@ -46,8 +46,15 @@ VIEWPORT_CAPTURE="${fixture}/explicit_a.argv" "${wrapper}" \
   isaac static --viewport-arm A --headless --max-frames 1
 cmp "${fixture}/default_a.argv" "${fixture}/explicit_a.argv"
 
+mkdir -p "${fixture}/b-run"
+printf '%s\n' '{"schema":"startup-ab","winner":{"viewport_arm":"B"}}' \
+  >"${fixture}/winner.json"
 VIEWPORT_CAPTURE="${fixture}/b.argv" "${wrapper}" \
-  isaac static --viewport-arm B --headless --max-frames 1
+  isaac static --viewport-arm B \
+  --viewport-runtime-attestation "${fixture}/b-run/viewport_runtime_attestation.json" \
+  --viewport-winner-manifest "${fixture}/winner.json" \
+  --viewport-run-root "${fixture}/b-run" \
+  --headless --max-frames 1
 python3 - \
   "${fixture}/explicit_a.argv" "${fixture}/b.argv" <<'PY'
 from pathlib import Path
@@ -55,13 +62,13 @@ import sys
 
 a = Path(sys.argv[1]).read_bytes().split(b"\0")[:-1]
 b = Path(sys.argv[2]).read_bytes().split(b"\0")[:-1]
-assert len(a) == len(b)
-difference = [(left, right) for left, right in zip(a, b) if left != right]
-assert difference == [
-    (b"--no-disable-viewport-updates", b"--disable-viewport-updates")
-]
 assert a.count(b"--no-disable-viewport-updates") == 1
 assert b.count(b"--disable-viewport-updates") == 1
+assert b[b.index(b"--viewport-arm-identity") + 1] == b"B"
+assert b"--viewport-runtime-attestation" in b
+assert b"--viewport-winner-manifest" in b
+assert b"--viewport-run-root" in b
+assert b[b.index(b"--viewport-scene") + 1] == b"rivermark:static"
 assert b"--rtx-descriptor-sets" in a and b"20000" in a
 assert b"--disable-dlss" in a
 assert b"rgbd_navigation" in a

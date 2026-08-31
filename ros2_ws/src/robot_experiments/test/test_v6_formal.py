@@ -9,6 +9,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -1627,6 +1628,84 @@ def _write_indoor_production_pilot_root(tmp_path: Path, monkeypatch):
         v6_formal_module.INDOOR_CONDITION_IDS
     ):
         shutil.rmtree(pilot_root / condition_id)
+    repositories = {
+        name: v6_formal_module._repository_freeze_entry_with_tree(path)
+        for name, path in {
+            "integration": REPO.parent / "bio_nav_integration",
+            "module2": REPO.parent / "bio_nav_module2",
+            "module3": REPO,
+        }.items()
+    }
+    for condition_id in v6_formal_module.INDOOR_CONDITION_IDS:
+        run_roots = [
+            next((pilot_root / condition_id / f"rep{rep}").glob("*/run-*"))
+            for rep in range(1, 4)
+        ]
+        stack = json.loads((run_roots[0] / "stack_contract.json").read_text())
+        stack["schema"] = v6_formal_module.STACK_CONTRACT_SCHEMA
+        stack["contract_path"] = str(
+            (pilot_root / condition_id / "runtime/stack.contract.json").resolve()
+        )
+        for name, entry in repositories.items():
+            stack[f"{name}_head"] = entry["head"]
+            stack[f"{name}_tree"] = entry["tree"]
+        stack.update({
+            "viewport_arm": "not_applicable",
+            "disable_viewport_updates_requested": "not_applicable",
+            "disable_viewport_updates_observed": "not_applicable",
+            "viewport_startup_attestation_sha256": "not_applicable",
+            "viewport_runtime_attestation_path": "not_applicable",
+            "viewport_runtime_attestation_sha256": "not_applicable",
+            "viewport_instance_uuid": "not_applicable",
+            "viewport_pid": "not_applicable",
+            "viewport_pgid": "not_applicable",
+            "viewport_start_ticks": "not_applicable",
+            "viewport_winner_manifest_sha256": "not_applicable",
+        })
+        stack["stack_session_id"] = v6_formal_module._stack_session_id(stack)
+        stack_bytes = json.dumps(stack).encode()
+        stack_digest = hashlib.sha256(stack_bytes).hexdigest()
+        for rep, run_root in enumerate(run_roots, start=1):
+            stack_path = run_root / "stack_contract.json"
+            stack_path.write_bytes(stack_bytes)
+            manifest_path = run_root / "run_manifest.json"
+            summary_path = run_root / "run_summary.json"
+            manifest = json.loads(manifest_path.read_text())
+            summary = json.loads(summary_path.read_text())
+            receipt = manifest["stack_episode_receipt"]
+            receipt.update({
+                "sequence": rep,
+                "startup_kind": "cold" if rep == 1 else "hot_reset",
+                "stack_session_id": stack["stack_session_id"],
+                "condition_stack_contract_path": stack["contract_path"],
+                "condition_stack_contract_sha256": stack_digest,
+                "viewport_arm": "not_applicable",
+                "disable_viewport_updates_requested": "not_applicable",
+                "disable_viewport_updates_observed": "not_applicable",
+                "viewport_startup_attestation_sha256": "not_applicable",
+                "viewport_runtime_attestation_sha256": "not_applicable",
+                "viewport_instance_uuid": "not_applicable",
+                "viewport_pid": "not_applicable",
+                "viewport_pgid": "not_applicable",
+                "viewport_start_ticks": "not_applicable",
+                "viewport_winner_manifest_sha256": "not_applicable",
+            })
+            manifest["stack_session_id"] = stack["stack_session_id"]
+            summary["stack_session_id"] = stack["stack_session_id"]
+            summary["condition_stack_attestation"].update({
+                "stack_session_id": stack["stack_session_id"],
+                "stack_episode_receipt": receipt,
+                "condition_stack_contract_path": stack["contract_path"],
+                "condition_stack_contract_sha256": stack_digest,
+            })
+            manifest_path.write_text(json.dumps(manifest))
+            summary_path.write_text(json.dumps(summary))
+            _refresh_checksums(run_root)
+            sidecars = [path for path in run_root.parents[1].iterdir() if path.is_file()]
+            stem = sidecars[0].stem
+            for path in sidecars:
+                path.unlink()
+            write_run_report(manifest, run_root.parents[1], stem)
     return pilot_root
 
 
@@ -1638,14 +1717,10 @@ def _write_outdoor_production_pilot_root(tmp_path: Path, monkeypatch):
         shutil.rmtree(pilot_root / condition_id)
     winner = tmp_path / "viewport-winner.json"
     winner.write_text(json.dumps({
-        "winner": {
-            "viewport_arm": "B",
-            "disable_viewport_updates_requested": True,
-            "disable_viewport_updates_observed": True,
-        }
+        "schema": "startup-ab-fixture", "winner": {"viewport_arm": "B"}
     }))
     monkeypatch.setenv(
-        "BIO_NAV_RIVERMARK_STARTUP_WINNER_ATTESTATION", str(winner.resolve())
+        "BIO_NAV_RIVERMARK_STARTUP_WINNER_MANIFEST", str(winner.resolve())
     )
     winner_digest = hashlib.sha256(winner.read_bytes()).hexdigest()
     repositories = {
@@ -1657,43 +1732,113 @@ def _write_outdoor_production_pilot_root(tmp_path: Path, monkeypatch):
         }.items()
     }
     for condition_id in v6_formal_module.OUTDOOR_CONDITION_IDS:
-        for rep in range(1, 4):
-            rep_root = pilot_root / condition_id / f"rep{rep}"
-            run_root = next(rep_root.glob("*/run-*"))
+        run_roots = [
+            next((pilot_root / condition_id / f"rep{rep}").glob("*/run-*"))
+            for rep in range(1, 4)
+        ]
+        runtime_root = tmp_path / "outdoor-runtime" / condition_id
+        runtime_root.mkdir(parents=True)
+        runtime_attestation = runtime_root / "viewport_runtime_attestation.json"
+        own_pid = os.getpid()
+        fields = Path(f"/proc/{own_pid}/stat").read_text().rsplit(")", 1)[1].split()
+        runtime_payload = {
+            "schema": "bio_nav.v6_viewport_runtime_attestation.v1",
+            "instance_uuid": (
+                "550e8400-e29b-41d4-a716-44665544"
+                f"{v6_formal_module.OUTDOOR_CONDITION_IDS.index(condition_id) + 1:04d}"
+            ),
+            "pid": own_pid,
+            "pgid": int(fields[2]),
+            "start_ticks": int(fields[19]),
+            "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+            "cmdline_sha256": hashlib.sha256(
+                Path(f"/proc/{own_pid}/cmdline").read_bytes()
+            ).hexdigest(),
+            "executable": str(Path(f"/proc/{own_pid}/exe").resolve()),
+            "start_wall_time_ns": time.time_ns(),
+            "module3": repositories["module3"],
+            "navigation_source": {
+                "path": str((REPO / "isaac_sim/apps/navigation_sim.py").resolve()),
+                "sha256": hashlib.sha256(
+                    (REPO / "isaac_sim/apps/navigation_sim.py").read_bytes()
+                ).hexdigest(),
+            },
+            "viewport_arm": "B",
+            "readbacks": [
+                {"phase": phase, "requested_disabled": True,
+                 "observed_enabled": False, "match": True}
+                for phase in ("post_construction", "pre_ready")
+            ],
+            "scene": f"rivermark:{condition_id.split('_', 1)[1]}",
+            "run_root": str(runtime_root.resolve()),
+            "launcher_path": str((REPO / "scripts/run_v6_rivermark.sh").resolve()),
+            "winner_manifest": {"path": str(winner.resolve()), "sha256": winner_digest},
+        }
+        runtime_attestation.write_text(json.dumps(runtime_payload))
+        runtime_attestation.chmod(0o600)
+        runtime_digest = hashlib.sha256(runtime_attestation.read_bytes()).hexdigest()
+        stack = json.loads((run_roots[0] / "stack_contract.json").read_text())
+        stack["schema"] = v6_formal_module.STACK_CONTRACT_SCHEMA
+        stack["contract_path"] = str((runtime_root / "stack.contract.json").resolve())
+        for name, entry in repositories.items():
+            stack[f"{name}_head"] = entry["head"]
+            stack[f"{name}_tree"] = entry["tree"]
+        stack.update({
+            "viewport_arm": "B",
+            "disable_viewport_updates_requested": True,
+            "disable_viewport_updates_observed": True,
+            "viewport_startup_attestation_sha256": runtime_digest,
+            "viewport_runtime_attestation_path": str(runtime_attestation.resolve()),
+            "viewport_runtime_attestation_sha256": runtime_digest,
+            "viewport_instance_uuid": runtime_payload["instance_uuid"],
+            "viewport_pid": runtime_payload["pid"],
+            "viewport_pgid": runtime_payload["pgid"],
+            "viewport_start_ticks": runtime_payload["start_ticks"],
+            "viewport_winner_manifest_sha256": winner_digest,
+        })
+        stack["stack_session_id"] = v6_formal_module._stack_session_id(stack)
+        stack_bytes = json.dumps(stack).encode()
+        stack_digest = hashlib.sha256(stack_bytes).hexdigest()
+        for rep, run_root in enumerate(run_roots, start=1):
+            rep_root = run_root.parents[1]
             stack_path = run_root / "stack_contract.json"
-            stack = json.loads(stack_path.read_text())
-            stack["schema"] = v6_formal_module.STACK_CONTRACT_SCHEMA
-            for name in repositories:
-                stack[f"{name}_tree"] = repositories[name]["tree"]
-            stack.update({
-                "viewport_arm": "B",
-                "disable_viewport_updates_requested": True,
-                "disable_viewport_updates_observed": True,
-                "viewport_startup_attestation_sha256": winner_digest,
-            })
-            stack["stack_session_id"] = v6_formal_module._stack_session_id(stack)
-            stack_path.write_text(json.dumps(stack))
+            stack_path.write_bytes(stack_bytes)
+            viewport_copy = run_root / "viewport_runtime_attestation.json"
+            viewport_copy.write_bytes(runtime_attestation.read_bytes())
+            viewport_copy.chmod(0o600)
             manifest_path = run_root / "run_manifest.json"
             summary_path = run_root / "run_summary.json"
             manifest = json.loads(manifest_path.read_text())
             summary = json.loads(summary_path.read_text())
             receipt = manifest["stack_episode_receipt"]
             receipt.update({
+                "sequence": rep,
+                "startup_kind": "cold" if rep == 1 else "hot_reset",
                 "stack_session_id": stack["stack_session_id"],
+                "condition_stack_contract_path": stack["contract_path"],
+                "condition_stack_contract_sha256": stack_digest,
                 "viewport_arm": "B",
                 "disable_viewport_updates_requested": True,
                 "disable_viewport_updates_observed": True,
-                "viewport_startup_attestation_sha256": winner_digest,
+                "viewport_startup_attestation_sha256": runtime_digest,
+                "viewport_runtime_attestation_sha256": runtime_digest,
+                "viewport_instance_uuid": runtime_payload["instance_uuid"],
+                "viewport_pid": runtime_payload["pid"],
+                "viewport_pgid": runtime_payload["pgid"],
+                "viewport_start_ticks": runtime_payload["start_ticks"],
+                "viewport_winner_manifest_sha256": winner_digest,
             })
             manifest["stack_session_id"] = stack["stack_session_id"]
             summary["stack_session_id"] = stack["stack_session_id"]
             summary["condition_stack_attestation"].update({
                 "stack_session_id": stack["stack_session_id"],
                 "stack_episode_receipt": receipt,
+                "condition_stack_contract_path": stack["contract_path"],
+                "condition_stack_contract_sha256": stack_digest,
                 "viewport_arm": "B",
                 "disable_viewport_updates_requested": True,
                 "disable_viewport_updates_observed": True,
-                "viewport_startup_attestation_sha256": winner_digest,
+                "viewport_startup_attestation_sha256": runtime_digest,
             })
             manifest_path.write_text(json.dumps(manifest))
             summary_path.write_text(json.dumps(summary))
@@ -2777,7 +2922,7 @@ def test_outdoor_pilot_aggregate_and_freeze_publish_nine_b_attested_runs(
     )
     assert len(campaign.pilot_freeze_provenance["episodes"]) == 9
     assert campaign.freeze["frozen_assets"][
-        "rivermark_viewport_startup_winner_attestation"
+        "rivermark_viewport_startup_winner_manifest"
     ]["sha256"]
 
 
@@ -2822,65 +2967,49 @@ def test_different_head_keeps_existing_validator_promotion(monkeypatch):
     ) == expected
 
 
-def test_viewport_winner_attestation_requires_b_requested_and_observed(tmp_path):
+def test_viewport_winner_manifest_requires_selected_b(tmp_path):
     path = tmp_path / "winner.json"
     path.write_text(json.dumps({
         "winner": {
             "viewport_arm": "B",
-            "disable_viewport_updates": {"requested": True, "observed": True},
         }
     }))
-    parsed = v6_formal_module._viewport_winner_attestation(path)
+    parsed = v6_formal_module._viewport_winner_manifest(path)
     assert parsed["viewport_arm"] == "B"
     assert parsed["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
     path.write_text(json.dumps({
         "winner": {
-            "viewport_arm": "B",
-            "disable_viewport_updates": {"requested": True, "observed": False},
+            "viewport_arm": "A",
         }
     }))
-    with pytest.raises(V6ContractError, match="requested/observed"):
-        v6_formal_module._viewport_winner_attestation(path)
+    with pytest.raises(V6ContractError, match="select arm B"):
+        v6_formal_module._viewport_winner_manifest(path)
 
 
 @pytest.mark.parametrize("mutation", ["missing", "mismatch"])
 def test_outdoor_stack_rejects_missing_or_mismatched_viewport_attestation(
-    tmp_path, mutation
+    tmp_path, mutation, monkeypatch
 ):
-    path = _live_stack_contract(tmp_path, condition_id="outdoor_static")
-    payload = json.loads(path.read_text())
-    repositories = {}
-    for name, root in {
-        "integration": REPO.parent / "bio_nav_integration",
-        "module2": REPO.parent / "bio_nav_module2",
-        "module3": REPO,
-    }.items():
-        repositories[name] = v6_formal_module._repository_freeze_entry_with_tree(root)
-        payload[f"{name}_tree"] = repositories[name]["tree"]
-    payload.update({
-        "schema": v6_formal_module.STACK_CONTRACT_SCHEMA,
-        "viewport_arm": "B",
-        "disable_viewport_updates_requested": True,
-        "disable_viewport_updates_observed": True,
-        "viewport_startup_attestation_sha256": "a" * 64,
-    })
+    pilot_root = _write_outdoor_production_pilot_root(tmp_path, monkeypatch)
+    _pilot, conditions, _digest, freeze = (
+        v6_formal_module._build_outdoor_pilot_manifest(pilot_root)
+    )
+    condition = conditions[0]
+    identity = condition.episode_identities[0]
+    run_root = (
+        pilot_root / condition.condition_id / "rep1" / condition.scenario_id
+        / f"run-0001-seed-{identity['seed']}"
+    )
+    path = run_root / "stack_contract.json"
+    runtime = run_root / "viewport_runtime_attestation.json"
     if mutation == "missing":
-        payload["disable_viewport_updates_observed"] = None
+        runtime.unlink()
     else:
-        payload["viewport_startup_attestation_sha256"] = "b" * 64
-    payload["stack_session_id"] = v6_formal_module._stack_session_id(payload)
-    path.write_text(json.dumps(payload))
-    freeze = {
-        "repositories": repositories,
-        "driver_version": payload["driver_version"],
-        "kernel_release": payload["kernel_release"],
-        "frozen_assets": {
-            "rivermark_viewport_startup_winner_attestation": {
-                "path": str(tmp_path / "winner.json"), "sha256": "a" * 64,
-            }
-        },
-    }
-    with pytest.raises(V6ContractError, match="viewport arm attestation"):
+        payload = json.loads(runtime.read_text())
+        payload["readbacks"][1]["observed_enabled"] = True
+        runtime.write_text(json.dumps(payload))
+        runtime.chmod(0o600)
+    with pytest.raises(V6ContractError, match="viewport runtime"):
         v6_formal_module._load_stack_contract_snapshot(
             path, expected_condition_id="outdoor_static", freeze=freeze
         )
@@ -2925,11 +3054,33 @@ def test_half_evidence_digest_rereads_exactly_sixty_runs(tmp_path, monkeypatch):
         for run_index, identity in enumerate(identities, start=1):
             root = output / scenario_id / f"run-{run_index:04d}-seed-{identity['seed']}"
             root.mkdir(parents=True)
-            for name in (
-                "run_summary.json", "run_manifest.json", "checksums.sha256",
-                "stack_contract.json",
-            ):
-                (root / name).write_text(f"{condition_id}:{run_index}:{name}")
+            stack_path = root / "stack_contract.json"
+            stack_path.write_text(f"{condition_id}:{run_index}:stack")
+            stack_digest = hashlib.sha256(stack_path.read_bytes()).hexdigest()
+            session = hashlib.sha256(condition_id.encode()).hexdigest()
+            contract_path = str((tmp_path / "runtime" / condition_id / "stack.contract.json").resolve())
+            receipt = {
+                "sequence": run_index,
+                "startup_kind": "cold" if run_index == 1 else "hot_reset",
+                "stack_session_id": session,
+                "condition_stack_contract_path": contract_path,
+                "condition_stack_contract_sha256": stack_digest,
+            }
+            (root / "run_manifest.json").write_text(json.dumps({
+                "stack_episode_receipt": receipt,
+                "stack_session_id": session,
+                "reset_receipt": {"generation": run_index + 1},
+            }))
+            (root / "run_summary.json").write_text(json.dumps({
+                "stack_session_id": session,
+                "reset_receipt": {"generation": run_index + 1},
+                "condition_stack_attestation": {
+                    "stack_episode_receipt": receipt,
+                    "condition_stack_contract_path": contract_path,
+                    "condition_stack_contract_sha256": stack_digest,
+                },
+            }))
+            (root / "checksums.sha256").write_text("fixture")
         conditions.append(v6_formal_module.FormalCondition(
             condition_id, "indoor", condition_id.split("_", 1)[1],
             tmp_path / "scenario.yaml", output, (), scenario_id, identities,
@@ -2937,8 +3088,12 @@ def test_half_evidence_digest_rereads_exactly_sixty_runs(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(
         v6_formal_module, "_load_stack_contract_snapshot",
-        lambda path, **_kwargs: (
-            calls.append(path) or {"schema": v6_formal_module.STACK_CONTRACT_SCHEMA},
+        lambda path, expected_condition_id, **_kwargs: (
+            calls.append(path) or {
+                "schema": v6_formal_module.STACK_CONTRACT_SCHEMA,
+                "stack_session_id": hashlib.sha256(expected_condition_id.encode()).hexdigest(),
+                "contract_path": str((tmp_path / "runtime" / expected_condition_id / "stack.contract.json").resolve()),
+            },
             hashlib.sha256(str(path).encode()).hexdigest(),
         ),
     )
@@ -2952,6 +3107,154 @@ def test_half_evidence_digest_rereads_exactly_sixty_runs(tmp_path, monkeypatch):
         v6_formal_module._half_evidence_digest(
             SimpleNamespace(conditions=tuple(conditions), freeze={})
         )
+
+
+def _strict_half_campaign(campaign):
+    freeze = json.loads(json.dumps(campaign.freeze))
+    for entry in freeze["repositories"].values():
+        entry["tree"] = subprocess.run(
+            ["git", "-C", entry["path"], "rev-parse", f"{entry['head']}^{{tree}}"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+    return replace(campaign, freeze=freeze)
+
+
+def _write_strict_half_episode(campaign, condition, run_index, *, mutation=None):
+    stack = json.loads(
+        _live_stack_contract(
+            condition.output_directory.parent,
+            condition_id=condition.condition_id,
+        ).read_text()
+    )
+    stack["schema"] = v6_formal_module.STACK_CONTRACT_SCHEMA
+    stack["contract_path"] = str(
+        (condition.output_directory.parent / condition.condition_id / "stack.contract.json").resolve()
+    )
+    for name, entry in campaign.freeze["repositories"].items():
+        stack[f"{name}_head"] = entry["head"]
+        stack[f"{name}_tree"] = entry["tree"]
+    stack.update({
+        "viewport_arm": "not_applicable",
+        "disable_viewport_updates_requested": "not_applicable",
+        "disable_viewport_updates_observed": "not_applicable",
+        "viewport_startup_attestation_sha256": "not_applicable",
+        "viewport_runtime_attestation_path": "not_applicable",
+        "viewport_runtime_attestation_sha256": "not_applicable",
+        "viewport_instance_uuid": "not_applicable",
+        "viewport_pid": "not_applicable",
+        "viewport_pgid": "not_applicable",
+        "viewport_start_ticks": "not_applicable",
+        "viewport_winner_manifest_sha256": "not_applicable",
+    })
+    if mutation == "mixed_stack":
+        stack["domain"] += run_index
+    stack["stack_session_id"] = v6_formal_module._stack_session_id(stack)
+    root = _write_formal_run(
+        condition,
+        run_index,
+        strict_success=True,
+        formal_freeze_digest=campaign.freeze_digest,
+        stack_session_id=stack["stack_session_id"],
+        reset_generation=run_index + 1,
+    )
+    stack_path = root / "stack_contract.json"
+    stack_path.write_text(json.dumps(stack))
+    stack_digest = hashlib.sha256(stack_path.read_bytes()).hexdigest()
+    manifest_path = root / "run_manifest.json"
+    summary_path = root / "run_summary.json"
+    manifest = json.loads(manifest_path.read_text())
+    summary = json.loads(summary_path.read_text())
+    receipt = {
+        "schema": "bio_nav.v6_stack_episode_receipt.v1",
+        "baseline": 1,
+        "sequence_path": stack["episode_sequence_path"],
+        "t2_selector_path": stack["t2_selector_path"],
+        "t2_selector_sha256": stack["t2_selector_sha256"],
+        "sequence": 4 if mutation == "sequence4" and run_index == 1 else run_index,
+        "startup_kind": (
+            "cold" if run_index == 1 else "hot_reset"
+        ),
+        "stack_session_id": stack["stack_session_id"],
+        "condition_stack_contract_path": stack["contract_path"],
+        "condition_stack_contract_sha256": (
+            "0" * 64 if mutation == "contract_digest" else stack_digest
+        ),
+        "viewport_arm": "not_applicable",
+        "disable_viewport_updates_requested": "not_applicable",
+        "disable_viewport_updates_observed": "not_applicable",
+        "viewport_startup_attestation_sha256": "not_applicable",
+        "viewport_runtime_attestation_sha256": "not_applicable",
+        "viewport_instance_uuid": "not_applicable",
+        "viewport_pid": "not_applicable",
+        "viewport_pgid": "not_applicable",
+        "viewport_start_ticks": "not_applicable",
+        "viewport_winner_manifest_sha256": "not_applicable",
+    }
+    manifest["stack_episode_receipt"] = receipt
+    if mutation == "startup_kind" and run_index == 2:
+        receipt["startup_kind"] = "cold"
+    manifest["stack_session_id"] = stack["stack_session_id"]
+    summary["stack_session_id"] = stack["stack_session_id"]
+    if mutation == "session" and run_index == 2:
+        summary["stack_session_id"] = "f" * 64
+    summary.setdefault("condition_stack_attestation", {}).update({
+        "stack_session_id": summary["stack_session_id"],
+        "stack_episode_receipt": receipt,
+        "condition_stack_contract_path": stack["contract_path"],
+        "condition_stack_contract_sha256": receipt[
+            "condition_stack_contract_sha256"
+        ],
+    })
+    if "stack_contract.json" not in summary["evidence"]["required_files"]:
+        summary["evidence"]["required_files"].append("stack_contract.json")
+    manifest_path.write_text(json.dumps(manifest))
+    summary_path.write_text(json.dumps(summary))
+    _refresh_checksums(root)
+    return root
+
+
+@pytest.mark.parametrize(
+    "mutation", ["sequence4", "session", "contract_digest", "mixed_stack", "startup_kind"]
+)
+def test_half60_group_contract_rejects_sequence_session_digest_stack_or_kind(
+    tmp_path, monkeypatch, mutation
+):
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+    campaign = freeze_indoor_campaign_from_pilot(
+        pilot_manifest_path=pilot_manifest,
+        pilot_aggregate_path=aggregate,
+        output_manifest_path=tmp_path / "strict-half.json",
+        indoor_output_root=tmp_path / "nas" / "strict-half-runs",
+    )
+    campaign = _strict_half_campaign(campaign)
+    condition = campaign.conditions[0]
+    _write_strict_half_episode(campaign, condition, 1, mutation=mutation)
+    _write_strict_half_episode(campaign, condition, 2, mutation=mutation)
+    result = evaluate_indoor_campaign(campaign)
+    row = result["conditions"][0]
+    assert row["qualification"] == "INCOMPLETE"
+    assert row["blockers"]
+
+
+def test_half60_group_contract_accepts_exact_cold_then_hot_prefix(
+    tmp_path, monkeypatch
+):
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+    campaign = _strict_half_campaign(freeze_indoor_campaign_from_pilot(
+        pilot_manifest_path=pilot_manifest,
+        pilot_aggregate_path=aggregate,
+        output_manifest_path=tmp_path / "strict-prefix.json",
+        indoor_output_root=tmp_path / "nas" / "strict-prefix-runs",
+    ))
+    condition = campaign.conditions[0]
+    _write_strict_half_episode(campaign, condition, 1)
+    _write_strict_half_episode(campaign, condition, 2)
+    row = evaluate_indoor_campaign(campaign)["conditions"][0]
+    assert row["blockers"] == []
+    assert row["valid_episodes"] == 2
+    assert row["next_run_index"] == 3
 
 
 def test_indoor_pilot_aggregate_rejects_non_indoor_root(tmp_path, monkeypatch):

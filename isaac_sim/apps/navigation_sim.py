@@ -15,10 +15,13 @@ import json
 import math
 import os
 from pathlib import Path
+import subprocess
 import sys
+import tempfile
 import time
 import traceback
 from typing import Callable, Sequence
+import uuid
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -422,6 +425,12 @@ def _parser() -> argparse.ArgumentParser:
         default=False,
         help="request the default viewport update state before Kit starts",
     )
+    parser.add_argument("--viewport-arm-identity", choices=("B",), default=None)
+    parser.add_argument("--viewport-runtime-attestation", type=Path, default=None)
+    parser.add_argument("--viewport-winner-manifest", type=Path, default=None)
+    parser.add_argument("--viewport-run-root", type=Path, default=None)
+    parser.add_argument("--viewport-scene", type=str, default=None)
+    parser.add_argument("--viewport-launcher", type=Path, default=None)
     parser.add_argument(
         "--rtx-descriptor-sets",
         type=_positive_int,
@@ -775,7 +784,7 @@ def _verify_rtx_descriptor_sets(requested: int | None) -> None:
 
 def _verify_default_viewport_updates(
     *, headless: bool, requested_disabled: bool
-) -> None:
+) -> dict[str, bool]:
     """Read the live viewport property and fail closed on any divergence."""
 
     from omni.kit.viewport.utility import get_active_viewport
@@ -806,6 +815,133 @@ def _verify_default_viewport_updates(
             f"requested_disabled={requested_disabled!r} "
             f"observed_enabled={observed_enabled!r}"
         )
+    return {
+        "requested_disabled": requested_disabled,
+        "observed_enabled": observed_enabled,
+        "match": True,
+    }
+
+
+def _git_head_tree(repository: Path) -> dict[str, str]:
+    try:
+        lines = subprocess.run(
+            ["git", "-C", str(repository), "rev-parse", "HEAD", "HEAD^{tree}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError("viewport attestation Module3 git identity unavailable") from exc
+    if len(lines) != 2:
+        raise RuntimeError("viewport attestation Module3 git identity malformed")
+    return {"path": str(repository.resolve()), "head": lines[0], "tree": lines[1]}
+
+
+def _self_process_identity() -> dict[str, object]:
+    pid = os.getpid()
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+        executable = Path(f"/proc/{pid}/exe").resolve()
+    except OSError as exc:
+        raise RuntimeError("viewport attestation process identity unavailable") from exc
+    if len(fields) <= 19:
+        raise RuntimeError("viewport attestation process identity malformed")
+    return {
+        "pid": pid,
+        "pgid": int(fields[2]),
+        "start_ticks": int(fields[19]),
+        "boot_id": boot_id,
+        "cmdline_sha256": hashlib.sha256(cmdline).hexdigest(),
+        "executable": str(executable),
+    }
+
+
+def _publish_viewport_runtime_attestation(
+    *,
+    output_path: Path,
+    instance_uuid: str,
+    start_wall_time_ns: int,
+    scene: str,
+    run_root: Path,
+    launcher_path: Path,
+    winner_manifest_path: Path,
+    readbacks: Sequence[dict[str, object]],
+) -> dict[str, object]:
+    output_path = output_path.expanduser()
+    run_root = run_root.expanduser().resolve()
+    launcher_path = launcher_path.expanduser().resolve()
+    winner_manifest_path = winner_manifest_path.expanduser().resolve()
+    if (
+        not output_path.is_absolute()
+        or output_path.resolve() != run_root / "viewport_runtime_attestation.json"
+        or output_path.exists()
+        or not run_root.is_dir()
+        or not launcher_path.is_file()
+        or not winner_manifest_path.is_file()
+    ):
+        raise RuntimeError("viewport runtime attestation paths are invalid or reused")
+    if scene not in {"rivermark:static", "rivermark:dynamic", "rivermark:appearance"}:
+        raise RuntimeError("viewport runtime attestation scene is invalid")
+    if len(readbacks) != 2 or [row.get("phase") for row in readbacks] != [
+        "post_construction", "pre_ready"
+    ] or any(
+        row.get("requested_disabled") is not True
+        or row.get("observed_enabled") is not False
+        or row.get("match") is not True
+        for row in readbacks
+    ):
+        raise RuntimeError("viewport runtime attestation requires two matching readbacks")
+    winner_digest = hashlib.sha256(winner_manifest_path.read_bytes()).hexdigest()
+    try:
+        winner_payload = json.loads(winner_manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("viewport startup A/B winner manifest is unreadable") from exc
+    winner_row = winner_payload.get("winner", winner_payload) if isinstance(
+        winner_payload, dict
+    ) else {}
+    if not isinstance(winner_row, dict) or winner_row.get(
+        "viewport_arm", winner_row.get("selected_arm")
+    ) != "B":
+        raise RuntimeError("viewport startup A/B manifest did not select arm B")
+    payload = {
+        "schema": "bio_nav.v6_viewport_runtime_attestation.v1",
+        "instance_uuid": str(uuid.UUID(instance_uuid)),
+        **_self_process_identity(),
+        "start_wall_time_ns": start_wall_time_ns,
+        "module3": _git_head_tree(PROJECT_ROOT),
+        "navigation_source": {
+            "path": str(Path(__file__).resolve()),
+            "sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        },
+        "viewport_arm": "B",
+        "readbacks": [dict(row) for row in readbacks],
+        "scene": scene,
+        "run_root": str(run_root),
+        "launcher_path": str(launcher_path),
+        "winner_manifest": {
+            "path": str(winner_manifest_path),
+            "sha256": winner_digest,
+        },
+    }
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{output_path.name}.", suffix=".tmp", dir=run_root
+    )
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, output_path)
+        return payload
+    except FileExistsError as exc:
+        raise RuntimeError("viewport runtime attestation already exists") from exc
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _create_paired_appearance_capture(
@@ -863,8 +999,36 @@ def run(
     rtx_descriptor_sets: int | None = None,
     paired_appearance_capture_enabled: bool = False,
     disable_viewport_updates: bool = False,
+    viewport_arm_identity: str | None = None,
+    viewport_runtime_attestation_path: Path | None = None,
+    viewport_winner_manifest_path: Path | None = None,
+    viewport_run_root: Path | None = None,
+    viewport_scene: str | None = None,
+    viewport_launcher_path: Path | None = None,
 ) -> None:
     configure_process_environment(config)
+
+    viewport_attestation_requested = viewport_arm_identity is not None
+    if viewport_attestation_requested and not (
+        viewport_arm_identity == "B"
+        and disable_viewport_updates is True
+        and viewport_runtime_attestation_path is not None
+        and viewport_winner_manifest_path is not None
+        and viewport_run_root is not None
+        and viewport_scene is not None
+        and viewport_launcher_path is not None
+    ):
+        raise RuntimeError("viewport B runtime attestation arguments are incomplete")
+    if not viewport_attestation_requested and any(value is not None for value in (
+        viewport_runtime_attestation_path,
+        viewport_winner_manifest_path,
+        viewport_run_root,
+        viewport_scene,
+        viewport_launcher_path,
+    )):
+        raise RuntimeError("viewport attestation metadata requires arm B")
+    viewport_instance_uuid = str(uuid.uuid4())
+    viewport_start_wall_time_ns = time.time_ns()
 
     from isaacsim import SimulationApp
 
@@ -884,10 +1048,11 @@ def run(
     finally:
         sys.argv = original_argv
     try:
-        _verify_default_viewport_updates(
+        first_viewport_readback = _verify_default_viewport_updates(
             headless=config.simulation.headless,
             requested_disabled=disable_viewport_updates,
         )
+        first_viewport_readback["phase"] = "post_construction"
         _verify_rtx_descriptor_sets(rtx_descriptor_sets)
     except Exception:
         app.close(exit_code=1)
@@ -2415,10 +2580,27 @@ def run(
 
         max_frames = config.simulation.max_frames
         frame = 0
-        _verify_default_viewport_updates(
+        second_viewport_readback = _verify_default_viewport_updates(
             headless=config.simulation.headless,
             requested_disabled=disable_viewport_updates,
         )
+        second_viewport_readback["phase"] = "pre_ready"
+        if viewport_attestation_requested:
+            assert viewport_runtime_attestation_path is not None
+            assert viewport_winner_manifest_path is not None
+            assert viewport_run_root is not None
+            assert viewport_scene is not None
+            assert viewport_launcher_path is not None
+            _publish_viewport_runtime_attestation(
+                output_path=viewport_runtime_attestation_path,
+                instance_uuid=viewport_instance_uuid,
+                start_wall_time_ns=viewport_start_wall_time_ns,
+                scene=viewport_scene,
+                run_root=viewport_run_root,
+                launcher_path=viewport_launcher_path,
+                winner_manifest_path=viewport_winner_manifest_path,
+                readbacks=(first_viewport_readback, second_viewport_readback),
+            )
         node.get_logger().info(
             "Isaac navigation simulation ready: "
             f"navigation={config.simulation.navigation_mode}, "
@@ -3146,6 +3328,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         rtx_descriptor_sets=args.rtx_descriptor_sets,
         paired_appearance_capture_enabled=args.paired_appearance_capture,
         disable_viewport_updates=args.disable_viewport_updates,
+        viewport_arm_identity=args.viewport_arm_identity,
+        viewport_runtime_attestation_path=args.viewport_runtime_attestation,
+        viewport_winner_manifest_path=args.viewport_winner_manifest,
+        viewport_run_root=args.viewport_run_root,
+        viewport_scene=args.viewport_scene,
+        viewport_launcher_path=args.viewport_launcher,
     )
     return 0
 

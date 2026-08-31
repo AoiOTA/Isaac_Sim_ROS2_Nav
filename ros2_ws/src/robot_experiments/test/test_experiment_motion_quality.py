@@ -2472,6 +2472,9 @@ def test_stack_local_episode_sequence_claims_fresh_cold_then_hot_receipts(tmp_pa
     }), encoding="utf-8")
     runner = object.__new__(ExperimentRunner)
     runner._stack_session_id = "a" * 64
+    contract_path = tmp_path / "stack.contract.json"
+    contract_path.write_text("{}")
+    runner._condition_stack_contract_path = contract_path
     runner._condition_stack_contract = {
         "episode_sequence_path": str(sequence_path),
         "t2_selector_path": "/module3/scripts/run_v6_kujiale_low_obstacles.sh",
@@ -2487,6 +2490,9 @@ def test_stack_local_episode_sequence_claims_fresh_cold_then_hot_receipts(tmp_pa
     ]
 
     assert [receipt["sequence"] for receipt in receipts] == [1, 2, 3]
+    assert [receipt["startup_kind"] for receipt in receipts] == [
+        "cold", "hot_reset", "hot_reset"
+    ]
     assert all(receipt["baseline"] == 1 for receipt in receipts)
     assert all(receipt["stack_session_id"] == "a" * 64 for receipt in receipts)
     state = json.loads(sequence_path.read_text())
@@ -2529,6 +2535,7 @@ def test_attested_episode_snapshots_stack_contract_into_evidence_root(tmp_path):
         Path(__file__).parents[1] / "config" / "static.yaml"
     )
     runner._condition_stack_contract_path = contract
+    runner._condition_stack_contract = {}
     runner._record_bag = False
 
     root = runner._begin_run_evidence(1, 7301)

@@ -12,6 +12,7 @@ usage() {
   echo "       [--enable-route-prior --route-prior-snapshot PATH]" >&2
   echo "       [--route-prior-catalog-root PATH] [--dry-run]" >&2
   echo "       outdoor requires --viewport-arm B --viewport-attestation PATH" >&2
+  echo "       --viewport-winner-manifest PATH" >&2
   echo "       BIO_NAV_MODULE2_V310_ROOT or --module2-root must name the canonical Module2 root" >&2
   echo "       $0 stop-producer --run-dir PATH --socket PATH" >&2
 }
@@ -88,6 +89,141 @@ process_is_running() {
   [[ -n "${state}" && "${state}" != Z ]]
 }
 
+validate_viewport_runtime_attestation() {
+  local attestation="$1" expected_run_root="$2" launcher="$3"
+  local winner_manifest="$4" module3_root="$5" proc_root="$6" expected_scene="$7"
+  python3 - "${attestation}" "${expected_run_root}" "${launcher}" \
+    "${winner_manifest}" "${module3_root}" "${proc_root}" "${expected_scene}" <<'PY'
+import hashlib
+import json
+import os
+from pathlib import Path
+import stat
+import subprocess
+import sys
+import uuid
+
+attestation = Path(sys.argv[1])
+expected_run_root = Path(sys.argv[2]).resolve()
+launcher = Path(sys.argv[3]).resolve()
+winner_manifest = Path(sys.argv[4]).resolve()
+module3_root = Path(sys.argv[5]).resolve()
+proc_root = Path(sys.argv[6]).resolve()
+expected_scene = sys.argv[7]
+try:
+    metadata = os.lstat(attestation)
+except OSError as exc:
+    raise SystemExit(f"viewport runtime attestation unavailable: {exc}")
+if (
+    stat.S_ISLNK(metadata.st_mode)
+    or not stat.S_ISREG(metadata.st_mode)
+    or metadata.st_uid != os.getuid()
+    or stat.S_IMODE(metadata.st_mode) != 0o600
+):
+    raise SystemExit("viewport runtime attestation owner/mode/type mismatch")
+try:
+    payload = json.loads(attestation.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError) as exc:
+    raise SystemExit(f"viewport runtime attestation unreadable: {exc}")
+required = {
+    "schema", "instance_uuid", "pid", "pgid", "start_ticks", "boot_id",
+    "cmdline_sha256", "executable", "start_wall_time_ns", "module3",
+    "navigation_source", "viewport_arm", "readbacks", "scene",
+    "run_root", "launcher_path", "winner_manifest",
+}
+if not isinstance(payload, dict) or set(payload) != required:
+    raise SystemExit("viewport runtime attestation schema keys mismatch")
+if payload.get("schema") != "bio_nav.v6_viewport_runtime_attestation.v1":
+    raise SystemExit("viewport runtime attestation schema mismatch")
+try:
+    instance = str(uuid.UUID(str(payload["instance_uuid"])))
+except (ValueError, AttributeError) as exc:
+    raise SystemExit("viewport runtime attestation instance UUID invalid") from exc
+if instance != payload["instance_uuid"]:
+    raise SystemExit("viewport runtime attestation instance UUID is not canonical")
+pid = payload.get("pid")
+pgid = payload.get("pgid")
+start_ticks = payload.get("start_ticks")
+if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in (
+    pid, pgid, start_ticks, payload.get("start_wall_time_ns")
+)):
+    raise SystemExit("viewport runtime attestation process fields invalid")
+process_dir = proc_root / str(pid)
+try:
+    if process_dir.stat().st_uid != os.getuid():
+        raise SystemExit("viewport runtime process owner mismatch")
+    fields = (process_dir / "stat").read_text().rsplit(")", 1)[1].split()
+    boot_id = (proc_root / "sys/kernel/random/boot_id").read_text().strip()
+    cmdline = (process_dir / "cmdline").read_bytes()
+    executable = (process_dir / "exe").resolve()
+except OSError as exc:
+    raise SystemExit(f"viewport runtime process is not live: {exc}")
+if (
+    len(fields) <= 19
+    or fields[0] == "Z"
+    or int(fields[2]) != pgid
+    or int(fields[19]) != start_ticks
+    or boot_id != payload.get("boot_id")
+    or hashlib.sha256(cmdline).hexdigest() != payload.get("cmdline_sha256")
+    or str(executable) != payload.get("executable")
+):
+    raise SystemExit("viewport runtime process identity is stale or reused")
+git_lines = subprocess.run(
+    ["git", "-C", str(module3_root), "rev-parse", "HEAD", "HEAD^{tree}"],
+    check=True, capture_output=True, text=True,
+).stdout.splitlines()
+if payload.get("module3") != {
+    "path": str(module3_root), "head": git_lines[0], "tree": git_lines[1]
+}:
+    raise SystemExit("viewport runtime Module3 HEAD/tree mismatch")
+navigation_source = module3_root / "isaac_sim/apps/navigation_sim.py"
+if payload.get("navigation_source") != {
+    "path": str(navigation_source.resolve()),
+    "sha256": hashlib.sha256(navigation_source.read_bytes()).hexdigest(),
+} or str(navigation_source.resolve()).encode() not in cmdline.split(b"\0"):
+    raise SystemExit("viewport runtime navigation process/source mismatch")
+winner_digest = hashlib.sha256(winner_manifest.read_bytes()).hexdigest()
+try:
+    winner_payload = json.loads(winner_manifest.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError) as exc:
+    raise SystemExit(f"viewport startup A/B winner manifest unreadable: {exc}")
+winner_row = winner_payload.get("winner", winner_payload) if isinstance(
+    winner_payload, dict
+) else {}
+if not isinstance(winner_row, dict) or winner_row.get(
+    "viewport_arm", winner_row.get("selected_arm")
+) != "B":
+    raise SystemExit("viewport startup A/B manifest did not select arm B")
+if payload.get("winner_manifest") != {
+    "path": str(winner_manifest), "sha256": winner_digest
+}:
+    raise SystemExit("viewport runtime winner manifest digest mismatch")
+readbacks = payload.get("readbacks")
+if (
+    payload.get("viewport_arm") != "B"
+    or not isinstance(readbacks, list)
+    or [row.get("phase") for row in readbacks] != ["post_construction", "pre_ready"]
+    or any(
+        set(row) != {"phase", "requested_disabled", "observed_enabled", "match"}
+        or row.get("requested_disabled") is not True
+        or row.get("observed_enabled") is not False
+        or row.get("match") is not True
+        for row in readbacks
+    )
+):
+    raise SystemExit("viewport runtime two-readback B contract mismatch")
+if (
+    Path(str(payload.get("run_root", ""))).resolve() != expected_run_root
+    or Path(str(payload.get("launcher_path", ""))).resolve() != launcher
+    or payload.get("scene") != expected_scene
+    or attestation.resolve()
+    != expected_run_root / "viewport_runtime_attestation.json"
+):
+    raise SystemExit("viewport runtime stack/run/scene binding mismatch")
+print(instance)
+PY
+}
+
 read_recorded_identity() {
   local name="$1" directory="$2" pid_variable="$3" pgid_variable="$4"
   local identity_file pid_file pgid_file recorded_pid recorded_pgid extra=""
@@ -133,6 +269,7 @@ write_stack_contract() {
   local arm_name="$5" domain="$6" profile="$7" pid="$8" pgid="$9"
   local viewport_arm_name="${10}" viewport_requested="${11}"
   local viewport_observed="${12}" viewport_attestation_sha256="${13}"
+  local viewport_attestation_path="${14}" viewport_winner_sha256="${15}"
   local start_ticks boot_id temporary integration_head module2_head module3_head
   local integration_tree module2_tree module3_tree
   local driver_version kernel_release module3_root
@@ -171,7 +308,8 @@ write_stack_contract() {
     "${t2_selector_sha256}" "${sequence_path}" \
     "${integration_tree}" "${module2_tree}" "${module3_tree}" \
     "${viewport_arm_name}" "${viewport_requested}" "${viewport_observed}" \
-    "${viewport_attestation_sha256}" <<'PY'
+    "${viewport_attestation_sha256}" "${viewport_attestation_path}" \
+    "${viewport_winner_sha256}" <<'PY'
 import hashlib
 import json
 import os
@@ -179,8 +317,31 @@ from pathlib import Path
 import sys
 
 target = Path(sys.argv[1])
+viewport_attestation = sys.argv[27]
+viewport_details = {
+    "viewport_runtime_attestation_path": "not_applicable",
+    "viewport_runtime_attestation_sha256": "not_applicable",
+    "viewport_instance_uuid": "not_applicable",
+    "viewport_pid": "not_applicable",
+    "viewport_pgid": "not_applicable",
+    "viewport_start_ticks": "not_applicable",
+    "viewport_winner_manifest_sha256": "not_applicable",
+}
+if viewport_attestation != "not_applicable":
+    path = Path(viewport_attestation)
+    runtime = json.loads(path.read_text(encoding="utf-8"))
+    viewport_details = {
+        "viewport_runtime_attestation_path": str(path.resolve()),
+        "viewport_runtime_attestation_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "viewport_instance_uuid": runtime["instance_uuid"],
+        "viewport_pid": runtime["pid"],
+        "viewport_pgid": runtime["pgid"],
+        "viewport_start_ticks": runtime["start_ticks"],
+        "viewport_winner_manifest_sha256": sys.argv[28],
+    }
 payload = {
-    "schema": "bio_nav.v6_stack_contract.v2",
+    "schema": "bio_nav.v6_stack_contract.v3",
+    "contract_path": str(target.with_name("stack.contract.json").resolve()),
     "condition_id": sys.argv[2],
     "scene": sys.argv[3],
     "condition": sys.argv[4],
@@ -213,6 +374,7 @@ payload = {
         sys.argv[25] == "true" if sys.argv[25] != "not_applicable" else "not_applicable"
     ),
     "viewport_startup_attestation_sha256": sys.argv[26],
+    **viewport_details,
 }
 canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
 payload["stack_session_id"] = hashlib.sha256(canonical.encode()).hexdigest()
@@ -431,6 +593,7 @@ route_prior_snapshot=""
 route_prior_catalog_root=""
 viewport_arm=""
 viewport_attestation=""
+viewport_winner_manifest=""
 scene="kujiale"
 condition="static"
 dry_run=false
@@ -472,6 +635,10 @@ while (($#)); do
       ;;
     --viewport-attestation)
       viewport_attestation="${2:?--viewport-attestation requires a path}"
+      shift 2
+      ;;
+    --viewport-winner-manifest)
+      viewport_winner_manifest="${2:?--viewport-winner-manifest requires a path}"
       shift 2
       ;;
     --dry-run) dry_run=true; shift ;;
@@ -537,29 +704,20 @@ if [[ "${scene}" == "rivermark" ]]; then
     echo "Rivermark qualification requires explicit --viewport-arm B" >&2
     exit 2
   }
-  [[ "${viewport_attestation}" == /* && -r "${viewport_attestation}" ]] || {
-    echo "Rivermark qualification requires an absolute readable viewport attestation" >&2
+  [[ "${viewport_attestation}" == /* && -r "${viewport_attestation}" \
+      && "${viewport_winner_manifest}" == /* \
+      && -r "${viewport_winner_manifest}" ]] || {
+    echo "Rivermark qualification requires absolute readable runtime/winner attestations" >&2
     exit 2
   }
   viewport_attestation="$(readlink -f -- "${viewport_attestation}")"
+  viewport_winner_manifest="$(readlink -f -- "${viewport_winner_manifest}")"
   viewport_attestation_sha256="$(sha256sum "${viewport_attestation}" | awk '{print $1}')"
-  python3 - "${viewport_attestation}" <<'PY'
-import json
-from pathlib import Path
-import sys
-
-payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-winner = payload.get("winner", payload) if isinstance(payload, dict) else {}
-setting = winner.get("disable_viewport_updates", {})
-arm = winner.get("viewport_arm", winner.get("selected_arm"))
-requested = winner.get("disable_viewport_updates_requested")
-observed = winner.get("disable_viewport_updates_observed")
-if isinstance(setting, dict):
-    requested = setting.get("requested", requested)
-    observed = setting.get("observed", observed)
-if arm != "B" or requested is not True or observed is not True:
-    raise SystemExit("viewport attestation does not prove winner B requested/observed true")
-PY
+  viewport_winner_manifest_sha256="$(sha256sum "${viewport_winner_manifest}" | awk '{print $1}')"
+  viewport_instance_uuid="$(validate_viewport_runtime_attestation \
+    "${viewport_attestation}" "${run_dir}" "${script_dir}/run_v6_rivermark.sh" \
+    "${viewport_winner_manifest}" "${script_dir}/.." \
+    "${BIO_NAV_VIEWPORT_PROC_ROOT:-/proc}" "rivermark:${condition}")"
   viewport_requested="true"
   viewport_observed="true"
 elif [[ -n "${route_prior_catalog_root}" ]]; then
@@ -567,7 +725,8 @@ elif [[ -n "${route_prior_catalog_root}" ]]; then
   exit 2
 fi
 if [[ "${scene}" != "rivermark" ]]; then
-  [[ -z "${viewport_arm}" && -z "${viewport_attestation}" ]] || {
+  [[ -z "${viewport_arm}" && -z "${viewport_attestation}" \
+      && -z "${viewport_winner_manifest}" ]] || {
     echo "viewport qualification options are outdoor-only" >&2
     exit 2
   }
@@ -575,6 +734,8 @@ if [[ "${scene}" != "rivermark" ]]; then
   viewport_requested="not_applicable"
   viewport_observed="not_applicable"
   viewport_attestation_sha256="not_applicable"
+  viewport_winner_manifest_sha256="not_applicable"
+  viewport_instance_uuid="not_applicable"
 fi
 if [[ "${route_prior_enabled}" == true ]]; then
   [[ "${arm}" == "M3" ]] || {
@@ -669,6 +830,9 @@ if [[ "${dry_run}" == true ]]; then
     printf 'disable_viewport_updates_observed=%s\n' "${viewport_observed}"
     printf 'viewport_startup_attestation_sha256=%s\n' \
       "${viewport_attestation_sha256}"
+    printf 'viewport_instance_uuid=%s\n' "${viewport_instance_uuid}"
+    printf 'viewport_winner_manifest_sha256=%s\n' \
+      "${viewport_winner_manifest_sha256}"
   fi
   if [[ "${arm}" != "M0" ]]; then
     printf 'module2_assets:'
@@ -953,7 +1117,9 @@ write_process_identity stack "${run_dir}" "$$" "${stack_pgid}"
 write_stack_contract "${run_dir}" "${condition_id}" "${contract_scene}" \
   "${condition}" "${arm}" "${domain_id}" "${startup_profile}" \
   "$$" "${stack_pgid}" "${viewport_arm}" "${viewport_requested}" \
-  "${viewport_observed}" "${viewport_attestation_sha256}"
+  "${viewport_observed}" "${viewport_attestation_sha256}" \
+  "${viewport_attestation:-not_applicable}" \
+  "${viewport_winner_manifest_sha256}"
 
 module3_localization_args=()
 module3_route_args=(
@@ -1041,6 +1207,18 @@ fi
 write_critical_children_manifest
 
 set +e
+while [[ "${scene}" == "rivermark" ]] && process_is_running "${module3_pid}"; do
+  exit_if_terminating
+  validate_viewport_runtime_attestation \
+    "${viewport_attestation}" "${run_dir}" "${script_dir}/run_v6_rivermark.sh" \
+    "${viewport_winner_manifest}" "${script_dir}/.." \
+    "${BIO_NAV_VIEWPORT_PROC_ROOT:-/proc}" "rivermark:${condition}" \
+    >/dev/null || {
+      echo "viewport runtime attestation liveness check failed" >&2
+      exit 1
+    }
+  sleep 0.5
+done
 wait "${module3_pid}"
 status=$?
 set -e

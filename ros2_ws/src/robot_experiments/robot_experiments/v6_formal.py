@@ -149,7 +149,7 @@ OUTDOOR_FROZEN_ASSET_KEYS = frozenset({
     "rivermark_usd",
     "rivermark_catalog",
     "rivermark_catalog_constraints_tree",
-    "rivermark_viewport_startup_winner_attestation",
+    "rivermark_viewport_startup_winner_manifest",
     "outdoor_map_yaml",
     "outdoor_map_pgm",
 })
@@ -1591,7 +1591,11 @@ def _derive_indoor_pilot_runtime(
             payload, _stack_contract_keys(payload), "indoor_pilot_stack_contract"
         )
         if (
-            payload.get("schema") not in {STACK_CONTRACT_SCHEMA_V1, STACK_CONTRACT_SCHEMA}
+            payload.get("schema") not in {
+                STACK_CONTRACT_SCHEMA_V1,
+                STACK_CONTRACT_SCHEMA_V2,
+                STACK_CONTRACT_SCHEMA,
+            }
             or payload.get("stack_session_id") != _stack_session_id(payload)
             or payload.get("integration_dirty") is not False
             or payload.get("module2_dirty") is not False
@@ -1615,7 +1619,7 @@ def _derive_indoor_pilot_runtime(
         }
         trees = {}
         for name, head in heads.items():
-            if payload.get("schema") == STACK_CONTRACT_SCHEMA:
+            if payload.get("schema") in {STACK_CONTRACT_SCHEMA_V2, STACK_CONTRACT_SCHEMA}:
                 trees[name] = str(payload.get(f"{name}_tree", ""))
             else:
                 trees[name] = str(_validator_only_git_output(
@@ -3083,32 +3087,21 @@ def _pilot_selection_identity(condition: FormalCondition, rep: int) -> Mapping[s
     return condition.episode_identities[rep - 1]
 
 
-def _viewport_winner_attestation(path: Path) -> dict[str, Any]:
+def _viewport_winner_manifest(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise V6ContractError(f"viewport winner attestation is unreadable: {exc}") from exc
-    payload = _mapping(payload, "viewport_winner_attestation")
+    payload = _mapping(payload, "viewport_winner_manifest")
     winner = payload.get("winner", payload)
-    winner = _mapping(winner, "viewport_winner_attestation.winner")
-    setting = winner.get("disable_viewport_updates", {})
-    if not isinstance(setting, Mapping):
-        setting = {}
+    winner = _mapping(winner, "viewport_winner_manifest.winner")
     arm = winner.get("viewport_arm", winner.get("selected_arm"))
-    requested = winner.get("disable_viewport_updates_requested")
-    observed = winner.get("disable_viewport_updates_observed")
-    requested = setting.get("requested", requested)
-    observed = setting.get("observed", observed)
-    if arm != "B" or requested is not True or observed is not True:
-        raise V6ContractError(
-            "viewport winner attestation must prove B requested/observed true"
-        )
+    if arm != "B":
+        raise V6ContractError("viewport startup A/B manifest must select arm B")
     return {
         "path": str(path.resolve()),
         "sha256": _file_sha256(path),
         "viewport_arm": "B",
-        "disable_viewport_updates_requested": True,
-        "disable_viewport_updates_observed": True,
     }
 
 
@@ -3253,8 +3246,8 @@ def load_outdoor_campaign_manifest(
     )
     if any("tree" not in freeze["repositories"][name] for name in freeze["repositories"]):
         raise V6ContractError("outdoor qualification requires repository HEAD+tree identity")
-    winner = freeze["frozen_assets"]["rivermark_viewport_startup_winner_attestation"]
-    parsed_winner = _viewport_winner_attestation(Path(winner["path"]))
+    winner = freeze["frozen_assets"]["rivermark_viewport_startup_winner_manifest"]
+    parsed_winner = _viewport_winner_manifest(Path(winner["path"]))
     if parsed_winner["sha256"] != winner["sha256"]:
         raise V6ContractError("outdoor viewport winner digest mismatch")
     if not _require_pilot_provenance:
@@ -3356,6 +3349,23 @@ def _validate_sufficient_pilot_episode(
     summary_sequence_receipt = summary.get("condition_stack_attestation", {}).get(
         "stack_episode_receipt"
     )
+    strict_group_receipt_ok = bool(
+        stack_contract.get("schema") != STACK_CONTRACT_SCHEMA
+        or (
+            sequence_receipt.get("startup_kind")
+            == ("cold" if rep == 1 else "hot_reset")
+            and sequence_receipt.get("condition_stack_contract_path")
+            == stack_contract.get("contract_path")
+            and sequence_receipt.get("condition_stack_contract_sha256")
+            == _file_sha256(stack_contract_path)
+            and summary.get("condition_stack_attestation", {}).get(
+                "condition_stack_contract_path"
+            ) == stack_contract.get("contract_path")
+            and summary.get("condition_stack_attestation", {}).get(
+                "condition_stack_contract_sha256"
+            ) == _file_sha256(stack_contract_path)
+        )
+    )
     if not (
         isinstance(sequence_receipt, Mapping)
         and summary_sequence_receipt == sequence_receipt
@@ -3369,6 +3379,7 @@ def _validate_sufficient_pilot_episode(
         == stack_contract["t2_selector_path"]
         and sequence_receipt.get("t2_selector_sha256")
         == stack_contract["t2_selector_sha256"]
+        and strict_group_receipt_ok
         and all(
             sequence_receipt.get(name) == stack_contract.get(name)
             for name in (
@@ -3376,6 +3387,12 @@ def _validate_sufficient_pilot_episode(
                 "disable_viewport_updates_requested",
                 "disable_viewport_updates_observed",
                 "viewport_startup_attestation_sha256",
+                "viewport_runtime_attestation_sha256",
+                "viewport_instance_uuid",
+                "viewport_pid",
+                "viewport_pgid",
+                "viewport_start_ticks",
+                "viewport_winner_manifest_sha256",
             )
         )
     ):
@@ -3384,6 +3401,8 @@ def _validate_sufficient_pilot_episode(
     generation = reset_receipt.get("generation") if isinstance(reset_receipt, Mapping) else None
     if isinstance(generation, bool) or not isinstance(generation, int) or generation <= 0:
         raise V6ContractError("Pilot episode reset generation is invalid")
+    if summary.get("reset_receipt") != reset_receipt:
+        raise V6ContractError("Pilot episode/summary reset receipt mismatch")
     expected_robot_hash, expected_nav2_hash, expected_runtime_hashes = (
         _expected_scenario_runtime_hashes(condition)
     )
@@ -4478,7 +4497,7 @@ def _build_indoor_pilot_manifest(
 def _derive_outdoor_pilot_runtime(
     pilot_root: Path, *, repositories: Mapping[str, Any]
 ) -> dict[str, Any]:
-    paths: list[Path] = []
+    paths: list[tuple[str, Path]] = []
     for condition_id in OUTDOOR_CONDITION_IDS:
         for rep in range(1, 4):
             matches = list(
@@ -4488,9 +4507,11 @@ def _derive_outdoor_pilot_runtime(
             )
             if len(matches) != 1 or matches[0].is_symlink():
                 raise V6ContractError("outdoor Pilot stack snapshot topology mismatch")
-            paths.append(matches[0])
-    tuples = []
-    for path in paths:
+            paths.append((condition_id, matches[0]))
+    tuples: dict[str, list[tuple[Any, ...]]] = {
+        condition_id: [] for condition_id in OUTDOOR_CONDITION_IDS
+    }
+    for condition_id, path in paths:
         try:
             payload = dict(_mapping(json.loads(path.read_text()), "outdoor_pilot_stack"))
         except (OSError, json.JSONDecodeError) as exc:
@@ -4507,14 +4528,18 @@ def _derive_outdoor_pilot_runtime(
             ))
         ):
             raise V6ContractError("outdoor Pilot stack identity/viewport mismatch")
-        tuples.append(tuple(payload.get(name) for name in (
+        tuples[condition_id].append(tuple(payload.get(name) for name in (
             "integration_head", "integration_tree", "module2_head", "module2_tree",
             "module3_head", "module3_tree", "driver_version", "kernel_release",
-            "viewport_startup_attestation_sha256",
+            "viewport_winner_manifest_sha256", "viewport_runtime_attestation_sha256",
+            "viewport_instance_uuid", "stack_session_id",
         )))
-    if len(set(tuples)) != 1:
-        raise V6ContractError("outdoor Pilot stack snapshots contain a mixed tuple")
-    values = tuples[0]
+    if any(len(set(rows)) != 1 for rows in tuples.values()):
+        raise V6ContractError("outdoor Pilot condition snapshots contain a mixed stack")
+    condition_values = [rows[0] for rows in tuples.values()]
+    if len({row[:9] for row in condition_values}) != 1:
+        raise V6ContractError("outdoor Pilot stack snapshots contain a mixed runtime tuple")
+    values = condition_values[0]
     return {
         "repositories": {
             name: {
@@ -4526,7 +4551,7 @@ def _derive_outdoor_pilot_runtime(
         },
         "driver_version": values[6],
         "kernel_release": values[7],
-        "viewport_startup_attestation_sha256": values[8],
+        "viewport_winner_manifest_sha256": values[8],
     }
 
 
@@ -4545,7 +4570,7 @@ def _build_outdoor_pilot_manifest(
     catalog_root = Path(os.environ.get("BIO_NAV_ROUTE_PRIOR_CATALOG", "")).expanduser()
     rivermark_usd = Path(os.environ.get("RIVERMARK_USD", "")).expanduser()
     winner_path = Path(
-        os.environ.get("BIO_NAV_RIVERMARK_STARTUP_WINNER_ATTESTATION", "")
+        os.environ.get("BIO_NAV_RIVERMARK_STARTUP_WINNER_MANIFEST", "")
     ).expanduser()
     for name, value in (
         ("Integration", integration_root), ("Module2", module2_root),
@@ -4558,7 +4583,7 @@ def _build_outdoor_pilot_manifest(
         raise V6ContractError("Rivermark USD is missing or not absolute")
     if not winner_path.is_absolute() or not winner_path.is_file():
         raise V6ContractError("Rivermark viewport winner attestation is missing")
-    winner = _viewport_winner_attestation(winner_path.resolve())
+    winner = _viewport_winner_manifest(winner_path.resolve())
     config_root = module3_root / "ros2_ws/src/robot_experiments/config"
     runner = module3_root / "scripts/run_experiment.sh"
     nav2_config = _canonical_nav2_config()
@@ -4606,7 +4631,7 @@ def _build_outdoor_pilot_manifest(
             "path": str((catalog_root / "constraints").resolve()),
             "sha256": _constraints_tree_sha256(catalog_root / "constraints"),
         },
-        "rivermark_viewport_startup_winner_attestation": {
+        "rivermark_viewport_startup_winner_manifest": {
             "path": winner["path"], "sha256": winner["sha256"],
         },
         "outdoor_map_yaml": _frozen_file_entry(
@@ -4638,7 +4663,7 @@ def _build_outdoor_pilot_manifest(
         runtime["repositories"] == freeze["repositories"]
         and runtime["driver_version"] == freeze["driver_version"]
         and runtime["kernel_release"] == freeze["kernel_release"]
-        and runtime["viewport_startup_attestation_sha256"] == winner["sha256"]
+        and runtime["viewport_winner_manifest_sha256"] == winner["sha256"]
     ):
         raise V6ContractError("outdoor Pilot must use the current exact tuple and winner B")
     pilot = {
@@ -5192,7 +5217,8 @@ def _checksums_verified(run_root: Path) -> bool:
 
 
 STACK_CONTRACT_SCHEMA_V1 = "bio_nav.v6_stack_contract.v1"
-STACK_CONTRACT_SCHEMA = "bio_nav.v6_stack_contract.v2"
+STACK_CONTRACT_SCHEMA_V2 = "bio_nav.v6_stack_contract.v2"
+STACK_CONTRACT_SCHEMA = "bio_nav.v6_stack_contract.v3"
 STACK_CONTRACT_KEYS_V1 = {
     "schema",
     "condition_id",
@@ -5227,12 +5253,25 @@ STACK_CONTRACT_V2_ONLY_KEYS = {
     "disable_viewport_updates_observed",
     "viewport_startup_attestation_sha256",
 }
-STACK_CONTRACT_KEYS = STACK_CONTRACT_KEYS_V1 | STACK_CONTRACT_V2_ONLY_KEYS
+STACK_CONTRACT_KEYS_V2 = STACK_CONTRACT_KEYS_V1 | STACK_CONTRACT_V2_ONLY_KEYS
+STACK_CONTRACT_V3_ONLY_KEYS = {
+    "contract_path",
+    "viewport_runtime_attestation_path",
+    "viewport_runtime_attestation_sha256",
+    "viewport_instance_uuid",
+    "viewport_pid",
+    "viewport_pgid",
+    "viewport_start_ticks",
+    "viewport_winner_manifest_sha256",
+}
+STACK_CONTRACT_KEYS = STACK_CONTRACT_KEYS_V2 | STACK_CONTRACT_V3_ONLY_KEYS
 
 
 def _stack_contract_keys(payload: Mapping[str, Any]) -> set[str]:
     if payload.get("schema") == STACK_CONTRACT_SCHEMA_V1:
         return STACK_CONTRACT_KEYS_V1
+    if payload.get("schema") == STACK_CONTRACT_SCHEMA_V2:
+        return STACK_CONTRACT_KEYS_V2
     if payload.get("schema") == STACK_CONTRACT_SCHEMA:
         return STACK_CONTRACT_KEYS
     raise V6ContractError("stack contract schema mismatch")
@@ -5267,11 +5306,94 @@ STACK_TUPLE_KEYS = (
 
 def _stack_tuple_digest(payload: Mapping[str, Any]) -> str:
     normalized = {key: payload[key] for key in STACK_TUPLE_KEYS}
-    for key in sorted(STACK_CONTRACT_V2_ONLY_KEYS):
+    for key in sorted(STACK_CONTRACT_V2_ONLY_KEYS | STACK_CONTRACT_V3_ONLY_KEYS):
         if key in payload:
             normalized[key] = payload[key]
     canonical = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _validate_viewport_runtime_snapshot(
+    stack_path: Path,
+    stack: Mapping[str, Any],
+    *,
+    expected_condition_id: str,
+    freeze: Mapping[str, Any],
+) -> dict[str, Any]:
+    import stat
+    import uuid
+
+    evidence_path = stack_path.parent / "viewport_runtime_attestation.json"
+    try:
+        metadata = os.lstat(evidence_path)
+        runtime = json.loads(evidence_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise V6ContractError(f"viewport runtime evidence is unreadable: {exc}") from exc
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != os.getuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+    ):
+        raise V6ContractError("viewport runtime evidence owner/mode/type mismatch")
+    runtime = _mapping(runtime, "viewport_runtime_attestation")
+    _require_exact_keys(runtime, {
+        "schema", "instance_uuid", "pid", "pgid", "start_ticks", "boot_id",
+        "cmdline_sha256", "executable", "start_wall_time_ns", "module3",
+        "navigation_source", "viewport_arm", "readbacks", "scene",
+        "run_root", "launcher_path", "winner_manifest",
+    }, "viewport_runtime_attestation")
+    try:
+        instance = str(uuid.UUID(str(runtime.get("instance_uuid", ""))))
+    except (ValueError, AttributeError) as exc:
+        raise V6ContractError("viewport runtime instance UUID invalid") from exc
+    repositories = freeze["repositories"]
+    winner = freeze["frozen_assets"].get(
+        "rivermark_viewport_startup_winner_manifest"
+    )
+    readbacks = runtime.get("readbacks")
+    if not (
+        runtime.get("schema") == "bio_nav.v6_viewport_runtime_attestation.v1"
+        and instance == runtime.get("instance_uuid") == stack.get("viewport_instance_uuid")
+        and runtime.get("pid") == stack.get("viewport_pid")
+        and runtime.get("pgid") == stack.get("viewport_pgid")
+        and runtime.get("start_ticks") == stack.get("viewport_start_ticks")
+        and stack.get("viewport_runtime_attestation_sha256")
+        == _file_sha256(evidence_path)
+        == stack.get("viewport_startup_attestation_sha256")
+        and runtime.get("module3") == repositories["module3"]
+        and runtime.get("navigation_source") == {
+            "path": str(
+                Path(repositories["module3"]["path"])
+                / "isaac_sim/apps/navigation_sim.py"
+            ),
+            "sha256": _file_sha256(
+                Path(repositories["module3"]["path"])
+                / "isaac_sim/apps/navigation_sim.py"
+            ),
+        }
+        and runtime.get("viewport_arm") == stack.get("viewport_arm") == "B"
+        and isinstance(readbacks, list)
+        and [row.get("phase") for row in readbacks]
+        == ["post_construction", "pre_ready"]
+        and all(
+            row.get("requested_disabled") is True
+            and row.get("observed_enabled") is False
+            and row.get("match") is True
+            for row in readbacks
+        )
+        and runtime.get("scene") == f"rivermark:{expected_condition_id.split('_', 1)[1]}"
+        and Path(str(runtime.get("run_root", ""))).resolve()
+        == Path(str(stack.get("contract_path", ""))).resolve().parent
+        and Path(str(runtime.get("launcher_path", ""))).resolve()
+        == Path(repositories["module3"]["path"]).resolve()
+        / "scripts/run_v6_rivermark.sh"
+        and isinstance(winner, Mapping)
+        and runtime.get("winner_manifest") == winner
+        and stack.get("viewport_winner_manifest_sha256") == winner.get("sha256")
+    ):
+        raise V6ContractError("outdoor viewport runtime attestation mismatch")
+    return dict(runtime)
 
 
 def _load_stack_contract_snapshot(
@@ -5294,12 +5416,12 @@ def _load_stack_contract_snapshot(
     ):
         raise V6ContractError("Pilot stack contract identity/digest mismatch")
     if (
-        payload["schema"] == STACK_CONTRACT_SCHEMA_V1
+        payload["schema"] != STACK_CONTRACT_SCHEMA
         and expected_condition_id.startswith("outdoor_")
-        and "rivermark_viewport_startup_winner_attestation"
+        and "rivermark_viewport_startup_winner_manifest"
         in freeze.get("frozen_assets", {})
     ):
-        raise V6ContractError("outdoor qualification requires v2 viewport attestation")
+        raise V6ContractError("outdoor qualification requires v3 runtime attestation")
     expected_profile = (
         "module2_causal_obstacle_outdoor"
         if expected_condition_id.startswith("outdoor_")
@@ -5333,30 +5455,43 @@ def _load_stack_contract_snapshot(
         and payload.get("kernel_release") == freeze["kernel_release"]
     ):
         raise V6ContractError("Pilot stack contract frozen tuple mismatch")
-    if payload["schema"] == STACK_CONTRACT_SCHEMA:
+    if payload["schema"] in {STACK_CONTRACT_SCHEMA_V2, STACK_CONTRACT_SCHEMA}:
         if any(
             payload.get(f"{name}_tree") != repositories[name].get("tree")
             for name in ("integration", "module2", "module3")
         ):
             raise V6ContractError("Pilot stack contract repository tree mismatch")
+        if payload["schema"] == STACK_CONTRACT_SCHEMA and (
+            not Path(str(payload.get("contract_path", ""))).is_absolute()
+            or Path(str(payload.get("contract_path", ""))).name
+            != "stack.contract.json"
+        ):
+            raise V6ContractError("stack contract source path is invalid")
         if expected_condition_id.startswith("outdoor_"):
-            attestation = freeze["frozen_assets"].get(
-                "rivermark_viewport_startup_winner_attestation"
-            )
             if not (
-                payload.get("viewport_arm") == "B"
+                payload["schema"] == STACK_CONTRACT_SCHEMA
+                and payload.get("viewport_arm") == "B"
                 and payload.get("disable_viewport_updates_requested") is True
                 and payload.get("disable_viewport_updates_observed") is True
-                and isinstance(attestation, Mapping)
                 and payload.get("viewport_startup_attestation_sha256")
-                == attestation.get("sha256")
+                == payload.get("viewport_runtime_attestation_sha256")
             ):
                 raise V6ContractError("outdoor viewport arm attestation mismatch")
+            _validate_viewport_runtime_snapshot(
+                path,
+                payload,
+                expected_condition_id=expected_condition_id,
+                freeze=freeze,
+            )
         elif not (
             payload.get("viewport_arm") == "not_applicable"
             and payload.get("disable_viewport_updates_requested") == "not_applicable"
             and payload.get("disable_viewport_updates_observed") == "not_applicable"
             and payload.get("viewport_startup_attestation_sha256") == "not_applicable"
+            and payload.get("viewport_runtime_attestation_path") == "not_applicable"
+            and payload.get("viewport_runtime_attestation_sha256") == "not_applicable"
+            and payload.get("viewport_instance_uuid") == "not_applicable"
+            and payload.get("viewport_winner_manifest_sha256") == "not_applicable"
         ):
             raise V6ContractError("indoor viewport fields must be not_applicable")
     expected_selector = (
@@ -5462,6 +5597,15 @@ def _evaluate_campaign(
         present_run_indices: set[int] = set()
         reset_generations: dict[int, int] = {}
         stack_sequences: dict[int, int] = {}
+        startup_kinds: dict[int, str] = {}
+        strict_half_group = (
+            len(manifest.conditions) == 3
+            and continuation is None
+            and all(
+                "tree" in entry
+                for entry in manifest.freeze["repositories"].values()
+            )
+        )
         for run_index, identity in enumerate(
             condition.episode_identities, start=1
         ):
@@ -5550,6 +5694,13 @@ def _evaluate_campaign(
                 )
                 if isinstance(sequence, int) and not isinstance(sequence, bool):
                     stack_sequences[run_index] = sequence
+                startup_kind = (
+                    sequence_receipt.get("startup_kind")
+                    if isinstance(sequence_receipt, Mapping)
+                    else None
+                )
+                if isinstance(startup_kind, str):
+                    startup_kinds[run_index] = startup_kind
                 expected_freeze_digest = (
                     continuation["parent_manifest"]["freeze_digest"]
                     if continuation
@@ -5571,6 +5722,47 @@ def _evaluate_campaign(
                             else episode_stack_session != parent_session
                         )
                     )
+                half_stack_binding_ok = True
+                if strict_half_group:
+                    try:
+                        stack_snapshot_path = root / "stack_contract.json"
+                        stack_snapshot, _stack_digest = _load_stack_contract_snapshot(
+                            stack_snapshot_path,
+                            expected_condition_id=condition.condition_id,
+                            freeze=manifest.freeze,
+                        )
+                        stack_snapshot_sha256 = _file_sha256(stack_snapshot_path)
+                    except (OSError, V6ContractError):
+                        half_stack_binding_ok = False
+                    else:
+                        summary_attestation = summary.get(
+                            "condition_stack_attestation", {}
+                        )
+                        half_stack_binding_ok = bool(
+                            isinstance(summary_attestation, Mapping)
+                            and sequence_receipt.get("sequence") == run_index
+                            and sequence_receipt.get("startup_kind")
+                            == ("cold" if run_index == 1 else "hot_reset")
+                            and reset_generation == run_index + 1
+                            and summary.get("reset_receipt") == reset_receipt
+                            and sequence_receipt.get("stack_session_id")
+                            == stack_snapshot["stack_session_id"]
+                            == episode_stack_session
+                            and sequence_receipt.get(
+                                "condition_stack_contract_path"
+                            ) == stack_snapshot.get("contract_path")
+                            and sequence_receipt.get(
+                                "condition_stack_contract_sha256"
+                            ) == stack_snapshot_sha256
+                            and summary_attestation.get(
+                                "condition_stack_contract_path"
+                            ) == stack_snapshot.get("contract_path")
+                            and summary_attestation.get(
+                                "condition_stack_contract_sha256"
+                            ) == stack_snapshot_sha256
+                            and summary_attestation.get("stack_episode_receipt")
+                            == sequence_receipt
+                        )
                 stack_identity_ok = bool(
                     episode.get("condition_stack_id") == condition.condition_id
                     and summary.get("condition_stack_id") == condition.condition_id
@@ -5583,6 +5775,7 @@ def _evaluate_campaign(
                     and summary.get("formal_freeze_digest")
                     == expected_freeze_digest
                     and continuation_sequence_ok
+                    and half_stack_binding_ok
                 )
                 if stack_identity_ok:
                     stack_session_ids.add(episode_stack_session)
@@ -5713,7 +5906,23 @@ def _evaluate_campaign(
         else:
             if len(stack_session_ids) > 1:
                 condition_blockers.append("stack_session_mismatch")
-            if present_run_indices != set(reset_generations):
+            if strict_half_group and (
+                present_run_indices != set(reset_generations)
+                or present_run_indices != set(stack_sequences)
+                or present_run_indices != set(startup_kinds)
+            ):
+                condition_blockers.append("half_stack_sequence_or_startup_missing")
+            elif strict_half_group and present_run_indices:
+                ordered_indices = sorted(present_run_indices)
+                if ordered_indices != list(range(1, ordered_indices[-1] + 1)) or any(
+                    stack_sequences[index] != index
+                    or reset_generations[index] != index + 1
+                    or startup_kinds[index]
+                    != ("cold" if index == 1 else "hot_reset")
+                    for index in ordered_indices
+                ):
+                    condition_blockers.append("half_stack_sequence_or_startup_invalid")
+            elif present_run_indices != set(reset_generations):
                 condition_blockers.append("reset_generation_missing")
             elif present_run_indices:
                 ordered_indices = sorted(present_run_indices)
@@ -6336,8 +6545,10 @@ def execute_outdoor_campaign(
         and contract.get("disable_viewport_updates_requested") is True
         and contract.get("disable_viewport_updates_observed") is True
         and contract.get("viewport_startup_attestation_sha256")
+        == contract.get("viewport_runtime_attestation_sha256")
+        and contract.get("viewport_winner_manifest_sha256")
         == manifest.freeze["frozen_assets"][
-            "rivermark_viewport_startup_winner_attestation"
+            "rivermark_viewport_startup_winner_manifest"
         ]["sha256"]
     ):
         raise V6ContractError("outdoor execution viewport winner attestation mismatch")
@@ -6378,6 +6589,41 @@ def _half_evidence_digest(
             )
             if contract.get("schema") != STACK_CONTRACT_SCHEMA:
                 raise V6ContractError("combined halves reject old stack evidence")
+            try:
+                episode = json.loads((root / "run_manifest.json").read_text())
+                summary = json.loads((root / "run_summary.json").read_text())
+            except (OSError, json.JSONDecodeError) as exc:
+                raise V6ContractError("combined half core evidence is unreadable") from exc
+            receipt = _mapping(
+                episode.get("stack_episode_receipt"),
+                "combined.stack_episode_receipt",
+            )
+            attestation = _mapping(
+                summary.get("condition_stack_attestation"),
+                "combined.condition_stack_attestation",
+            )
+            if not (
+                receipt.get("sequence") == run_index
+                and receipt.get("startup_kind")
+                == ("cold" if run_index == 1 else "hot_reset")
+                and episode.get("reset_receipt", {}).get("generation")
+                == run_index + 1
+                and summary.get("reset_receipt") == episode.get("reset_receipt")
+                and receipt.get("stack_session_id")
+                == contract["stack_session_id"]
+                == episode.get("stack_session_id")
+                == summary.get("stack_session_id")
+                and receipt.get("condition_stack_contract_path")
+                == contract.get("contract_path")
+                and receipt.get("condition_stack_contract_sha256")
+                == entries["stack_contract.json"]
+                and attestation.get("condition_stack_contract_path")
+                == contract.get("contract_path")
+                and attestation.get("condition_stack_contract_sha256")
+                == entries["stack_contract.json"]
+                and attestation.get("stack_episode_receipt") == receipt
+            ):
+                raise V6ContractError("combined half stack group binding mismatch")
             rows.append({
                 "condition_id": condition.condition_id,
                 "run_index": run_index,
