@@ -669,6 +669,7 @@ cleanup_exact_socket "${run_dir}" "${socket_path}"
 
 declare -a child_names=()
 declare -a child_pids=()
+declare -a child_anchor_pids=()
 declare -a child_pgids=()
 terminating=false
 termination_status=0
@@ -713,8 +714,40 @@ register_child() {
   fi
   child_names+=("${name}")
   child_pids+=("${pid}")
+  child_anchor_pids+=("${anchor_pid}")
   child_pgids+=("${pgid}")
   write_process_identity "${name}" "${run_dir}" "${anchor_pid}" "${pgid}"
+}
+
+write_critical_children_manifest() {
+  local target="${run_dir}/critical.children.json" temporary
+  temporary="${run_dir}/.critical.children.$$.tmp"
+  python3 - "${temporary}" "${#child_names[@]}" \
+    "${child_names[@]}" "${child_anchor_pids[@]}" "${child_pgids[@]}" <<'PY'
+import json
+import os
+from pathlib import Path
+import sys
+
+target = Path(sys.argv[1])
+count = int(sys.argv[2])
+names = sys.argv[3:3 + count]
+pids = sys.argv[3 + count:3 + 2 * count]
+pgids = sys.argv[3 + 2 * count:3 + 3 * count]
+if not count or not (len(names) == len(pids) == len(pgids) == count):
+    raise SystemExit("critical child manifest arguments are inconsistent")
+payload = {
+    "schema": "bio_nav.v6_critical_children.v1",
+    "children": [
+        {"name": name, "pid": int(pid), "pgid": int(pgid)}
+        for name, pid, pgid in zip(names, pids, pgids, strict=True)
+    ],
+}
+target.write_text(
+    json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+)
+os.replace(target, target.with_name("critical.children.json"))
+PY
 }
 
 descendant_pids() {
@@ -824,7 +857,7 @@ shutdown() {
   done
   rm -f "${run_dir}/stack.identity" "${run_dir}/stack.pid" \
     "${run_dir}/stack.pgid" "${run_dir}/stack.contract.json"
-  rm -f "${run_dir}/episode.sequence.json"
+  rm -f "${run_dir}/episode.sequence.json" "${run_dir}/critical.children.json"
   if [[ "${failed}" == true ]]; then
     echo "Phase-F stack cleanup left a tracked process group alive" >&2
     exit 1
@@ -928,6 +961,8 @@ if [[ "${arm}" != "M0" ]]; then
   register_child integration_bridge "${integration_bridge_pid}"
   exit_if_terminating
 fi
+
+write_critical_children_manifest
 
 set +e
 wait "${module3_pid}"

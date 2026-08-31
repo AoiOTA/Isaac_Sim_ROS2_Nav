@@ -3251,6 +3251,7 @@ wait "$!"
             break
         if (
             all((run_dir / f"{name}.identity").is_file() for name in identities)
+            and (run_dir / "critical.children.json").is_file()
             and socket_path.exists()
             and heartbeat.is_file()
             and len(heartbeat.read_text(encoding="utf-8").splitlines()) >= 3
@@ -3669,6 +3670,7 @@ def test_phase_f_stack_localization_extension_forwards_exact_onebox_m3_argv(
 def test_phase_f_stack_writes_live_deterministic_condition_contract(tmp_path):
     fake = _start_fake_phase_f_stack(tmp_path, arm="M3")
     contract_path = fake.run_dir / "stack.contract.json"
+    children_path = fake.run_dir / "critical.children.json"
     try:
         payload = v6_formal.validate_condition_stack_contract(
             contract_path, expected_condition_id="indoor_static"
@@ -3696,10 +3698,18 @@ def test_phase_f_stack_writes_live_deterministic_condition_contract(tmp_path):
             "last_sequence": 0,
             "startup_reset_generation_baseline": 1,
         }
+        children = json.loads(children_path.read_text(encoding="utf-8"))
+        assert children["schema"] == "bio_nav.v6_critical_children.v1"
+        assert [child["name"] for child in children["children"]] == [
+            "module3_ros", "module2_server", "integration_bridge"
+        ]
+        assert all(child["pid"] > 1 and child["pgid"] > 1
+                   for child in children["children"])
     finally:
         _stop_fake_phase_f_stack(fake)
     assert not contract_path.exists()
     assert not sequence_path.exists()
+    assert not children_path.exists()
 
 
 def _stop_fake_phase_f_stack(fake: SimpleNamespace) -> None:
