@@ -776,6 +776,41 @@ def _mock_validator_promotion(monkeypatch):
     )
 
 
+def _fake_qualification_tooling_promotion(freeze, parent_freeze):
+    return {
+        "schema": "bio_nav.v6_indoor_qualification_tooling_promotion.v1",
+        "from_head": parent_freeze["repositories"]["module3"]["head"],
+        "to_head": freeze["repositories"]["module3"]["head"],
+        "from_is_ancestor": True,
+        "name_status": [],
+        "canonical_diff_sha256": "0" * 64,
+        "v6_formal": {},
+        "wrapper": {},
+        "unchanged_files": {},
+        "parent_validator_promotion_sha256": "0" * 64,
+    }
+
+
+def _mock_qualification_tooling_promotion(monkeypatch):
+    monkeypatch.setattr(
+        v6_formal_module,
+        "_build_qualification_tooling_promotion",
+        lambda *, freeze, parent_freeze: _fake_qualification_tooling_promotion(
+            freeze, parent_freeze
+        ),
+    )
+    monkeypatch.setattr(
+        v6_formal_module,
+        "_validate_qualification_tooling_promotion",
+        lambda value, *, freeze, parent_freeze: dict(value),
+    )
+    monkeypatch.setattr(
+        v6_formal_module,
+        "_validate_historical_validator_promotion",
+        lambda value, *, parent_freeze: dict(value),
+    )
+
+
 def _expected_indoor_stable_arguments():
     return [
         "nav2_profile:=v6_low_obstacle_isolation",
@@ -896,6 +931,142 @@ def _write_indoor_pilot_inputs(tmp_path: Path, monkeypatch):
     indoor_aggregate = tmp_path / "indoor-pilot-aggregate.json"
     indoor_aggregate.write_text(json.dumps(aggregate), encoding="utf-8")
     return indoor_manifest, indoor_aggregate
+
+
+def _write_indoor_continuation_inputs(tmp_path: Path, monkeypatch):
+    _mock_qualification_tooling_promotion(monkeypatch)
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+    parent_path = tmp_path / "nas" / "parent-indoor.json"
+    parent_output = tmp_path / "nas" / "parent-output"
+    parent = freeze_indoor_campaign_from_pilot(
+        pilot_manifest_path=pilot_manifest,
+        pilot_aggregate_path=aggregate,
+        output_manifest_path=parent_path,
+        indoor_output_root=parent_output,
+    )
+    parent_raw = json.loads(parent_path.read_text())
+    parent_raw["freeze"] = json.loads(json.dumps(parent.freeze))
+    parent_path.write_text(json.dumps(parent_raw), encoding="utf-8")
+    contract_root = tmp_path / "parent-contract"
+    contract_root.mkdir()
+    stack_path = _live_stack_contract(
+        contract_root, condition_id="indoor_static"
+    )
+    stack = json.loads(stack_path.read_text())
+    session = stack["stack_session_id"]
+    run_root = _write_formal_run(
+        parent.conditions[0],
+        1,
+        strict_success=False,
+        collision_detected=True,
+        formal_freeze_digest=parent.freeze_digest,
+        stack_session_id=session,
+        path_deviation_percent=None,
+    )
+    manifest_path = run_root / "run_manifest.json"
+    summary_path = run_root / "run_summary.json"
+    episode = json.loads(manifest_path.read_text())
+    summary = json.loads(summary_path.read_text())
+    receipt = {
+        "schema": "bio_nav.v6_stack_episode_receipt.v1",
+        "sequence": 1,
+        "baseline": 1,
+        "stack_session_id": session,
+        "sequence_path": stack["episode_sequence_path"],
+        "t2_selector_path": stack["t2_selector_path"],
+        "t2_selector_sha256": stack["t2_selector_sha256"],
+    }
+    episode["stack_episode_receipt"] = receipt
+    episode["reset_receipt"]["generation"] = 2
+    episode["metrics"]["path_deviation_percent"] = None
+    episode["provenance"]["git_head"] = parent.freeze["repositories"]["module3"]["head"]
+    summary["reset_receipt"]["generation"] = 2
+    summary["path_deviation_percent"] = None
+    manifest_path.write_text(json.dumps(episode), encoding="utf-8")
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    (run_root / "stack_contract.json").write_bytes(stack_path.read_bytes())
+    (run_root / "TRIAL_DISPATCHED.json").write_text(json.dumps({
+        "schema": "bio_nav.trial_dispatched.v1",
+        "scenario_id": parent.conditions[0].scenario_id,
+        "run_index": 1,
+        "seed": 8601,
+        "condition_stack_id": "indoor_static",
+        "stack_session_id": session,
+        "formal_freeze_digest": parent.freeze_digest,
+        "navigation_execution_backend": "route_guided",
+        "stack_episode_receipt": receipt,
+    }), encoding="utf-8")
+    _refresh_checksums(run_root)
+    continuation_file_names = {
+        "manifest": "run_manifest.json",
+        "summary": "run_summary.json",
+        "trial": "TRIAL_DISPATCHED.json",
+        "checksums": "checksums.sha256",
+        "stack_contract": "stack_contract.json",
+    }
+    expectations = {
+        "parent_manifest": str(parent_path),
+        "parent_manifest_sha256": hashlib.sha256(parent_path.read_bytes()).hexdigest(),
+        "parent_freeze_digest": parent.freeze_digest,
+        "parent_output_root": str(parent_output),
+        "preserved_run_root": str(run_root),
+        "stack_session_id": session,
+        "files": {
+            name: hashlib.sha256((run_root / filename).read_bytes()).hexdigest()
+            for name, filename in continuation_file_names.items()
+        },
+    }
+    monkeypatch.setattr(
+        v6_formal_module,
+        "_indoor_continuation_parent_expectations",
+        lambda: json.loads(json.dumps(expectations)),
+    )
+    successor_path = tmp_path / "nas" / "successor-indoor.json"
+    successor_output = tmp_path / "nas" / "successor-output"
+    successor = v6_formal_module.create_indoor_continuation_campaign(
+        parent_manifest_path=parent_path,
+        output_manifest_path=successor_path,
+        successor_output_root=successor_output,
+    )
+    return parent_path, parent, run_root, successor_path, successor
+
+
+def _write_continuation_successor_run(
+    condition,
+    run_index,
+    *,
+    freeze_digest,
+    stack_session_id,
+    strict_success=True,
+    collision_detected=False,
+    path_deviation_percent=10.0,
+):
+    root = _write_formal_run(
+        condition,
+        run_index,
+        strict_success=strict_success,
+        collision_detected=collision_detected,
+        formal_freeze_digest=freeze_digest,
+        stack_session_id=stack_session_id,
+        path_deviation_percent=path_deviation_percent,
+    )
+    manifest_path = root / "run_manifest.json"
+    episode = json.loads(manifest_path.read_text())
+    episode["stack_episode_receipt"] = {
+        "schema": "bio_nav.v6_stack_episode_receipt.v1",
+        "sequence": run_index - 1,
+        "baseline": 1,
+        "stack_session_id": stack_session_id,
+        "sequence_path": str(root / "episode.sequence.json"),
+        "t2_selector_path": str(REPO / "scripts/run_v6_kujiale_low_obstacles.sh"),
+        "t2_selector_sha256": hashlib.sha256(
+            (REPO / "scripts/run_v6_kujiale_low_obstacles.sh").read_bytes()
+        ).hexdigest(),
+    }
+    manifest_path.write_text(json.dumps(episode), encoding="utf-8")
+    _refresh_checksums(root)
+    return root
 
 
 def _write_production_pilot_root(tmp_path: Path, monkeypatch):
@@ -1608,6 +1779,78 @@ def _promotion_loaded_identity(repository: Path, head: str):
     }
 
 
+def _qualification_promotion_repository(tmp_path: Path, *, extra_path=False):
+    repository = tmp_path / ("qualification-extra" if extra_path else "qualification")
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    paths = {
+        "v6_formal": "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py",
+        "test": "ros2_ws/src/robot_experiments/test/test_v6_formal.py",
+        "wrapper": "scripts/run_v6_formal_episode.sh",
+        "experiment_runner": "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py",
+        "selector": "scripts/run_v6_kujiale_low_obstacles.sh",
+        "launch": "ros2_ws/src/robot_experiments/launch/experiment.launch.py",
+    }
+    for name, relative in paths.items():
+        path = repository / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"{name}-v1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repository), "add", "."], check=True)
+    subprocess.run(
+        [
+            "git", "-C", str(repository), "-c", "user.name=Codex Test", "-c",
+            "user.email=codex@example.invalid", "commit", "-qm", "parent",
+        ],
+        check=True,
+    )
+    from_head = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    for name in ("v6_formal", "test", "wrapper"):
+        (repository / paths[name]).write_text(f"{name}-v2\n", encoding="utf-8")
+    if extra_path:
+        extra = repository / "ros2_ws/src/robot_navigation/config/nav2.yaml"
+        extra.parent.mkdir(parents=True, exist_ok=True)
+        extra.write_text("changed\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repository), "add", "-A"], check=True)
+    subprocess.run(
+        [
+            "git", "-C", str(repository), "-c", "user.name=Codex Test", "-c",
+            "user.email=codex@example.invalid", "commit", "-qm", "tooling",
+        ],
+        check=True,
+    )
+    to_head = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    shared = {
+        "integration": {"path": "/integration", "head": "i" * 40},
+        "module2": {"path": "/module2", "head": "2" * 40},
+    }
+    parent_freeze = {
+        "repositories": {
+            **shared,
+            "module3": {"path": str(repository), "head": from_head},
+        },
+        "validator_only_head_promotion": {"schema": "fixture"},
+    }
+    freeze = {
+        "repositories": {
+            **shared,
+            "module3": {"path": str(repository), "head": to_head},
+        },
+        "v6_formal": {
+            "path": str((repository / paths["v6_formal"]).resolve()),
+            "sha256": hashlib.sha256(
+                (repository / paths["v6_formal"]).read_bytes()
+            ).hexdigest(),
+        },
+    }
+    return repository, freeze, parent_freeze
+
+
 def test_validator_only_head_promotion_accepts_exact_offline_symbol_delta(
     tmp_path, monkeypatch
 ):
@@ -1627,6 +1870,52 @@ def test_validator_only_head_promotion_accepts_exact_offline_symbol_delta(
     assert {row["status"] for row in promotion["module3_diff"]["name_status"]} == {"M"}
     assert len(promotion["module3_diff"]["name_status"]) == 4
     assert promotion["loaded_validator"]["current_head"] == to_head
+
+
+def test_qualification_tooling_promotion_accepts_only_bound_tooling_delta(
+    tmp_path, monkeypatch
+):
+    _repository, freeze, parent_freeze = _qualification_promotion_repository(tmp_path)
+    monkeypatch.setattr(
+        v6_formal_module, "_qualification_tooling_ast_guard",
+        lambda _repository, _from, _to: None,
+    )
+
+    promotion = v6_formal_module._build_qualification_tooling_promotion(
+        freeze=freeze, parent_freeze=parent_freeze
+    )
+
+    assert {row["path"] for row in promotion["name_status"]} == {
+        "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py",
+        "ros2_ws/src/robot_experiments/test/test_v6_formal.py",
+        "scripts/run_v6_formal_episode.sh",
+    }
+    assert {row["status"] for row in promotion["name_status"]} == {"M"}
+    assert set(promotion["unchanged_files"]) == {
+        "experiment_runner", "t2_selector", "experiment_launch"
+    }
+    promotion["wrapper"]["sha256"] = "0" * 64
+    with pytest.raises(V6ContractError, match="source identity"):
+        v6_formal_module._validate_qualification_tooling_promotion(
+            promotion, freeze=freeze, parent_freeze=parent_freeze
+        )
+
+
+def test_qualification_tooling_promotion_rejects_nonallowlist_path(
+    tmp_path, monkeypatch
+):
+    _repository, freeze, parent_freeze = _qualification_promotion_repository(
+        tmp_path, extra_path=True
+    )
+    monkeypatch.setattr(
+        v6_formal_module, "_qualification_tooling_ast_guard",
+        lambda _repository, _from, _to: None,
+    )
+
+    with pytest.raises(V6ContractError, match="diff mismatch"):
+        v6_formal_module._build_qualification_tooling_promotion(
+            freeze=freeze, parent_freeze=parent_freeze
+        )
 
 
 @pytest.mark.parametrize(
@@ -2134,6 +2423,464 @@ def test_indoor_freezer_and_dry_run_are_scope_separated(tmp_path, monkeypatch, c
     assert payload["dispatch"] is False
     assert len(payload["dispatch_plan"]) == 1
     assert payload["dispatch_plan"][0]["condition_id"] == "indoor_static"
+
+
+def test_indoor_continuation_creator_preserves_external_static_run1(
+    tmp_path, monkeypatch
+):
+    parent_path, parent, run1, successor_path, successor = (
+        _write_indoor_continuation_inputs(tmp_path, monkeypatch)
+    )
+
+    raw = json.loads(successor_path.read_text())
+    continuation = successor.freeze["indoor_continuation"]
+    assert raw["schema_version"] == v6_formal_module.INDOOR_CONTINUATION_SCHEMA_VERSION
+    assert continuation["reason"] == "tooling_invalid_after_valid_episode"
+    assert continuation["parent_manifest"]["path"] == str(parent_path)
+    assert continuation["parent_manifest"]["freeze_digest"] == parent.freeze_digest
+    assert continuation["preserved_run"]["root"] == str(run1)
+    assert continuation["preserved_run"]["classification"] == "valid_product_failure"
+    assert continuation["preserved_run"]["collision_detected"] is True
+    assert continuation["preserved_run"]["path_deviation_percent"] is None
+    assert successor.conditions[0].output_directory != parent.conditions[0].output_directory
+    assert not (
+        successor.conditions[0].output_directory
+        / successor.conditions[0].scenario_id
+        / "run-0001-seed-8601"
+    ).exists()
+
+    result = evaluate_indoor_campaign(successor)
+    static = result["conditions"][0]
+    assert static["runs"][0]["status"] == "product_failure"
+    assert static["valid_episodes"] == 1
+    assert static["strict_successes"] == 0
+    assert static["next_run_index"] == 2
+    plan = v6_formal_module.indoor_dispatch_plan(successor, result)
+    assert plan[0]["condition_id"] == "indoor_static"
+    assert plan[0]["run_index"] == 2
+    assert plan[0]["stack_boundary"] == "continuation_cold_restart"
+
+
+def test_indoor_continuation_accepts_preserved_failure_without_recorded_route_terminal(
+    tmp_path, monkeypatch
+):
+    _parent_path, _parent, _run1, _successor_path, successor = (
+        _write_indoor_continuation_inputs(tmp_path, monkeypatch)
+    )
+    original_inventory = experiment_runner_module._mcap_inventory_evidence
+
+    def failure_inventory(root):
+        evidence = original_inventory(root)
+        evidence["semantic"]["route_complete_true_count"] = 0
+        evidence["semantic"]["terminal_zero_count"] = 0
+        evidence["semantic"]["terminal_nonzero_count"] = 0
+        return evidence
+
+    monkeypatch.setattr(
+        experiment_runner_module, "_mcap_inventory_evidence", failure_inventory
+    )
+
+    result = evaluate_indoor_campaign(successor)
+
+    assert result["conditions"][0]["runs"][0]["status"] == "product_failure"
+    assert result["conditions"][0]["next_run_index"] == 2
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "parent_manifest", "run_summary", "collision_record", "classification",
+        "sequence", "session", "root", "dynamic_condition",
+    ],
+)
+def test_indoor_continuation_revalidates_parent_and_preserved_run1(
+    tmp_path, monkeypatch, tamper
+):
+    parent_path, _parent, run1, _successor_path, successor = (
+        _write_indoor_continuation_inputs(tmp_path, monkeypatch)
+    )
+    record = successor.freeze["indoor_continuation"]
+    if tamper == "parent_manifest":
+        parent_path.write_text(parent_path.read_text() + "\n", encoding="utf-8")
+    elif tamper == "run_summary":
+        summary = run1 / "run_summary.json"
+        summary.write_text(summary.read_text() + "\n", encoding="utf-8")
+    elif tamper == "collision_record":
+        record["preserved_run"]["collision_detected"] = False
+    elif tamper == "classification":
+        record["preserved_run"]["classification"] = "strict_success"
+    elif tamper == "sequence":
+        record["preserved_run"]["sequence"] = 2
+    elif tamper == "session":
+        record["preserved_run"]["stack_session_id"] = "0" * 64
+    elif tamper == "root":
+        record["preserved_run"]["root"] = str(tmp_path / "wrong")
+    else:
+        record["condition_id"] = "indoor_dynamic"
+
+    with pytest.raises(V6ContractError):
+        evaluate_indoor_campaign(successor)
+
+
+def test_indoor_continuation_rejects_run1_copy_or_retry(tmp_path, monkeypatch):
+    _parent_path, _parent, _run1, _successor_path, successor = (
+        _write_indoor_continuation_inputs(tmp_path, monkeypatch)
+    )
+    retry_root = (
+        successor.conditions[0].output_directory
+        / successor.conditions[0].scenario_id
+        / "run-0001-seed-8601"
+    )
+    retry_root.mkdir(parents=True)
+
+    with pytest.raises(V6ContractError, match="copy or retry preserved run1"):
+        evaluate_indoor_campaign(successor)
+
+
+def test_indoor_continuation_creator_is_no_clobber(tmp_path, monkeypatch):
+    parent_path, _parent, _run1, successor_path, successor = (
+        _write_indoor_continuation_inputs(tmp_path, monkeypatch)
+    )
+    original = successor_path.read_bytes()
+
+    with pytest.raises(V6ContractError, match="new non-symlink outputs"):
+        v6_formal_module.create_indoor_continuation_campaign(
+            parent_manifest_path=parent_path,
+            output_manifest_path=successor_path,
+            successor_output_root=successor.conditions[0].output_directory.parent,
+        )
+
+    assert successor_path.read_bytes() == original
+
+
+def test_indoor_continuation_cannot_chain_a_second_continuation(
+    tmp_path, monkeypatch
+):
+    _parent_path, _parent, _run1, successor_path, _successor = (
+        _write_indoor_continuation_inputs(tmp_path, monkeypatch)
+    )
+
+    with pytest.raises(V6ContractError, match="approved campaign|parent schema"):
+        v6_formal_module.create_indoor_continuation_campaign(
+            parent_manifest_path=successor_path,
+            output_manifest_path=tmp_path / "nas" / "third-campaign.json",
+            successor_output_root=tmp_path / "nas" / "third-output",
+        )
+
+
+def test_indoor_continuation_creator_rejects_symlink_outputs(tmp_path, monkeypatch):
+    parent_path, _parent, _run1, _successor_path, successor = (
+        _write_indoor_continuation_inputs(tmp_path, monkeypatch)
+    )
+    output_link = tmp_path / "nas" / "linked-successor.json"
+    output_link.symlink_to(parent_path)
+    with pytest.raises(V6ContractError, match="symlink|new non-symlink outputs"):
+        v6_formal_module.create_indoor_continuation_campaign(
+            parent_manifest_path=parent_path,
+            output_manifest_path=output_link,
+            successor_output_root=tmp_path / "nas" / "fresh-root",
+        )
+    root_link = tmp_path / "nas" / "linked-root"
+    root_link.symlink_to(successor.freeze["indoor_continuation"]["parent_output_root"])
+    with pytest.raises(V6ContractError, match="symlink|new non-symlink outputs"):
+        v6_formal_module.create_indoor_continuation_campaign(
+            parent_manifest_path=parent_path,
+            output_manifest_path=tmp_path / "nas" / "fresh-successor.json",
+            successor_output_root=root_link,
+        )
+
+
+def test_indoor_continuation_creator_rejects_dangling_manifest_and_root_links(
+    tmp_path, monkeypatch
+):
+    parent_path, _parent, _run1, _successor_path, _successor = (
+        _write_indoor_continuation_inputs(tmp_path, monkeypatch)
+    )
+    dangling_manifest_target = tmp_path / "nas" / "missing-manifest-target.json"
+    dangling_manifest = tmp_path / "nas" / "dangling-manifest.json"
+    dangling_manifest.symlink_to(dangling_manifest_target)
+    untouched_root = tmp_path / "nas" / "untouched-root"
+    with pytest.raises(V6ContractError, match="symlink"):
+        v6_formal_module.create_indoor_continuation_campaign(
+            parent_manifest_path=parent_path,
+            output_manifest_path=dangling_manifest,
+            successor_output_root=untouched_root,
+        )
+    assert not dangling_manifest_target.exists()
+    assert not untouched_root.exists()
+
+    dangling_root_target = tmp_path / "nas" / "missing-root-target"
+    dangling_root = tmp_path / "nas" / "dangling-root"
+    dangling_root.symlink_to(dangling_root_target)
+    untouched_manifest = tmp_path / "nas" / "untouched-manifest.json"
+    with pytest.raises(V6ContractError, match="symlink"):
+        v6_formal_module.create_indoor_continuation_campaign(
+            parent_manifest_path=parent_path,
+            output_manifest_path=untouched_manifest,
+            successor_output_root=dangling_root,
+        )
+    assert not dangling_root_target.exists()
+    assert not untouched_manifest.exists()
+
+
+def test_indoor_continuation_rejects_preserved_run_directory_symlink(
+    tmp_path, monkeypatch
+):
+    _parent_path, _parent, run1, _successor_path, successor = (
+        _write_indoor_continuation_inputs(tmp_path, monkeypatch)
+    )
+    moved = run1.with_name("run-0001-seed-8601-moved-copy")
+    run1.rename(moved)
+    run1.symlink_to(moved, target_is_directory=True)
+
+    with pytest.raises(V6ContractError, match="symlink"):
+        evaluate_indoor_campaign(successor)
+
+
+def test_indoor_continuation_creator_rejects_dotdot_escape(tmp_path, monkeypatch):
+    parent_path, _parent, _run1, _successor_path, _successor = (
+        _write_indoor_continuation_inputs(tmp_path, monkeypatch)
+    )
+    escaped_manifest = tmp_path / "nas" / "subdir" / ".." / "escaped.json"
+    escaped_root = tmp_path / "nas" / "fresh-root-after-escape"
+
+    with pytest.raises(V6ContractError, match="lexical path contract"):
+        v6_formal_module.create_indoor_continuation_campaign(
+            parent_manifest_path=parent_path,
+            output_manifest_path=escaped_manifest,
+            successor_output_root=escaped_root,
+        )
+
+    assert not escaped_root.exists()
+
+
+def test_indoor_continuation_cli_creates_without_dispatch(
+    tmp_path, monkeypatch, capsys
+):
+    parent_path, _parent, _run1, _successor_path, _successor = (
+        _write_indoor_continuation_inputs(tmp_path, monkeypatch)
+    )
+    output = tmp_path / "nas" / "cli-successor.json"
+    output_root = tmp_path / "nas" / "cli-successor-root"
+
+    assert cli([
+        "--continue-indoor-parent", str(parent_path),
+        "--continuation-output-manifest", str(output),
+        "--continuation-output-root", str(output_root),
+    ]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["qualification"] == "INDOOR_CONTINUATION_READY"
+    assert payload["formal_qualification"] == NOT_QUALIFIED
+    assert payload["indoor_progress"] == "1/60"
+    assert payload["dispatch"] is False
+    assert payload["reason"] == "tooling_invalid_after_valid_episode"
+    assert payload["manifest"] == str(output)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_root", "duplicate_mode", "duplicate_manifest", "duplicate_root",
+        "other_mode", "other_output", "pilot", "timeout", "episode", "unknown",
+        "three_equals", "mixed_equals", "abbreviated", "double_dash",
+    ],
+)
+def test_indoor_continuation_cli_rejects_any_nonexact_raw_argv_without_outputs(
+    tmp_path, mutation
+):
+    output = tmp_path / "successor.json"
+    output_root = tmp_path / "successor-root"
+    argv = [
+        "--continue-indoor-parent", "/approved-parent.json",
+        "--continuation-output-manifest", str(output),
+        "--continuation-output-root", str(output_root),
+    ]
+    if mutation == "missing_root":
+        argv = argv[:-2]
+    elif mutation == "duplicate_mode":
+        argv.extend(["--continue-indoor-parent", "/second-parent.json"])
+    elif mutation == "duplicate_manifest":
+        argv.extend(["--continuation-output-manifest", str(tmp_path / "second.json")])
+    elif mutation == "duplicate_root":
+        argv.extend(["--continuation-output-root", str(tmp_path / "second-root")])
+    elif mutation == "other_mode":
+        argv.extend(["--formal-manifest", "/formal.json"])
+    elif mutation == "other_output":
+        argv.extend(["--output-manifest", str(tmp_path / "other.json")])
+    elif mutation == "pilot":
+        argv.append("--pilot")
+    elif mutation == "timeout":
+        argv.extend(["--readiness-timeout-sec", "1"])
+    elif mutation == "episode":
+        argv.extend(["--episode-index", "1"])
+    elif mutation == "unknown":
+        argv.append("--unknown")
+    elif mutation == "three_equals":
+        argv = [
+            "--continue-indoor-parent=/approved-parent.json",
+            f"--continuation-output-manifest={output}",
+            f"--continuation-output-root={output_root}",
+        ]
+    elif mutation == "mixed_equals":
+        argv = [
+            "--continue-indoor-parent=/approved-parent.json",
+            "--continuation-output-manifest", str(output),
+            "--continuation-output-root", str(output_root),
+        ]
+    elif mutation == "abbreviated":
+        argv[0] = "--continue-indoor-par"
+    else:
+        argv.append("--")
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli(argv)
+
+    assert exc_info.value.code == 2
+    assert not output.exists()
+    assert not output_root.exists()
+
+
+def test_indoor_continuation_extra_static_failure_exhausts_budget(
+    tmp_path, monkeypatch
+):
+    _parent_path, _parent, _run1, _successor_path, successor = (
+        _write_indoor_continuation_inputs(tmp_path, monkeypatch)
+    )
+    _write_continuation_successor_run(
+        successor.conditions[0],
+        2,
+        freeze_digest=successor.freeze_digest,
+        stack_session_id="b" * 64,
+        strict_success=False,
+        path_deviation_percent=20.0,
+    )
+
+    result = evaluate_indoor_campaign(successor)
+
+    assert result["conditions"][0]["runs"][1]["status"] == "product_failure"
+    assert "indoor_static:early_fail_unreachable" in result["blockers"]
+    assert result["conditions"][0]["next_run_index"] is None
+
+
+def test_indoor_continuation_rejects_third_static_stack_session(
+    tmp_path, monkeypatch
+):
+    _parent_path, _parent, _run1, _successor_path, successor = (
+        _write_indoor_continuation_inputs(tmp_path, monkeypatch)
+    )
+    _write_continuation_successor_run(
+        successor.conditions[0],
+        2,
+        freeze_digest=successor.freeze_digest,
+        stack_session_id="b" * 64,
+    )
+    _write_continuation_successor_run(
+        successor.conditions[0],
+        3,
+        freeze_digest=successor.freeze_digest,
+        stack_session_id="c" * 64,
+    )
+
+    result = evaluate_indoor_campaign(successor)
+
+    assert "continuation_stack_session_mismatch" in result["conditions"][0]["blockers"]
+    assert result["conditions"][0]["next_run_index"] is None
+
+
+@pytest.mark.parametrize("field", ["sequence", "generation"])
+def test_indoor_continuation_rejects_successor_sequence_or_generation_drift(
+    tmp_path, monkeypatch, field
+):
+    _parent_path, _parent, _run1, _successor_path, successor = (
+        _write_indoor_continuation_inputs(tmp_path, monkeypatch)
+    )
+    root = _write_continuation_successor_run(
+        successor.conditions[0],
+        2,
+        freeze_digest=successor.freeze_digest,
+        stack_session_id="b" * 64,
+    )
+    manifest_path = root / "run_manifest.json"
+    summary_path = root / "run_summary.json"
+    episode = json.loads(manifest_path.read_text())
+    summary = json.loads(summary_path.read_text())
+    if field == "sequence":
+        episode["stack_episode_receipt"]["sequence"] = 2
+    else:
+        episode["reset_receipt"]["generation"] = 3
+        summary["reset_receipt"]["generation"] = 3
+    manifest_path.write_text(json.dumps(episode), encoding="utf-8")
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    _refresh_checksums(root)
+
+    result = evaluate_indoor_campaign(successor)
+
+    assert result["conditions"][0]["runs"][1]["status"] == "invalid_evidence"
+    assert result["conditions"][0]["next_run_index"] is None
+
+
+@pytest.mark.parametrize("next_run_index", [1, 21])
+def test_indoor_continuation_plan_rejects_run1_retry_or_run21(
+    tmp_path, monkeypatch, next_run_index
+):
+    _parent_path, _parent, _run1, _successor_path, successor = (
+        _write_indoor_continuation_inputs(tmp_path, monkeypatch)
+    )
+    aggregate = evaluate_indoor_campaign(successor)
+    aggregate["conditions"][0]["next_run_index"] = next_run_index
+
+    with pytest.raises(V6ContractError, match="cannot retry run1|beyond run20"):
+        v6_formal_module.indoor_dispatch_plan(successor, aggregate)
+
+
+def test_indoor_continuation_final_pass_has_dedicated_qualification(
+    tmp_path, monkeypatch
+):
+    _parent_path, _parent, _run1, _successor_path, successor = (
+        _write_indoor_continuation_inputs(tmp_path, monkeypatch)
+    )
+    for run_index in range(2, 21):
+        _write_continuation_successor_run(
+            successor.conditions[0],
+            run_index,
+            freeze_digest=successor.freeze_digest,
+            stack_session_id="b" * 64,
+            path_deviation_percent=10.0,
+        )
+    for condition, session in zip(successor.conditions[1:], ("d" * 64, "e" * 64)):
+        for run_index in range(1, 21):
+            _write_formal_run(
+                condition,
+                run_index,
+                strict_success=run_index <= 18,
+                formal_freeze_digest=successor.freeze_digest,
+                stack_session_id=session,
+            )
+
+    result = evaluate_indoor_campaign(successor)
+
+    assert result["qualification"] == (
+        "INDOOR_QUALIFICATION_PASS_WITH_STATIC_CONTINUATION"
+    )
+    assert result["campaign_status"] == result["qualification"]
+    assert result["qualification"] != "INDOOR_QUALIFICATION_PASS"
+    assert result["formal_qualification"] == NOT_QUALIFIED
+    static = result["conditions"][0]
+    assert static["strict_successes"] == 19
+    assert static["valid_episodes"] == 20
+    assert static["product_failures"] == 1
+    assert static["continuation"]["collision_count"] == 1
+    assert static["continuation"]["cold_starts"] == 2
+    assert static["continuation"]["hot_resets"] == 18
+    assert all(row["strict_successes"] == 18 for row in result["conditions"][1:])
+    assert result["continuation"]["static_result"] == (
+        "19/20 strict + 1 collision product failure"
+    )
+    assert result["continuation"]["parent_freeze_digest"] == (
+        successor.freeze["indoor_continuation"]["parent_manifest"]["freeze_digest"]
+    )
+    assert result["continuation"]["successor_freeze_digest"] == successor.freeze_digest
 
 
 def test_indoor_loader_rejects_physical_obstacle_identity_drift(
@@ -3005,6 +3752,73 @@ def test_indoor_execution_dispatches_exactly_one_episode(tmp_path, monkeypatch):
     assert result["formal_qualification"] == NOT_QUALIFIED
 
 
+def test_indoor_continuation_programmatic_dispatch_starts_at_run2_and_locks_epoch2_session(
+    tmp_path, monkeypatch
+):
+    _parent_path, _parent, _run1, _successor_path, successor = (
+        _write_indoor_continuation_inputs(tmp_path, monkeypatch)
+    )
+    contract_root = tmp_path / "continuation-live"
+    contract_root.mkdir()
+    contract = _live_stack_contract(contract_root, condition_id="indoor_static")
+    contract_payload = json.loads(contract.read_text())
+    parent_session = successor.freeze["indoor_continuation"]["preserved_run"][
+        "stack_session_id"
+    ]
+    assert contract_payload["stack_session_id"] != parent_session
+    third_root = tmp_path / "third-live"
+    third_root.mkdir()
+    third_contract = _live_stack_contract(third_root, condition_id="indoor_static")
+    monkeypatch.setenv("ROS_DOMAIN_ID", "150")
+    calls = []
+
+    def fake_run(command, *, check):
+        calls.append((command, check))
+        _write_continuation_successor_run(
+            successor.conditions[0],
+            2,
+            freeze_digest=successor.freeze_digest,
+            stack_session_id=contract_payload["stack_session_id"],
+        )
+
+    monkeypatch.setattr(v6_formal_module.subprocess, "run", fake_run)
+
+    result = execute_indoor_campaign(
+        successor,
+        condition_stack_id="indoor_static",
+        condition_stack_contract=contract,
+    )
+
+    assert len(calls) == 1
+    assert "run_indices:=2" in calls[0][0]
+    assert "run_indices:=1" not in calls[0][0]
+    assert result["present_episodes"] == 2
+    assert result["conditions"][0]["stack_session_id"] == contract_payload[
+        "stack_session_id"
+    ]
+    with pytest.raises(V6ContractError, match="live indoor stack session differs"):
+        execute_indoor_campaign(
+            successor,
+            condition_stack_id="indoor_static",
+            condition_stack_contract=third_contract,
+        )
+    assert len(calls) == 1
+    stale_payload = json.loads(contract.read_text())
+    stale_payload["pid"] = 99999999
+    stale_payload["stack_session_id"] = v6_formal_module._stack_session_id(
+        stale_payload
+    )
+    stale_contract = tmp_path / "stale-stack.json"
+    stale_contract.write_text(json.dumps(stale_payload), encoding="utf-8")
+    with pytest.raises(V6ContractError, match="process is not live"):
+        execute_indoor_campaign(
+            successor,
+            condition_stack_id="indoor_static",
+            condition_stack_contract=stale_contract,
+        )
+    assert len(calls) == 1
+
+
 def test_indoor_execution_keeps_valid_failure_and_advances_identity(
     tmp_path, monkeypatch
 ):
@@ -3305,9 +4119,22 @@ def test_indoor_final_cross_checks_contact_sensor_product_failure(
     assert result["blockers"] == []
 
 
-@pytest.mark.parametrize("metric", [None, float("nan")])
-def test_indoor_static_requires_nonnull_finite_executed_path_deviation(
-    tmp_path, monkeypatch, metric
+@pytest.mark.parametrize(
+    ("summary_metric", "episode_metric", "expected_status"),
+    [
+        (None, None, "product_failure"),
+        (float("nan"), float("nan"), "invalid_evidence"),
+        (float("inf"), float("inf"), "invalid_evidence"),
+        (None, 10.0, "invalid_evidence"),
+        (10.0, None, "invalid_evidence"),
+        (10.0, 11.0, "invalid_evidence"),
+        (20.0, 20.0, "product_failure"),
+        (21.0, 21.0, "product_failure"),
+        (19.9, 19.9, "strict_success"),
+    ],
+)
+def test_indoor_static_metric_pair_classification(
+    tmp_path, monkeypatch, summary_metric, episode_metric, expected_status
 ):
     pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
     monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
@@ -3327,15 +4154,48 @@ def test_indoor_static_requires_nonnull_finite_executed_path_deviation(
     manifest_path = root / "run_manifest.json"
     summary = json.loads(summary_path.read_text())
     episode = json.loads(manifest_path.read_text())
-    summary["path_deviation_percent"] = metric
-    episode["metrics"]["path_deviation_percent"] = metric
+    summary["path_deviation_percent"] = summary_metric
+    episode["metrics"]["path_deviation_percent"] = episode_metric
     summary_path.write_text(json.dumps(summary), encoding="utf-8")
     manifest_path.write_text(json.dumps(episode), encoding="utf-8")
     _refresh_checksums(root)
 
     result = evaluate_indoor_campaign(campaign)
 
-    assert result["campaign_status"] == "STOP_INVALID"
+    run = result["conditions"][0]["runs"][0]
+    assert run["status"] == expected_status
+    if expected_status == "invalid_evidence":
+        assert result["campaign_status"] == "STOP_INVALID"
+    else:
+        assert result["valid_episodes"] == 1
+
+
+def test_indoor_static_null_metric_still_requires_reference_hash(
+    tmp_path, monkeypatch
+):
+    pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+    campaign = freeze_indoor_campaign_from_pilot(
+        pilot_manifest_path=pilot_manifest,
+        pilot_aggregate_path=aggregate,
+        output_manifest_path=tmp_path / "indoor.json",
+        indoor_output_root=tmp_path / "nas" / "indoor-60",
+    )
+    root = _write_formal_run(
+        campaign.conditions[0],
+        1,
+        strict_success=False,
+        formal_freeze_digest=campaign.freeze_digest,
+        path_deviation_percent=None,
+    )
+    manifest_path = root / "run_manifest.json"
+    episode = json.loads(manifest_path.read_text())
+    episode["optimal_reference_hash"] = "0" * 64
+    manifest_path.write_text(json.dumps(episode), encoding="utf-8")
+    _refresh_checksums(root)
+
+    result = evaluate_indoor_campaign(campaign)
+
     assert result["conditions"][0]["runs"][0]["status"] == "invalid_evidence"
 
 
@@ -3438,6 +4298,10 @@ def test_formal_shell_requires_and_forwards_condition_stack_id():
     assert "--execute-indoor" in source
     assert "indoor execution requires stack ID and contract path" in source
     assert '--indoor-manifest "$manifest"' in source
+    assert "--continue-indoor PARENT_MANIFEST SUCCESSOR_MANIFEST SUCCESSOR_OUTPUT_ROOT" in source
+    assert '--continue-indoor-parent "$1"' in source
+    assert '--continuation-output-manifest "$2"' in source
+    assert '--continuation-output-root "$3"' in source
 
 
 def test_run_experiment_forwards_effective_spawn_exactly_once(tmp_path):

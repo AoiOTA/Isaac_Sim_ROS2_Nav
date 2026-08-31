@@ -49,6 +49,7 @@ SUFFICIENT_PILOT_AGGREGATE_SCHEMA = "bio_nav_v6_sufficient_pilot_aggregate_v1"
 INDOOR_PILOT_MANIFEST_SCHEMA = "bio_nav_v6_indoor_pilot_manifest_v2"
 INDOOR_PILOT_AGGREGATE_SCHEMA = "bio_nav_v6_indoor_pilot_aggregate_v2"
 INDOOR_CAMPAIGN_SCHEMA_VERSION = "bio_nav_v6_indoor_campaign_v2"
+INDOOR_CONTINUATION_SCHEMA_VERSION = "bio_nav.v6_indoor_continuation.v1"
 FORMAL_NAS_ROOT = Path("/mnt/nas_home")
 PILOT_SCENARIO_FILENAMES = {
     "indoor_static": "v6_final_kujiale_static.yaml",
@@ -408,6 +409,15 @@ def _validate_formal_freeze(
     if expected_physical_contracts is not None:
         required_freeze_keys.add("physical_contracts")
         required_freeze_keys.add("validator_only_head_promotion")
+        continuation_present = isinstance(value, Mapping) and (
+            "indoor_continuation" in value
+            or "qualification_tooling_promotion" in value
+        )
+        if continuation_present:
+            required_freeze_keys.update({
+                "indoor_continuation",
+                "qualification_tooling_promotion",
+            })
     _require_exact_keys(
         freeze,
         required_freeze_keys,
@@ -581,6 +591,15 @@ def _validate_formal_freeze(
             freeze.get("validator_only_head_promotion"),
             "freeze.validator_only_head_promotion",
         ))
+        if continuation_present:
+            normalized["indoor_continuation"] = dict(_mapping(
+                freeze.get("indoor_continuation"),
+                "freeze.indoor_continuation",
+            ))
+            normalized["qualification_tooling_promotion"] = dict(_mapping(
+                freeze.get("qualification_tooling_promotion"),
+                "freeze.qualification_tooling_promotion",
+            ))
     canonical = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
     return normalized, hashlib.sha256(canonical.encode()).hexdigest()
 
@@ -1549,10 +1568,1145 @@ def _pilot_freeze_from_validator_promotion(
     return pilot_freeze
 
 
+def _qualification_tooling_ast_guard(
+    repository: Path, from_head: str, to_head: str
+) -> None:
+    import ast
+    import copy
+
+    relative_path = "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py"
+    sources = []
+    for head in (from_head, to_head):
+        value = _validator_only_git_output(
+            repository, ["show", f"{head}:{relative_path}"], binary=False
+        )
+        assert isinstance(value, str)
+        sources.append(value)
+    trees = [
+        ast.parse(source, filename=relative_path, type_comments=True)
+        for source in sources
+    ]
+    body_only_names = {
+        "_validate_formal_freeze",
+        "load_indoor_campaign_manifest",
+        "_evaluate_campaign",
+        "evaluate_indoor_campaign",
+        "indoor_dispatch_plan",
+        "execute_indoor_campaign",
+        "build_parser",
+        "cli",
+    }
+    new_helper_shapes = {
+        "_qualification_tooling_ast_guard": (
+            ("repository", "from_head", "to_head"), ()
+        ),
+        "_qualification_source_identity": (
+            ("module3_root", "current_head", "relative_path"), ()
+        ),
+        "_validate_historical_validator_promotion": (
+            ("value",), ("parent_freeze",)
+        ),
+        "_validate_qualification_tooling_promotion": (
+            ("value",), ("freeze", "parent_freeze")
+        ),
+        "_build_qualification_tooling_promotion": (
+            (), ("freeze", "parent_freeze")
+        ),
+        "_indoor_continuation_parent_expectations": ((), ()),
+        "_continuation_lexical_path": (
+            ("value",), ("field", "must_exist", "leaf_kind")
+        ),
+        "_continuation_cli_argv_error": (("argv",), ()),
+        "_validate_indoor_continuation_contract": (("manifest",), ()),
+        "create_indoor_continuation_campaign": (
+            (),
+            (
+                "parent_manifest_path",
+                "output_manifest_path",
+                "successor_output_root",
+            ),
+        ),
+    }
+
+    def keyed(tree: ast.Module) -> dict[str, ast.AST]:
+        rows: dict[str, ast.AST] = {}
+        anonymous: dict[str, int] = {}
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                key = f"{type(node).__name__}:{node.name}"
+            elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(
+                node.targets[0], ast.Name
+            ):
+                key = f"Assign:{node.targets[0].id}"
+            else:
+                kind = type(node).__name__
+                index = anonymous.get(kind, 0)
+                anonymous[kind] = index + 1
+                key = f"{kind}:#{index}"
+            if key in rows:
+                raise V6ContractError(
+                    f"qualification tooling promotion duplicated symbol: {key}"
+                )
+            rows[key] = node
+        return rows
+
+    before_nodes, after_nodes = (keyed(tree) for tree in trees)
+    protected_before = []
+    protected_after = []
+    for source, nodes, target in (
+        (sources[0], before_nodes, protected_before),
+        (sources[1], after_nodes, protected_after),
+    ):
+        for key, node in nodes.items():
+            name = key.split(":", 1)[1]
+            if (
+                key == "Assign:INDOOR_CONTINUATION_SCHEMA_VERSION"
+                or name in body_only_names
+                or name in new_helper_shapes
+            ):
+                continue
+            target.append((
+                key,
+                ast.get_source_segment(source, node),
+                ast.dump(node, include_attributes=False),
+            ))
+    if protected_before != protected_after:
+        raise V6ContractError(
+            "qualification tooling promotion changed protected v6_formal symbols"
+        )
+    for name in body_only_names:
+        key = f"FunctionDef:{name}"
+        before = before_nodes.get(key)
+        after = after_nodes.get(key)
+        if not isinstance(before, ast.FunctionDef) or not isinstance(after, ast.FunctionDef):
+            raise V6ContractError(
+                f"qualification tooling callable missing or changed kind: {name}"
+            )
+        headers = []
+        for node in (before, after):
+            header = copy.deepcopy(node)
+            header.body = [ast.Pass()]
+            headers.append(ast.dump(header, include_attributes=False))
+        if headers[0] != headers[1]:
+            raise V6ContractError(
+                f"qualification tooling callable signature changed: {name}"
+            )
+    continuation_constant = after_nodes.get(
+        "Assign:INDOOR_CONTINUATION_SCHEMA_VERSION"
+    )
+    if "Assign:INDOOR_CONTINUATION_SCHEMA_VERSION" in before_nodes or not (
+        isinstance(continuation_constant, ast.Assign)
+        and len(continuation_constant.targets) == 1
+        and isinstance(continuation_constant.targets[0], ast.Name)
+        and continuation_constant.targets[0].id
+        == "INDOOR_CONTINUATION_SCHEMA_VERSION"
+        and isinstance(continuation_constant.value, ast.Constant)
+        and continuation_constant.value.value == INDOOR_CONTINUATION_SCHEMA_VERSION
+    ):
+        raise V6ContractError("qualification tooling continuation schema constant invalid")
+    for name, (positional, keyword_only) in new_helper_shapes.items():
+        if f"FunctionDef:{name}" in before_nodes:
+            raise V6ContractError(
+                f"qualification tooling helper existed before promotion: {name}"
+            )
+        node = after_nodes.get(f"FunctionDef:{name}")
+        if not isinstance(node, ast.FunctionDef) or node.decorator_list:
+            raise V6ContractError(
+                f"qualification tooling helper kind/decorator mismatch: {name}"
+            )
+        arguments = node.args
+        actual_positional = tuple(
+            item.arg for item in (*arguments.posonlyargs, *arguments.args)
+        )
+        actual_keyword_only = tuple(item.arg for item in arguments.kwonlyargs)
+        if (
+            actual_positional != positional
+            or actual_keyword_only != keyword_only
+            or arguments.vararg is not None
+            or arguments.kwarg is not None
+            or arguments.defaults
+            or any(value is not None for value in arguments.kw_defaults)
+        ):
+            raise V6ContractError(
+                f"qualification tooling helper signature/default mismatch: {name}"
+            )
+
+
+def _qualification_source_identity(
+    module3_root: Path, current_head: str, relative_path: str
+) -> dict[str, str]:
+    source_path = (module3_root / relative_path).resolve()
+    tracked = _validator_only_git_output(
+        module3_root, ["show", f"{current_head}:{relative_path}"], binary=True
+    )
+    assert isinstance(tracked, bytes)
+    if not source_path.is_file() or source_path.read_bytes() != tracked:
+        raise V6ContractError(
+            f"qualification tooling source differs from current HEAD: {relative_path}"
+        )
+    blob = str(_validator_only_git_output(
+        module3_root,
+        ["rev-parse", f"{current_head}:{relative_path}"],
+        binary=False,
+    )).strip()
+    return {
+        "path": str(source_path),
+        "sha256": hashlib.sha256(tracked).hexdigest(),
+        "git_blob_oid": blob,
+        "current_head": current_head,
+    }
+
+
+def _validate_historical_validator_promotion(
+    value: Any, *, parent_freeze: Mapping[str, Any]
+) -> dict[str, Any]:
+    promotion = dict(_mapping(value, "historical_validator_promotion"))
+    if promotion.get("schema") != "bio_nav.v6_validator_only_head_promotion.v1":
+        raise V6ContractError("historical validator promotion schema mismatch")
+    if promotion.get("final_repositories") != parent_freeze["repositories"]:
+        raise V6ContractError("historical validator promotion final tuple mismatch")
+    runtime = _mapping(promotion.get("pilot_runtime"), "historical pilot_runtime")
+    repositories = _mapping(runtime.get("repositories"), "historical repositories")
+    if (
+        repositories.get("integration") != parent_freeze["repositories"]["integration"]
+        or repositories.get("module2") != parent_freeze["repositories"]["module2"]
+        or runtime.get("driver_version") != parent_freeze["driver_version"]
+        or runtime.get("kernel_release") != parent_freeze["kernel_release"]
+    ):
+        raise V6ContractError("historical validator promotion Pilot tuple mismatch")
+    module3_root = Path(parent_freeze["repositories"]["module3"]["path"]).resolve()
+    from_head = str(repositories["module3"]["head"])
+    to_head = str(parent_freeze["repositories"]["module3"]["head"])
+    try:
+        subprocess.run(
+            ["git", "-C", str(module3_root), "merge-base", "--is-ancestor", from_head, to_head],
+            check=True,
+            capture_output=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise V6ContractError("historical validator promotion is not ancestral") from exc
+    rows, digest = _validator_only_diff_evidence(module3_root, from_head, to_head)
+    module3_diff = _mapping(promotion.get("module3_diff"), "historical module3_diff")
+    if not (
+        module3_diff.get("from_head") == from_head
+        and module3_diff.get("to_head") == to_head
+        and module3_diff.get("from_is_ancestor") is True
+        and module3_diff.get("name_status") == rows
+        and module3_diff.get("canonical_diff_sha256") == digest
+    ):
+        raise V6ContractError("historical validator promotion diff mismatch")
+    _validator_only_ast_guard(module3_root, from_head, to_head)
+    loaded = _mapping(promotion.get("loaded_validator"), "historical loaded_validator")
+    relative = "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py"
+    source = _validator_only_git_output(
+        module3_root, ["show", f"{to_head}:{relative}"], binary=True
+    )
+    assert isinstance(source, bytes)
+    blob = str(_validator_only_git_output(
+        module3_root, ["rev-parse", f"{to_head}:{relative}"], binary=False
+    )).strip()
+    if not (
+        loaded.get("module") == "robot_experiments.experiment_runner"
+        and loaded.get("symbol") == "validate_recorded_run_evidence"
+        and Path(str(loaded.get("source_path", ""))).resolve()
+        == (module3_root / relative).resolve()
+        and loaded.get("source_sha256") == hashlib.sha256(source).hexdigest()
+        and loaded.get("git_blob_oid") == blob
+        and loaded.get("current_head") == to_head
+    ):
+        raise V6ContractError("historical validator identity mismatch")
+    return promotion
+
+
+def _validate_qualification_tooling_promotion(
+    value: Any,
+    *,
+    freeze: Mapping[str, Any],
+    parent_freeze: Mapping[str, Any],
+) -> dict[str, Any]:
+    promotion = dict(_mapping(value, "qualification_tooling_promotion"))
+    _require_exact_keys(
+        promotion,
+        {
+            "schema", "from_head", "to_head", "from_is_ancestor",
+            "name_status", "canonical_diff_sha256", "v6_formal", "wrapper",
+            "unchanged_files", "parent_validator_promotion_sha256",
+        },
+        "qualification_tooling_promotion",
+    )
+    if promotion.get("schema") != "bio_nav.v6_indoor_qualification_tooling_promotion.v1":
+        raise V6ContractError("qualification tooling promotion schema mismatch")
+    if (
+        freeze["repositories"]["integration"]
+        != parent_freeze["repositories"]["integration"]
+        or freeze["repositories"]["module2"]
+        != parent_freeze["repositories"]["module2"]
+    ):
+        raise V6ContractError("qualification tooling promotion changed Integration/Module2")
+    module3_root = Path(freeze["repositories"]["module3"]["path"]).resolve()
+    from_head = str(parent_freeze["repositories"]["module3"]["head"])
+    to_head = str(freeze["repositories"]["module3"]["head"])
+    current_head = str(_validator_only_git_output(
+        module3_root, ["rev-parse", "HEAD"], binary=False
+    )).strip()
+    if current_head != to_head or _repository_tracked_dirty(module3_root):
+        raise V6ContractError("qualification tooling current checkout drift")
+    try:
+        subprocess.run(
+            ["git", "-C", str(module3_root), "merge-base", "--is-ancestor", from_head, to_head],
+            check=True,
+            capture_output=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise V6ContractError("qualification tooling promotion is not ancestral") from exc
+    rows, digest = _validator_only_diff_evidence(module3_root, from_head, to_head)
+    allowed = {
+        "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py",
+        "ros2_ws/src/robot_experiments/test/test_v6_formal.py",
+        "scripts/run_v6_formal_episode.sh",
+    }
+    if (
+        {row["path"] for row in rows} != allowed
+        or any(row["status"] != "M" for row in rows)
+        or promotion.get("from_head") != from_head
+        or promotion.get("to_head") != to_head
+        or promotion.get("from_is_ancestor") is not True
+        or promotion.get("name_status") != rows
+        or promotion.get("canonical_diff_sha256") != digest
+    ):
+        raise V6ContractError("qualification tooling promotion diff mismatch")
+    _qualification_tooling_ast_guard(module3_root, from_head, to_head)
+    identities = {
+        "v6_formal": _qualification_source_identity(
+            module3_root,
+            to_head,
+            "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py",
+        ),
+        "wrapper": _qualification_source_identity(
+            module3_root, to_head, "scripts/run_v6_formal_episode.sh"
+        ),
+    }
+    if promotion.get("v6_formal") != identities["v6_formal"] or promotion.get(
+        "wrapper"
+    ) != identities["wrapper"]:
+        raise V6ContractError("qualification tooling source identity mismatch")
+    if freeze.get("v6_formal") != {
+        "path": identities["v6_formal"]["path"],
+        "sha256": identities["v6_formal"]["sha256"],
+    }:
+        raise V6ContractError("qualification tooling freeze/v6_formal binding mismatch")
+    unchanged_paths = {
+        "experiment_runner": "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py",
+        "t2_selector": "scripts/run_v6_kujiale_low_obstacles.sh",
+        "experiment_launch": "ros2_ws/src/robot_experiments/launch/experiment.launch.py",
+    }
+    unchanged = {}
+    for name, relative in unchanged_paths.items():
+        before = _validator_only_git_output(
+            module3_root, ["show", f"{from_head}:{relative}"], binary=True
+        )
+        after = _validator_only_git_output(
+            module3_root, ["show", f"{to_head}:{relative}"], binary=True
+        )
+        assert isinstance(before, bytes) and isinstance(after, bytes)
+        if before != after:
+            raise V6ContractError(f"qualification tooling changed active file: {name}")
+        unchanged[name] = {
+            "path": str((module3_root / relative).resolve()),
+            "sha256": hashlib.sha256(after).hexdigest(),
+        }
+    if promotion.get("unchanged_files") != unchanged:
+        raise V6ContractError("qualification tooling unchanged-file record mismatch")
+    parent_promotion = parent_freeze["validator_only_head_promotion"]
+    parent_promotion_sha = hashlib.sha256(
+        json.dumps(parent_promotion, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    if promotion.get("parent_validator_promotion_sha256") != parent_promotion_sha:
+        raise V6ContractError("qualification tooling parent promotion binding mismatch")
+    return promotion
+
+
+def _build_qualification_tooling_promotion(
+    *, freeze: Mapping[str, Any], parent_freeze: Mapping[str, Any]
+) -> dict[str, Any]:
+    module3_root = Path(freeze["repositories"]["module3"]["path"]).resolve()
+    from_head = str(parent_freeze["repositories"]["module3"]["head"])
+    to_head = str(freeze["repositories"]["module3"]["head"])
+    rows, digest = _validator_only_diff_evidence(module3_root, from_head, to_head)
+    unchanged_paths = {
+        "experiment_runner": "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py",
+        "t2_selector": "scripts/run_v6_kujiale_low_obstacles.sh",
+        "experiment_launch": "ros2_ws/src/robot_experiments/launch/experiment.launch.py",
+    }
+    unchanged = {
+        name: {
+            "path": str((module3_root / relative).resolve()),
+            "sha256": hashlib.sha256(
+                module3_root.joinpath(relative).read_bytes()
+            ).hexdigest(),
+        }
+        for name, relative in unchanged_paths.items()
+    }
+    parent_promotion = parent_freeze["validator_only_head_promotion"]
+    candidate = {
+        "schema": "bio_nav.v6_indoor_qualification_tooling_promotion.v1",
+        "from_head": from_head,
+        "to_head": to_head,
+        "from_is_ancestor": True,
+        "name_status": rows,
+        "canonical_diff_sha256": digest,
+        "v6_formal": _qualification_source_identity(
+            module3_root,
+            to_head,
+            "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py",
+        ),
+        "wrapper": _qualification_source_identity(
+            module3_root, to_head, "scripts/run_v6_formal_episode.sh"
+        ),
+        "unchanged_files": unchanged,
+        "parent_validator_promotion_sha256": hashlib.sha256(
+            json.dumps(parent_promotion, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+    }
+    return _validate_qualification_tooling_promotion(
+        candidate, freeze=freeze, parent_freeze=parent_freeze
+    )
+
+
+def _indoor_continuation_parent_expectations() -> dict[str, Any]:
+    parent_manifest = Path(
+        "/mnt/nas_home/Bio_Nav_Data/experiments/pilots/"
+        "v6_indoor_refreeze_c0c4d973_20260830T230825Z/indoor_campaign.json"
+    )
+    parent_output = Path(
+        "/mnt/nas_home/Bio_Nav_Data/experiments/formal/"
+        "v6_indoor_3x20_c0c4d973_20260830T230825Z"
+    )
+    run_root = (
+        parent_output
+        / "indoor_static"
+        / "v6_final_kujiale_static"
+        / "run-0001-seed-8601"
+    )
+    return {
+        "parent_manifest": str(parent_manifest),
+        "parent_manifest_sha256": (
+            "144704d951a76777337ab564d20d9ed1b21992f56f9c341fc96c62bf6d75674b"
+        ),
+        "parent_freeze_digest": (
+            "67dc31ebbb5ff2f1fdb9d924834ff0aab02ba86c3988fa936e88a558de28a03e"
+        ),
+        "parent_output_root": str(parent_output),
+        "preserved_run_root": str(run_root),
+        "stack_session_id": (
+            "36607c86784dca24f36a080412796b89094200680b0f1a39f6a4a0a1e90c78ce"
+        ),
+        "files": {
+            "manifest": "1e8d82ec376e79058d6b8b74fd1ed20389ba587b6fd4123268c21d7cfc4680cf",
+            "summary": "21dc2bcd81b1ca0c05e3006b539e8f039c36fd23ae80f5f140fe454d13b62841",
+            "trial": "ffdc5d542ba68c21e1507a0288cada9bdd99b285442c80afe8053d7646a60d3b",
+            "checksums": "7d85d3705bd8ba65af3f704bf8183f020f378ca8956c3dfac92ab18a17774549",
+            "stack_contract": "95a0ab6e0dbcc86ea27675e5a2c17b961d42647877d953ab820f53590b52c734",
+        },
+    }
+
+
+def _continuation_lexical_path(
+    value: str | Path,
+    *,
+    field: str,
+    must_exist: bool,
+    leaf_kind: str,
+) -> Path:
+    import stat
+
+    path = Path(value).expanduser()
+    base = Path(FORMAL_NAS_ROOT).expanduser()
+    if (
+        not path.is_absolute()
+        or not base.is_absolute()
+        or ".." in path.parts
+        or leaf_kind not in {"file", "directory", "absent"}
+        or (must_exist and leaf_kind == "absent")
+        or (not must_exist and leaf_kind != "absent")
+    ):
+        raise V6ContractError(f"{field} lexical path contract is invalid")
+    try:
+        relative = path.relative_to(base)
+    except ValueError as exc:
+        raise V6ContractError(f"{field} escapes the trusted NAS base") from exc
+    if not relative.parts:
+        raise V6ContractError(f"{field} cannot be the trusted NAS base")
+    current = base
+    components = (base,)
+    for part in relative.parts:
+        current = current / part
+        components = (*components, current)
+    for index, component in enumerate(components):
+        is_leaf = index == len(components) - 1
+        exists = os.path.lexists(component)
+        if not exists:
+            if is_leaf and not must_exist:
+                return path
+            raise V6ContractError(f"{field} component does not exist: {component}")
+        mode = os.lstat(component).st_mode
+        if stat.S_ISLNK(mode):
+            raise V6ContractError(f"{field} contains a symlink: {component}")
+        if not is_leaf and not stat.S_ISDIR(mode):
+            raise V6ContractError(f"{field} parent component is not a directory")
+        if is_leaf and must_exist:
+            if leaf_kind == "file" and not stat.S_ISREG(mode):
+                raise V6ContractError(f"{field} leaf is not a regular file")
+            if leaf_kind == "directory" and not stat.S_ISDIR(mode):
+                raise V6ContractError(f"{field} leaf is not a directory")
+    return path
+
+
+def _continuation_cli_argv_error(argv: list[str]) -> str | None:
+    required = {
+        "--continue-indoor-parent",
+        "--continuation-output-manifest",
+        "--continuation-output-root",
+    }
+    if not any(
+        token == name or token.startswith(f"{name}=")
+        for token in argv
+        for name in required
+    ):
+        return None
+    if len(argv) != 6 or any(argv.count(name) != 1 for name in required):
+        return "continuation mode requires exactly three unique path options"
+    for index in range(0, len(argv), 2):
+        if argv[index] not in required or argv[index + 1].startswith("--"):
+            return "continuation mode accepts only its three path options"
+    if {argv[index] for index in range(0, len(argv), 2)} != required:
+        return "continuation mode path options are incomplete"
+    return None
+
+
+def _validate_indoor_continuation_contract(
+    manifest: IndoorCampaignManifest,
+) -> dict[str, Any]:
+    record = dict(_mapping(
+        manifest.freeze.get("indoor_continuation"), "indoor_continuation"
+    ))
+    _require_exact_keys(
+        record,
+        {
+            "schema", "reason", "condition_id", "preserved_run_index",
+            "continuation_count", "parent_manifest", "parent_output_root",
+            "successor_output_root", "preserved_run", "epochs",
+        },
+        "indoor_continuation",
+    )
+    if not (
+        record.get("schema") == INDOOR_CONTINUATION_SCHEMA_VERSION
+        and record.get("reason") == "tooling_invalid_after_valid_episode"
+        and record.get("condition_id") == "indoor_static"
+        and record.get("preserved_run_index") == 1
+        and record.get("continuation_count") == 1
+    ):
+        raise V6ContractError("indoor continuation identity/reason mismatch")
+    _continuation_lexical_path(
+        manifest.path,
+        field="indoor continuation successor manifest",
+        must_exist=True,
+        leaf_kind="file",
+    )
+    expected_parent = _indoor_continuation_parent_expectations()
+    parent_manifest_record = _mapping(
+        record.get("parent_manifest"), "indoor_continuation.parent_manifest"
+    )
+    _require_exact_keys(
+        parent_manifest_record,
+        {"path", "sha256", "freeze_digest"},
+        "indoor_continuation.parent_manifest",
+    )
+    _continuation_lexical_path(
+        parent_manifest_record["path"],
+        field="indoor continuation parent manifest",
+        must_exist=True,
+        leaf_kind="file",
+    )
+    parent_manifest_entry = _validate_frozen_file(
+        {
+            "path": parent_manifest_record["path"],
+            "sha256": parent_manifest_record["sha256"],
+        },
+        "indoor_continuation.parent_manifest",
+    )
+    parent_manifest_path = Path(parent_manifest_entry["path"])
+    expected_preserved = (
+        record.get("preserved_run")
+        if isinstance(record.get("preserved_run"), Mapping)
+        else {}
+    )
+    expected_files = (
+        expected_preserved.get("files")
+        if isinstance(expected_preserved.get("files"), Mapping)
+        else {}
+    )
+    if not (
+        str(parent_manifest_path) == expected_parent["parent_manifest"]
+        and parent_manifest_entry["sha256"]
+        == expected_parent["parent_manifest_sha256"]
+        and parent_manifest_record.get("freeze_digest")
+        == expected_parent["parent_freeze_digest"]
+        and record.get("parent_output_root") == expected_parent["parent_output_root"]
+        and expected_preserved.get("root") == expected_parent["preserved_run_root"]
+        and expected_preserved.get("stack_session_id")
+        == expected_parent["stack_session_id"]
+        and {
+            name: row.get("sha256")
+            for name, row in expected_files.items()
+            if isinstance(row, Mapping)
+        }
+        == expected_parent["files"]
+    ):
+        raise V6ContractError("indoor continuation is not bound to the approved parent")
+    try:
+        parent_raw = dict(_mapping(
+            json.loads(parent_manifest_path.read_text(encoding="utf-8")),
+            "indoor_continuation.parent_manifest.document",
+        ))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise V6ContractError(f"indoor continuation parent manifest unreadable: {exc}") from exc
+    if parent_raw.get("schema_version") != INDOOR_CAMPAIGN_SCHEMA_VERSION:
+        raise V6ContractError("indoor continuation parent must be an indoor v2 campaign")
+    parent_freeze = _mapping(parent_raw.get("freeze"), "indoor continuation parent freeze")
+    parent_digest = hashlib.sha256(
+        json.dumps(parent_freeze, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    if parent_manifest_record.get("freeze_digest") != parent_digest:
+        raise V6ContractError("indoor continuation parent freeze digest mismatch")
+    _validate_historical_validator_promotion(
+        parent_freeze.get("validator_only_head_promotion"),
+        parent_freeze=parent_freeze,
+    )
+    _validate_qualification_tooling_promotion(
+        manifest.freeze.get("qualification_tooling_promotion"),
+        freeze=manifest.freeze,
+        parent_freeze=parent_freeze,
+    )
+    invariant_keys = {
+        "driver_version", "kernel_release", "scenarios", "scenario_configs",
+        "physical_contracts", "frozen_assets", "runner_entrypoint",
+        "experiment_runner", "validator_only_head_promotion",
+    }
+    def invariant_value(freeze_value: Mapping[str, Any], key: str) -> Any:
+        value = freeze_value.get(key)
+        if key != "scenario_configs" or not isinstance(value, Mapping):
+            return value
+        return {
+            condition_id: sorted(
+                rows,
+                key=lambda row: str(row.get("path", "")),
+            )
+            for condition_id, rows in value.items()
+        }
+    if any(
+        invariant_value(manifest.freeze, key) != invariant_value(parent_freeze, key)
+        for key in invariant_keys
+    ):
+        raise V6ContractError("indoor continuation changed frozen product/scenario/assets")
+    if (
+        manifest.freeze["repositories"]["integration"]
+        != parent_freeze["repositories"]["integration"]
+        or manifest.freeze["repositories"]["module2"]
+        != parent_freeze["repositories"]["module2"]
+    ):
+        raise V6ContractError("indoor continuation changed Integration/Module2 tuple")
+    parent_conditions = parent_raw.get("conditions")
+    if not isinstance(parent_conditions, list) or len(parent_conditions) != 3:
+        raise V6ContractError("indoor continuation parent condition set invalid")
+    parent_by_id = {
+        str(_mapping(row, "parent conditions[]").get("id")): row
+        for row in parent_conditions
+    }
+    parent_output = Path(str(record.get("parent_output_root", ""))).expanduser()
+    successor_output = Path(str(record.get("successor_output_root", ""))).expanduser()
+    _continuation_lexical_path(
+        parent_output,
+        field="indoor continuation parent output root",
+        must_exist=True,
+        leaf_kind="directory",
+    )
+    _continuation_lexical_path(
+        successor_output,
+        field="indoor continuation successor output root",
+        must_exist=True,
+        leaf_kind="directory",
+    )
+    if not parent_output.is_absolute() or not successor_output.is_absolute():
+        raise V6ContractError("indoor continuation output roots must be absolute")
+    parent_output = parent_output.resolve()
+    successor_output = successor_output.resolve()
+    if (
+        parent_output == successor_output
+        or parent_output in successor_output.parents
+        or successor_output in parent_output.parents
+        or parent_output.is_symlink()
+        or successor_output.is_symlink()
+    ):
+        raise V6ContractError("indoor continuation output roots overlap or use symlinks")
+    if Path(str(parent_by_id["indoor_static"].get("output_directory", ""))).resolve() != (
+        parent_output / "indoor_static"
+    ):
+        raise V6ContractError("indoor continuation parent output binding mismatch")
+    successor_by_id = {condition.condition_id: condition for condition in manifest.conditions}
+    if any(
+        successor_by_id[condition_id].output_directory
+        != successor_output / condition_id
+        for condition_id in INDOOR_CONDITION_IDS
+    ):
+        raise V6ContractError("indoor continuation successor output binding mismatch")
+    preserved = _mapping(record.get("preserved_run"), "indoor_continuation.preserved_run")
+    _require_exact_keys(
+        preserved,
+        {
+            "root", "scenario_id", "seed", "files", "stack_session_id",
+            "sequence", "reset_generation", "classification",
+            "collision_detected", "physical_collision_free",
+            "path_deviation_percent",
+        },
+        "indoor_continuation.preserved_run",
+    )
+    static = successor_by_id["indoor_static"]
+    expected_root = (
+        parent_output / "indoor_static" / static.scenario_id / "run-0001-seed-8601"
+    ).resolve()
+    preserved_lexical = Path(str(preserved.get("root", ""))).expanduser()
+    _continuation_lexical_path(
+        preserved_lexical,
+        field="indoor continuation preserved run root",
+        must_exist=True,
+        leaf_kind="directory",
+    )
+    preserved_root = preserved_lexical.resolve()
+    if preserved_root != expected_root or preserved_root.is_symlink():
+        raise V6ContractError("indoor continuation preserved run root mismatch")
+    expected_file_names = {
+        "manifest": "run_manifest.json",
+        "summary": "run_summary.json",
+        "trial": "TRIAL_DISPATCHED.json",
+        "checksums": "checksums.sha256",
+        "stack_contract": "stack_contract.json",
+    }
+    files = _mapping(preserved.get("files"), "indoor_continuation.preserved_run.files")
+    _require_exact_keys(files, set(expected_file_names), "indoor_continuation.preserved_run.files")
+    for name in expected_file_names:
+        entry = _mapping(
+            files[name], f"indoor_continuation.preserved_run.files.{name}"
+        )
+        _continuation_lexical_path(
+            entry.get("path", ""),
+            field=f"indoor continuation preserved {name}",
+            must_exist=True,
+            leaf_kind="file",
+        )
+    validated_files = {
+        name: _validate_frozen_file(
+            files.get(name), f"indoor_continuation.preserved_run.files.{name}",
+            expected_path=preserved_root / filename,
+        )
+        for name, filename in expected_file_names.items()
+    }
+    try:
+        from robot_experiments.experiment_runner import (
+            ExperimentRunner,
+            RECORDED_TOPIC_TYPES,
+            _mcap_inventory_evidence,
+            _mcap_required_topic_coverage,
+            _route_prior_application_evidence,
+        )
+    except ImportError as exc:
+        raise V6ContractError("indoor continuation validator import failed") from exc
+    if not ExperimentRunner._checksums_are_verified(preserved_root):
+        raise V6ContractError("indoor continuation preserved full checksums failed")
+    try:
+        episode = json.loads(Path(validated_files["manifest"]["path"]).read_text())
+        summary = json.loads(Path(validated_files["summary"]["path"]).read_text())
+        trial = json.loads(Path(validated_files["trial"]["path"]).read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise V6ContractError(f"indoor continuation preserved evidence unreadable: {exc}") from exc
+    inventory = _mcap_inventory_evidence(preserved_root)
+    coverage = _mcap_required_topic_coverage(
+        preserved_root / "telemetry" / "metadata.yaml",
+        scene="indoor",
+        route_guided=True,
+    )
+    stored_coverage = summary.get("required_topic_coverage")
+    coverage_keys = {
+        "required_topics", "message_counts", "forbidden_topics",
+        "forbidden_message_counts", "observed_forbidden_topics", "passed",
+    }
+    coverage_matches = bool(
+        isinstance(stored_coverage, Mapping)
+        and all(stored_coverage.get(key) == coverage.get(key) for key in coverage_keys)
+    )
+    route_prior = _route_prior_application_evidence(
+        list(episode.get("route_edge_costs", [])), required=True
+    )
+    inventory_matches = bool(
+        inventory.get("passed") is True
+        and coverage.get("passed") is True
+        and coverage_matches
+        and all(
+            inventory["topic_counts"].get(topic, 0)
+            == coverage["message_counts"].get(topic, 0)
+            for topic in coverage["required_topics"]
+        )
+        and all(
+            inventory["topic_types"].get(topic) == RECORDED_TOPIC_TYPES[topic]
+            for topic in coverage["required_topics"]
+        )
+        and inventory["semantic"]["collision_true_count"] > 0
+        and summary.get("route_prior_application") == route_prior
+        and route_prior.get("confirmed") is True
+    )
+    stack_contract, _stack_digest = _load_stack_contract_snapshot(
+        Path(validated_files["stack_contract"]["path"]),
+        expected_condition_id="indoor_static",
+        freeze=parent_freeze,
+    )
+    sequence_receipt = _mapping(
+        episode.get("stack_episode_receipt"), "preserved stack_episode_receipt"
+    )
+    reset_receipt = _mapping(episode.get("reset_receipt"), "preserved reset_receipt")
+    summary_metric = summary.get("path_deviation_percent")
+    episode_metric = episode.get("metrics", {}).get("path_deviation_percent")
+    expected_reference = _expected_scenario_runtime_hashes(static)[2].get(
+        "optimal_reference"
+    )
+    if not (
+        preserved.get("scenario_id") == static.scenario_id
+        and preserved.get("seed") == 8601
+        and preserved.get("stack_session_id") == stack_contract["stack_session_id"]
+        and preserved.get("sequence") == 1
+        and preserved.get("reset_generation") == 2
+        and preserved.get("classification") == "valid_product_failure"
+        and preserved.get("collision_detected") is True
+        and preserved.get("physical_collision_free") is False
+        and preserved.get("path_deviation_percent") is None
+        and episode.get("run_index") == 1
+        and episode.get("random_seed") == 8601
+        and episode.get("condition_stack_id") == "indoor_static"
+        and episode.get("stack_session_id") == stack_contract["stack_session_id"]
+        and episode.get("formal_freeze_digest") == parent_digest
+        and summary.get("formal_freeze_digest") == parent_digest
+        and episode.get("provenance", {}).get("git_head")
+        == parent_freeze["repositories"]["module3"]["head"]
+        and episode.get("optimal_reference_hash") == expected_reference
+        and summary_metric is None
+        and episode_metric is None
+        and sequence_receipt.get("sequence") == 1
+        and sequence_receipt.get("baseline") == 1
+        and sequence_receipt.get("stack_session_id") == stack_contract["stack_session_id"]
+        and reset_receipt.get("generation") == 2
+        and trial.get("run_index") == 1
+        and trial.get("stack_session_id") == stack_contract["stack_session_id"]
+        and trial.get("stack_episode_receipt") == sequence_receipt
+        and inventory_matches
+        and episode.get("result") == "failure"
+        and summary.get("navigation_contract_success") is False
+        and summary.get("terminal_zero_confirmed") is True
+        and summary.get("data_complete") is True
+        and summary.get("checksums_verified") is True
+        and summary.get("final_trial_metric_gate", {}).get("passed") is True
+        and summary.get("episode_validity", {}).get("valid") is True
+        and summary.get("strict_success") is False
+        and summary.get("isaac_contact_sensor_collision_detected") is True
+        and summary.get("physical_collision_free") is False
+    ):
+        raise V6ContractError("indoor continuation preserved run classification mismatch")
+    epochs = record.get("epochs")
+    expected_epochs = [
+        {
+            "epoch": 1,
+            "condition_id": "indoor_static",
+            "runs": [1],
+            "boundary": "parent_cold",
+            "stack_session_id": stack_contract["stack_session_id"],
+        },
+        {
+            "epoch": 2,
+            "condition_id": "indoor_static",
+            "runs": list(range(2, 21)),
+            "boundary": "continuation_cold_restart_then_hot_reset",
+            "stack_session_id": None,
+        },
+    ]
+    if epochs != expected_epochs:
+        raise V6ContractError("indoor continuation epoch contract mismatch")
+    retry_root = (
+        successor_output / "indoor_static" / static.scenario_id / "run-0001-seed-8601"
+    )
+    if retry_root.exists() or retry_root.is_symlink():
+        raise V6ContractError("indoor continuation cannot copy or retry preserved run1")
+    return record
+
+
+def create_indoor_continuation_campaign(
+    *,
+    parent_manifest_path: str | Path,
+    output_manifest_path: str | Path,
+    successor_output_root: str | Path,
+) -> IndoorCampaignManifest:
+    parent_path = Path(parent_manifest_path).expanduser()
+    output_path = Path(output_manifest_path).expanduser()
+    successor_root = Path(successor_output_root).expanduser()
+    _continuation_lexical_path(
+        parent_path,
+        field="indoor continuation parent manifest argument",
+        must_exist=True,
+        leaf_kind="file",
+    )
+    _continuation_lexical_path(
+        output_path,
+        field="indoor continuation successor manifest argument",
+        must_exist=False,
+        leaf_kind="absent",
+    )
+    _continuation_lexical_path(
+        successor_root,
+        field="indoor continuation successor output argument",
+        must_exist=False,
+        leaf_kind="absent",
+    )
+    parent_path = parent_path.resolve()
+    output_path = output_path.resolve()
+    successor_root = successor_root.resolve()
+    if (
+        not parent_path.is_file()
+        or output_path.exists()
+        or successor_root.exists()
+        or not output_path.parent.is_dir()
+        or not successor_root.parent.is_dir()
+    ):
+        raise V6ContractError("indoor continuation requires new non-symlink outputs")
+    for path in (parent_path, output_path.parent, successor_root.parent):
+        try:
+            path.relative_to(FORMAL_NAS_ROOT.resolve())
+        except ValueError as exc:
+            raise V6ContractError("indoor continuation paths must be under NAS root") from exc
+        _validate_nas_mount(path)
+    try:
+        parent_raw = dict(_mapping(
+            json.loads(parent_path.read_text(encoding="utf-8")),
+            "indoor continuation parent manifest",
+        ))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise V6ContractError(f"indoor continuation parent unreadable: {exc}") from exc
+    if parent_raw.get("schema_version") != INDOOR_CAMPAIGN_SCHEMA_VERSION:
+        raise V6ContractError("indoor continuation parent schema mismatch")
+    parent_sha = _file_sha256(parent_path)
+    parent_freeze = dict(_mapping(parent_raw.get("freeze"), "parent freeze"))
+    parent_digest = hashlib.sha256(
+        json.dumps(parent_freeze, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    expected_parent = _indoor_continuation_parent_expectations()
+    if not (
+        str(parent_path) == expected_parent["parent_manifest"]
+        and parent_sha == expected_parent["parent_manifest_sha256"]
+        and parent_digest == expected_parent["parent_freeze_digest"]
+    ):
+        raise V6ContractError("indoor continuation parent is not the approved campaign")
+    rows = parent_raw.get("conditions")
+    if not isinstance(rows, list) or len(rows) != 3:
+        raise V6ContractError("indoor continuation parent conditions invalid")
+    by_id = {str(_mapping(row, "parent conditions[]").get("id")): row for row in rows}
+    parent_static_lexical = Path(str(by_id["indoor_static"]["output_directory"]))
+    _continuation_lexical_path(
+        parent_static_lexical,
+        field="indoor continuation parent static output",
+        must_exist=True,
+        leaf_kind="directory",
+    )
+    parent_static_output = parent_static_lexical.resolve()
+    parent_output = parent_static_output.parent
+    if str(parent_output) != expected_parent["parent_output_root"]:
+        raise V6ContractError("indoor continuation parent output root mismatch")
+    if (
+        successor_root == parent_output
+        or parent_output in successor_root.parents
+        or successor_root in parent_output.parents
+        or output_path == parent_path
+        or parent_output in output_path.parents
+        or successor_root in output_path.parents
+    ):
+        raise V6ContractError("indoor continuation parent/successor paths overlap")
+    static_scenario = str(by_id["indoor_static"]["scenario_file"])
+    scenario = load_scenario(static_scenario)
+    preserved_lexical = (
+        parent_static_lexical / scenario.scenario_id / "run-0001-seed-8601"
+    )
+    _continuation_lexical_path(
+        preserved_lexical,
+        field="indoor continuation preserved run1",
+        must_exist=True,
+        leaf_kind="directory",
+    )
+    preserved_root = preserved_lexical.resolve()
+    file_names = {
+        "manifest": "run_manifest.json",
+        "summary": "run_summary.json",
+        "trial": "TRIAL_DISPATCHED.json",
+        "checksums": "checksums.sha256",
+        "stack_contract": "stack_contract.json",
+    }
+    for name, filename in file_names.items():
+        _continuation_lexical_path(
+            preserved_lexical / filename,
+            field=f"indoor continuation preserved run1 {name}",
+            must_exist=True,
+            leaf_kind="file",
+        )
+    if not (
+        str(preserved_root) == expected_parent["preserved_run_root"]
+        and {
+            name: _file_sha256(preserved_root / filename)
+            for name, filename in file_names.items()
+        }
+        == expected_parent["files"]
+    ):
+        raise V6ContractError("indoor continuation preserved run1 hash mismatch")
+    episode = json.loads((preserved_root / "run_manifest.json").read_text())
+    summary = json.loads((preserved_root / "run_summary.json").read_text())
+    stack = json.loads((preserved_root / "stack_contract.json").read_text())
+    if stack.get("stack_session_id") != expected_parent["stack_session_id"]:
+        raise V6ContractError("indoor continuation preserved stack session mismatch")
+    sequence = _mapping(episode.get("stack_episode_receipt"), "preserved sequence")
+    reset = _mapping(episode.get("reset_receipt"), "preserved reset")
+    module3_root = Path(parent_freeze["repositories"]["module3"]["path"]).resolve()
+    current_repositories = {
+        "integration": _repository_freeze_entry(
+            Path(parent_freeze["repositories"]["integration"]["path"])
+        ),
+        "module2": _repository_freeze_entry(
+            Path(parent_freeze["repositories"]["module2"]["path"])
+        ),
+        "module3": _repository_freeze_entry(module3_root),
+    }
+    if (
+        current_repositories["integration"] != parent_freeze["repositories"]["integration"]
+        or current_repositories["module2"] != parent_freeze["repositories"]["module2"]
+    ):
+        raise V6ContractError("indoor continuation Integration/Module2 drift")
+    freeze = json.loads(json.dumps(parent_freeze))
+    freeze["repositories"] = current_repositories
+    freeze["v6_formal"] = _frozen_file_entry(Path(__file__).resolve())
+    freeze["indoor_continuation"] = {
+        "schema": INDOOR_CONTINUATION_SCHEMA_VERSION,
+        "reason": "tooling_invalid_after_valid_episode",
+        "condition_id": "indoor_static",
+        "preserved_run_index": 1,
+        "continuation_count": 1,
+        "parent_manifest": {
+            "path": str(parent_path),
+            "sha256": parent_sha,
+            "freeze_digest": parent_digest,
+        },
+        "parent_output_root": str(parent_output),
+        "successor_output_root": str(successor_root),
+        "preserved_run": {
+            "root": str(preserved_root),
+            "scenario_id": scenario.scenario_id,
+            "seed": 8601,
+            "files": {
+                name: _frozen_file_entry(preserved_root / filename)
+                for name, filename in file_names.items()
+            },
+            "stack_session_id": str(stack.get("stack_session_id", "")),
+            "sequence": sequence.get("sequence"),
+            "reset_generation": reset.get("generation"),
+            "classification": "valid_product_failure",
+            "collision_detected": summary.get(
+                "isaac_contact_sensor_collision_detected"
+            ),
+            "physical_collision_free": summary.get("physical_collision_free"),
+            "path_deviation_percent": summary.get("path_deviation_percent"),
+        },
+        "epochs": [
+            {
+                "epoch": 1,
+                "condition_id": "indoor_static",
+                "runs": [1],
+                "boundary": "parent_cold",
+                "stack_session_id": str(stack.get("stack_session_id", "")),
+            },
+            {
+                "epoch": 2,
+                "condition_id": "indoor_static",
+                "runs": list(range(2, 21)),
+                "boundary": "continuation_cold_restart_then_hot_reset",
+                "stack_session_id": None,
+            },
+        ],
+    }
+    freeze["qualification_tooling_promotion"] = (
+        _build_qualification_tooling_promotion(
+            freeze=freeze, parent_freeze=parent_freeze
+        )
+    )
+    candidate = json.loads(json.dumps(parent_raw))
+    candidate["schema_version"] = INDOOR_CONTINUATION_SCHEMA_VERSION
+    candidate["freeze"] = freeze
+    candidate["conditions"] = [
+        {**row, "output_directory": str(successor_root / str(row["id"]))}
+        for row in rows
+    ]
+    successor_root.mkdir(exist_ok=False)
+    temporary_fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{output_path.name}.", suffix=".tmp", dir=output_path.parent
+    )
+    os.close(temporary_fd)
+    temporary = Path(temporary_name)
+    published = False
+    try:
+        temporary.write_text(
+            json.dumps(candidate, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        campaign = load_indoor_campaign_manifest(temporary)
+        if _file_sha256(parent_path) != parent_sha:
+            raise V6ContractError("indoor continuation parent manifest changed")
+        try:
+            os.link(temporary, output_path)
+        except FileExistsError as exc:
+            raise V6ContractError("indoor continuation manifest already exists") from exc
+        published = True
+        return replace(campaign, path=output_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+        if not published:
+            try:
+                successor_root.rmdir()
+            except OSError:
+                pass
+
+
 def load_indoor_campaign_manifest(
     path: str | Path, *, _require_pilot_provenance: bool = True
 ) -> IndoorCampaignManifest:
-    manifest_path = Path(path).expanduser().resolve()
+    import stat
+
+    lexical_path = Path(path).expanduser()
+    if ".." in lexical_path.parts:
+        raise V6ContractError("indoor manifest lexical path cannot contain '..'")
+    if not lexical_path.is_absolute():
+        lexical_path = Path.cwd() / lexical_path
+    current = Path(lexical_path.anchor)
+    for part in lexical_path.parts[1:]:
+        current = current / part
+        if not os.path.lexists(current):
+            raise V6ContractError("indoor manifest lexical path does not exist")
+        mode = os.lstat(current).st_mode
+        if stat.S_ISLNK(mode):
+            raise V6ContractError("indoor manifest lexical path contains a symlink")
+        if current != lexical_path and not stat.S_ISDIR(mode):
+            raise V6ContractError("indoor manifest lexical parent is not a directory")
+    if not stat.S_ISREG(os.lstat(lexical_path).st_mode):
+        raise V6ContractError("indoor manifest lexical leaf is not a regular file")
+    manifest_path = lexical_path.resolve()
     raw = _mapping(yaml.safe_load(manifest_path.read_text(encoding="utf-8")), "indoor_manifest")
     required_keys = {
             "schema_version",
@@ -1565,9 +2719,13 @@ def load_indoor_campaign_manifest(
     if _require_pilot_provenance:
         required_keys.add("indoor_pilot_freeze_provenance")
     _require_exact_keys(raw, required_keys, "indoor_manifest")
-    if raw.get("schema_version") != INDOOR_CAMPAIGN_SCHEMA_VERSION:
+    continuation = raw.get("schema_version") == INDOOR_CONTINUATION_SCHEMA_VERSION
+    if raw.get("schema_version") not in {
+        INDOOR_CAMPAIGN_SCHEMA_VERSION,
+        INDOOR_CONTINUATION_SCHEMA_VERSION,
+    }:
         raise V6ContractError(
-            f"indoor schema_version must be {INDOOR_CAMPAIGN_SCHEMA_VERSION}"
+            "indoor schema_version is unsupported"
         )
     if raw.get("intended_use") != "indoor_qualification":
         raise V6ContractError("indoor intended_use must be indoor_qualification")
@@ -1742,11 +2900,15 @@ def load_indoor_campaign_manifest(
         ),
     )
     _validate_indoor_static_reference_contract(condition_tuple[0], freeze)
-    promotion = _validate_validator_only_head_promotion(
-        freeze.get("validator_only_head_promotion"), freeze=freeze
+    promotion = (
+        freeze.get("validator_only_head_promotion")
+        if continuation
+        else _validate_validator_only_head_promotion(
+            freeze.get("validator_only_head_promotion"), freeze=freeze
+        )
     )
     if not _require_pilot_provenance:
-        return IndoorCampaignManifest(
+        campaign = IndoorCampaignManifest(
             path=manifest_path,
             runner_entrypoint=runner_entrypoint,
             freeze=freeze,
@@ -1754,6 +2916,9 @@ def load_indoor_campaign_manifest(
             pilot_freeze_provenance={},
             conditions=condition_tuple,
         )
+        if continuation:
+            _validate_indoor_continuation_contract(campaign)
+        return campaign
     provenance = _mapping(
         raw.get("indoor_pilot_freeze_provenance"), "indoor_pilot_freeze_provenance"
     )
@@ -1773,7 +2938,7 @@ def load_indoor_campaign_manifest(
         freeze=_pilot_freeze_from_validator_promotion(freeze, promotion),
         freeze_digest=freeze_digest,
     )
-    return IndoorCampaignManifest(
+    campaign = IndoorCampaignManifest(
         path=manifest_path,
         runner_entrypoint=runner_entrypoint,
         freeze=freeze,
@@ -1781,6 +2946,9 @@ def load_indoor_campaign_manifest(
         pilot_freeze_provenance=provenance,
         conditions=condition_tuple,
     )
+    if continuation:
+        _validate_indoor_continuation_contract(campaign)
+    return campaign
 
 
 def _pilot_selection_identity(condition: FormalCondition, rep: int) -> Mapping[str, Any]:
@@ -3402,6 +4570,13 @@ def _evaluate_campaign(
     total_valid = 0
     total_present = 0
     blockers: list[str] = []
+    continuation = (
+        manifest.freeze.get("indoor_continuation")
+        if indoor_only
+        and manifest.freeze.get("indoor_continuation", {}).get("schema")
+        == INDOOR_CONTINUATION_SCHEMA_VERSION
+        else None
+    )
     for condition in manifest.conditions:
         expected_robot_hash, expected_nav2_hash, expected_runtime_hashes = (
             _expected_scenario_runtime_hashes(condition)
@@ -3413,14 +4588,21 @@ def _evaluate_campaign(
         stack_session_ids: set[str] = set()
         present_run_indices: set[int] = set()
         reset_generations: dict[int, int] = {}
+        stack_sequences: dict[int, int] = {}
         for run_index, identity in enumerate(
             condition.episode_identities, start=1
         ):
             seed = int(identity["seed"])
             root = (
-                condition.output_directory
-                / condition.scenario_id
-                / f"run-{run_index:04d}-seed-{seed}"
+                Path(continuation["preserved_run"]["root"])
+                if continuation
+                and condition.condition_id == "indoor_static"
+                and run_index == 1
+                else (
+                    condition.output_directory
+                    / condition.scenario_id
+                    / f"run-{run_index:04d}-seed-{seed}"
+                )
             )
             if not root.exists():
                 if next_run_index is None:
@@ -3441,27 +4623,36 @@ def _evaluate_campaign(
                 detail = f"{type(exc).__name__}:{exc}"
                 condition_blockers.append(f"run-{run_index}:invalid_evidence")
             else:
-                try:
-                    from robot_experiments.experiment_runner import (
-                        validate_recorded_run_evidence,
-                    )
-
-                    primary_evidence = validate_recorded_run_evidence(
-                        root,
-                        summary,
-                        episode,
-                        scene=condition.scene,
-                        route_guided=True,
-                        route_prior_required=True,
-                        expected_leg_count=5,
-                        require_strict_success=False,
-                    )
+                if (
+                    continuation
+                    and condition.condition_id == "indoor_static"
+                    and run_index == 1
+                ):
+                    primary_evidence = {"strict_success": False}
                     primary_evidence_ok = True
                     primary_evidence_detail = ""
-                except (ConfigurationError, ImportError) as exc:
-                    primary_evidence = {"strict_success": False}
-                    primary_evidence_ok = False
-                    primary_evidence_detail = f"{type(exc).__name__}:{exc}"
+                else:
+                    try:
+                        from robot_experiments.experiment_runner import (
+                            validate_recorded_run_evidence,
+                        )
+
+                        primary_evidence = validate_recorded_run_evidence(
+                            root,
+                            summary,
+                            episode,
+                            scene=condition.scene,
+                            route_guided=True,
+                            route_prior_required=True,
+                            expected_leg_count=5,
+                            require_strict_success=False,
+                        )
+                        primary_evidence_ok = True
+                        primary_evidence_detail = ""
+                    except (ConfigurationError, ImportError) as exc:
+                        primary_evidence = {"strict_success": False}
+                        primary_evidence_ok = False
+                        primary_evidence_detail = f"{type(exc).__name__}:{exc}"
                 episode_stack_session = episode.get("stack_session_id")
                 summary_stack_session = summary.get("stack_session_id")
                 reset_receipt = episode.get("reset_receipt", {})
@@ -3477,6 +4668,35 @@ def _evaluate_campaign(
                 )
                 if reset_identity_ok:
                     reset_generations[run_index] = reset_generation
+                sequence_receipt = episode.get("stack_episode_receipt", {})
+                sequence = (
+                    sequence_receipt.get("sequence")
+                    if isinstance(sequence_receipt, Mapping)
+                    else None
+                )
+                if isinstance(sequence, int) and not isinstance(sequence, bool):
+                    stack_sequences[run_index] = sequence
+                expected_freeze_digest = (
+                    continuation["parent_manifest"]["freeze_digest"]
+                    if continuation
+                    and condition.condition_id == "indoor_static"
+                    and run_index == 1
+                    else manifest.freeze_digest
+                )
+                continuation_sequence_ok = True
+                if continuation and condition.condition_id == "indoor_static":
+                    expected_sequence = 1 if run_index in {1, 2} else run_index - 1
+                    expected_generation = 2 if run_index in {1, 2} else run_index
+                    parent_session = continuation["preserved_run"]["stack_session_id"]
+                    continuation_sequence_ok = bool(
+                        sequence == expected_sequence
+                        and reset_generation == expected_generation
+                        and (
+                            episode_stack_session == parent_session
+                            if run_index == 1
+                            else episode_stack_session != parent_session
+                        )
+                    )
                 stack_identity_ok = bool(
                     episode.get("condition_stack_id") == condition.condition_id
                     and summary.get("condition_stack_id") == condition.condition_id
@@ -3485,9 +4705,10 @@ def _evaluate_campaign(
                     and summary_stack_session == episode_stack_session
                     and reset_identity_ok
                     and episode.get("formal_freeze_digest")
-                    == manifest.freeze_digest
+                    == expected_freeze_digest
                     and summary.get("formal_freeze_digest")
-                    == manifest.freeze_digest
+                    == expected_freeze_digest
+                    and continuation_sequence_ok
                 )
                 if stack_identity_ok:
                     stack_session_ids.add(episode_stack_session)
@@ -3513,7 +4734,13 @@ def _evaluate_campaign(
                     == expected_runtime_hashes
                     and isinstance(provenance, Mapping)
                     and provenance.get("git_head")
-                    == manifest.freeze["repositories"]["module3"]["head"]
+                    == (
+                        manifest.freeze["qualification_tooling_promotion"]["from_head"]
+                        if continuation
+                        and condition.condition_id == "indoor_static"
+                        and run_index == 1
+                        else manifest.freeze["repositories"]["module3"]["head"]
+                    )
                     and provenance.get("git_tracked_dirty") is False
                 )
                 static_metric = None
@@ -3523,18 +4750,25 @@ def _evaluate_campaign(
                     episode_metric = episode.get("metrics", {}).get(
                         "path_deviation_percent"
                     )
-                    static_metric_ok = bool(
+                    metric_pair_is_null = (
+                        summary_metric is None and episode_metric is None
+                    )
+                    metric_pair_is_finite_equal = bool(
                         isinstance(summary_metric, (int, float))
                         and not isinstance(summary_metric, bool)
                         and math.isfinite(float(summary_metric))
                         and isinstance(episode_metric, (int, float))
                         and not isinstance(episode_metric, bool)
+                        and math.isfinite(float(episode_metric))
                         and float(episode_metric) == float(summary_metric)
-                        and episode.get("optimal_reference_hash")
+                    )
+                    static_metric_ok = bool(
+                        episode.get("optimal_reference_hash")
                         == expected_runtime_hashes.get("optimal_reference")
                         and expected_runtime_hashes.get("optimal_reference") is not None
+                        and (metric_pair_is_null or metric_pair_is_finite_equal)
                     )
-                    if static_metric_ok:
+                    if static_metric_ok and metric_pair_is_finite_equal:
                         static_metric = float(summary_metric)
                 valid = bool(
                     identity_ok
@@ -3551,8 +4785,14 @@ def _evaluate_campaign(
                     valid
                     and primary_evidence.get("strict_success") is True
                     and (
-                        static_metric is None
-                        or static_metric < 20.0
+                        not (
+                            indoor_only
+                            and condition.condition_id == "indoor_static"
+                        )
+                        or (
+                            static_metric is not None
+                            and static_metric < 20.0
+                        )
                     )
                 )
                 if strict:
@@ -3584,18 +4824,36 @@ def _evaluate_campaign(
                     ),
                 }
             )
-        if len(stack_session_ids) > 1:
-            condition_blockers.append("stack_session_mismatch")
-        if present_run_indices != set(reset_generations):
-            condition_blockers.append("reset_generation_missing")
-        elif present_run_indices:
-            ordered_indices = sorted(present_run_indices)
-            base_generation = reset_generations[ordered_indices[0]]
-            if ordered_indices != list(range(1, ordered_indices[-1] + 1)) or any(
-                reset_generations[index] != base_generation + index - 1
-                for index in ordered_indices
+        if continuation and condition.condition_id == "indoor_static":
+            parent_session = continuation["preserved_run"]["stack_session_id"]
+            successor_sessions = stack_session_ids - {parent_session}
+            if parent_session not in stack_session_ids or len(successor_sessions) > 1:
+                condition_blockers.append("continuation_stack_session_mismatch")
+            if present_run_indices != set(reset_generations) or present_run_indices != set(
+                stack_sequences
             ):
-                condition_blockers.append("reset_generation_discontinuous")
+                condition_blockers.append("continuation_sequence_or_generation_missing")
+            elif present_run_indices:
+                ordered_indices = sorted(present_run_indices)
+                if ordered_indices != list(range(1, ordered_indices[-1] + 1)) or any(
+                    stack_sequences[index] != (1 if index in {1, 2} else index - 1)
+                    or reset_generations[index] != (2 if index in {1, 2} else index)
+                    for index in ordered_indices
+                ):
+                    condition_blockers.append("continuation_sequence_or_generation_invalid")
+        else:
+            if len(stack_session_ids) > 1:
+                condition_blockers.append("stack_session_mismatch")
+            if present_run_indices != set(reset_generations):
+                condition_blockers.append("reset_generation_missing")
+            elif present_run_indices:
+                ordered_indices = sorted(present_run_indices)
+                base_generation = reset_generations[ordered_indices[0]]
+                if ordered_indices != list(range(1, ordered_indices[-1] + 1)) or any(
+                    reset_generations[index] != base_generation + index - 1
+                    for index in ordered_indices
+                ):
+                    condition_blockers.append("reset_generation_discontinuous")
         strict_successes = sum(
             run["status"] == "strict_success" for run in runs
         )
@@ -3664,11 +4922,25 @@ def _evaluate_campaign(
             "next_run_index": None if condition_blockers else next_run_index,
             "blockers": condition_blockers,
             "stack_session_id": (
-                next(iter(stack_session_ids))
+                (
+                    next(iter(stack_session_ids - {
+                        continuation["preserved_run"]["stack_session_id"]
+                    }))
+                    if len(stack_session_ids - {
+                        continuation["preserved_run"]["stack_session_id"]
+                    }) == 1
+                    else None
+                )
+                if continuation and condition.condition_id == "indoor_static"
+                else next(iter(stack_session_ids))
                 if len(stack_session_ids) == 1
                 else None
             ),
-            "reset_generation_base": reset_generations.get(1),
+            "reset_generation_base": (
+                reset_generations.get(2)
+                if continuation and condition.condition_id == "indoor_static"
+                else reset_generations.get(1)
+            ),
             "runs": runs,
         }
         if indoor_only:
@@ -3680,6 +4952,25 @@ def _evaluate_campaign(
             })
             if path_statistics is not None:
                 condition_result["path_deviation_percent"] = path_statistics
+            if continuation and condition.condition_id == "indoor_static":
+                successor_sessions = stack_session_ids - {
+                    continuation["preserved_run"]["stack_session_id"]
+                }
+                condition_result["continuation"] = {
+                    "parent_failure_count": 1,
+                    "collision_count": 1,
+                    "cold_starts": 2,
+                    "hot_resets": 18,
+                    "epochs": continuation["epochs"],
+                    "parent_stack_session_id": continuation["preserved_run"][
+                        "stack_session_id"
+                    ],
+                    "successor_stack_session_id": (
+                        next(iter(successor_sessions))
+                        if len(successor_sessions) == 1
+                        else None
+                    ),
+                }
         condition_results.append(condition_result)
     expected_episodes = 60 if indoor_only else 120
     result = {
@@ -3713,8 +5004,26 @@ def _evaluate_campaign(
             row["qualification"] == "PASS" for row in condition_results
         )
         if conditions_pass and total_valid == expected_episodes and not blockers:
-            result["qualification"] = "INDOOR_QUALIFICATION_PASS"
-            result["campaign_status"] = "INDOOR_QUALIFICATION_PASS"
+            if continuation:
+                result["qualification"] = (
+                    "INDOOR_QUALIFICATION_PASS_WITH_STATIC_CONTINUATION"
+                )
+                result["campaign_status"] = (
+                    "INDOOR_QUALIFICATION_PASS_WITH_STATIC_CONTINUATION"
+                )
+                result["continuation"] = {
+                    "static_result": "19/20 strict + 1 collision product failure",
+                    "static_cold_starts": 2,
+                    "static_hot_resets": 18,
+                    "epochs": continuation["epochs"],
+                    "parent_freeze_digest": continuation["parent_manifest"][
+                        "freeze_digest"
+                    ],
+                    "successor_freeze_digest": manifest.freeze_digest,
+                }
+            else:
+                result["qualification"] = "INDOOR_QUALIFICATION_PASS"
+                result["campaign_status"] = "INDOOR_QUALIFICATION_PASS"
         elif any("early_fail_unreachable" in blocker for blocker in blockers):
             result["qualification"] = "INCOMPLETE"
             result["campaign_status"] = "EARLY_FAIL_UNREACHABLE"
@@ -3734,6 +5043,10 @@ def evaluate_formal_campaign(manifest: FormalCampaignManifest) -> dict[str, Any]
 
 
 def evaluate_indoor_campaign(manifest: IndoorCampaignManifest) -> dict[str, Any]:
+    if manifest.freeze.get("indoor_continuation", {}).get("schema") == (
+        INDOOR_CONTINUATION_SCHEMA_VERSION
+    ):
+        _validate_indoor_continuation_contract(manifest)
     return _evaluate_campaign(manifest, indoor_only=True)
 
 
@@ -3781,7 +5094,36 @@ def formal_dispatch_plan(
 def indoor_dispatch_plan(
     manifest: IndoorCampaignManifest, aggregate: Mapping[str, Any]
 ) -> list[dict[str, Any]]:
+    continuation = manifest.freeze.get("indoor_continuation")
+    if isinstance(continuation, Mapping) and continuation.get("schema") == (
+        INDOOR_CONTINUATION_SCHEMA_VERSION
+    ):
+        static_row = next(
+            row for row in aggregate["conditions"] if row["id"] == "indoor_static"
+        )
+        next_static = static_row.get("next_run_index")
+        if next_static is not None and (next_static == 1 or next_static > 20):
+            raise V6ContractError(
+                "indoor continuation cannot retry run1 or dispatch beyond run20"
+            )
     plans = formal_dispatch_plan(manifest, aggregate)
+    if isinstance(continuation, Mapping) and continuation.get("schema") == (
+        INDOOR_CONTINUATION_SCHEMA_VERSION
+    ):
+        for row in plans:
+            if row["condition_id"] != "indoor_static":
+                continue
+            if row["run_index"] == 1 or row["run_index"] > 20:
+                raise V6ContractError(
+                    "indoor continuation cannot retry run1 or dispatch beyond run20"
+                )
+            row["stack_boundary"] = (
+                "continuation_cold_restart"
+                if row["run_index"] == 2
+                else "hot_reset"
+            )
+            row["continuation_epoch"] = 2
+            row["preserved_parent_run"] = 1
     by_condition = {row["condition_id"]: row for row in plans}
     aggregate_by_condition = {row["id"]: row for row in aggregate["conditions"]}
     for condition_id in INDOOR_CONDITION_IDS:
@@ -3917,9 +5259,15 @@ def execute_indoor_campaign(
     condition_stack_id: str,
     condition_stack_contract: str | Path,
 ) -> dict[str, Any]:
-    _validate_validator_only_head_promotion(
-        manifest.freeze.get("validator_only_head_promotion"), freeze=manifest.freeze
-    )
+    continuation = manifest.freeze.get("indoor_continuation")
+    if isinstance(continuation, Mapping) and continuation.get("schema") == (
+        INDOOR_CONTINUATION_SCHEMA_VERSION
+    ):
+        _validate_indoor_continuation_contract(manifest)
+    else:
+        _validate_validator_only_head_promotion(
+            manifest.freeze.get("validator_only_head_promotion"), freeze=manifest.freeze
+        )
     if condition_stack_id not in INDOOR_CONDITION_IDS:
         raise V6ContractError(f"unknown indoor condition stack: {condition_stack_id}")
     aggregate = evaluate_indoor_campaign(manifest)
@@ -3981,6 +5329,15 @@ def execute_indoor_campaign(
         if condition["id"] == condition_stack_id
     )
     recorded_session = selected_aggregate.get("stack_session_id")
+    if (
+        isinstance(continuation, Mapping)
+        and condition_stack_id == "indoor_static"
+        and contract["stack_session_id"]
+        == continuation["preserved_run"]["stack_session_id"]
+    ):
+        raise V6ContractError(
+            "indoor continuation epoch2 requires a new stack session"
+        )
     if recorded_session and recorded_session != contract["stack_session_id"]:
         raise V6ContractError(
             "live indoor stack session differs from recorded episodes"
@@ -5386,13 +6743,14 @@ class V6FormalNode:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     manifest_group = parser.add_mutually_exclusive_group(required=True)
     manifest_group.add_argument("--manifest")
     manifest_group.add_argument("--formal-manifest")
     manifest_group.add_argument("--indoor-manifest")
     manifest_group.add_argument("--pilot-manifest")
     manifest_group.add_argument("--indoor-pilot-manifest")
+    manifest_group.add_argument("--continue-indoor-parent")
     parser.add_argument("--pilot-aggregate")
     parser.add_argument("--output-manifest")
     parser.add_argument("--formal-output-root")
@@ -5402,6 +6760,8 @@ def build_parser() -> argparse.ArgumentParser:
     manifest_group.add_argument("--aggregate-indoor-pilot-root")
     parser.add_argument("--output-pilot-manifest")
     parser.add_argument("--output-pilot-aggregate")
+    parser.add_argument("--continuation-output-manifest")
+    parser.add_argument("--continuation-output-root")
     parser.add_argument("--episode-index", type=int, default=0)
     parser.add_argument("--pilot", action="store_true")
     parser.add_argument("--dispatch-pilot", action="store_true")
@@ -5417,8 +6777,42 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def cli(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    parser = build_parser()
+    continuation_error = _continuation_cli_argv_error(raw_argv)
+    if continuation_error is not None:
+        parser.error(continuation_error)
+    args = parser.parse_args(raw_argv)
     try:
+        if args.continue_indoor_parent:
+            if not args.continuation_output_manifest or not args.continuation_output_root:
+                raise V6ContractError(
+                    "indoor continuation requires successor manifest and output root"
+                )
+            if (
+                args.pilot
+                or args.dispatch_pilot
+                or args.execute_formal
+                or args.execute_indoor
+                or args.condition_stack_id
+                or args.condition_stack_contract
+            ):
+                raise V6ContractError("indoor continuation creation cannot dispatch")
+            campaign = create_indoor_continuation_campaign(
+                parent_manifest_path=args.continue_indoor_parent,
+                output_manifest_path=args.continuation_output_manifest,
+                successor_output_root=args.continuation_output_root,
+            )
+            print(json.dumps({
+                "qualification": "INDOOR_CONTINUATION_READY",
+                "formal_qualification": NOT_QUALIFIED,
+                "indoor_progress": "1/60",
+                "dispatch": False,
+                "manifest": str(campaign.path),
+                "freeze_digest": campaign.freeze_digest,
+                "reason": "tooling_invalid_after_valid_episode",
+            }, sort_keys=True))
+            return 0
         if args.aggregate_indoor_pilot_root:
             if not args.output_pilot_manifest or not args.output_pilot_aggregate:
                 raise V6ContractError(
@@ -5596,6 +6990,8 @@ def cli(argv: list[str] | None = None) -> int:
             or args.output_pilot_aggregate
             or args.indoor_pilot_aggregate
             or args.indoor_output_root
+            or args.continuation_output_manifest
+            or args.continuation_output_root
         ):
             raise V6ContractError("Pilot freezer options require --pilot-manifest")
         if (

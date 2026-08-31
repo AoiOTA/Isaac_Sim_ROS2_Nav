@@ -7,6 +7,7 @@ usage() {
   echo "       $0 --aggregate-pilot PILOT_ROOT OUT_MANIFEST OUT_AGGREGATE" >&2
   echo "       $0 --aggregate-indoor-pilot PILOT_ROOT OUT_MANIFEST OUT_AGGREGATE" >&2
   echo "       $0 --freeze-indoor-pilot PILOT_MANIFEST PILOT_AGGREGATE OUTPUT_MANIFEST INDOOR_OUTPUT_ROOT" >&2
+  echo "       $0 --continue-indoor PARENT_MANIFEST SUCCESSOR_MANIFEST SUCCESSOR_OUTPUT_ROOT" >&2
   echo "       $0 --indoor MANIFEST" >&2
   echo "       $0 --indoor --execute-indoor --condition-stack-id ID" >&2
   echo "          --condition-stack-contract PATH MANIFEST" >&2
@@ -20,12 +21,24 @@ if [[ "$mode" != "--pilot" && "$mode" != "--formal" \
     && "$mode" != "--indoor" && "$mode" != "--freeze-pilot" \
     && "$mode" != "--aggregate-pilot" \
     && "$mode" != "--freeze-indoor-pilot" \
+    && "$mode" != "--continue-indoor" \
     && "$mode" != "--aggregate-indoor-pilot" ]]; then
   usage
   echo "STOP: mode is required; formal dispatch is disabled by default" >&2
   exit 2
 fi
 shift
+
+if [[ "$mode" == "--continue-indoor" ]]; then
+  [[ -n "${1:-}" && -n "${2:-}" && -n "${3:-}" && $# -eq 3 ]] || {
+    usage
+    exit 2
+  }
+  exec ros2 run robot_experiments v6_formal_episode \
+    --continue-indoor-parent "$1" \
+    --continuation-output-manifest "$2" \
+    --continuation-output-root "$3"
+fi
 
 if [[ "$mode" == "--aggregate-indoor-pilot" ]]; then
   [[ -n "${1:-}" && -n "${2:-}" && -n "${3:-}" && $# -eq 3 ]] || {
