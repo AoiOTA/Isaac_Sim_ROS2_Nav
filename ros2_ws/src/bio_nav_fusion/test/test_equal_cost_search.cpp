@@ -2860,6 +2860,11 @@ TEST(CognitiveRiskCritic, static_revalidation_survives_stale_missing_and_mismatc
     "cost_delta_applied=true;obstacle_applied=true;prior_suppressed=prior_stale"
     ";context_suppressed=prior_stale;novelty_suppressed=prior_stale"
     ";uncertainty_suppressed=prior_stale;direction_suppressed=prior_stale");
+  EXPECT_EQ(
+    bio_nav_fusion::CognitiveRiskCriticTestPeer::appliedStatus(
+      "not_required_obstacle_only", "", ""),
+    "cost_delta_applied=true;obstacle_applied=true;active_effect_scope=obstacle_only"
+    ";prior_required=false");
   const auto component_status =
     bio_nav_fusion::CognitiveRiskCriticTestPeer::appliedStatus(
     "", "context_untrusted", "direction_frame");

@@ -540,14 +540,16 @@ void CognitiveRiskCritic::score(mppi::CriticData & data)
       item.confidence * item.reliability * (1.0 - item.ood_probability)});
   }
   std::array<double, 5> direction{};
-  const auto prior_reason = validatePriorComponents(
+  const bool obstacle_only = obstacleOnlyScoring();
+  const auto prior_reason = obstacle_only ? "not_required_obstacle_only" :
+    validatePriorComponents(
     obstacles.get(), prior.get(), now.nanoseconds(), maximum_age_s_,
     maximum_ood_probability_);
   std::string context_reason;
   std::string direction_reason;
   double novelty = 0.0;
   double uncertainty = 0.0;
-  if (prior_reason.empty()) {
+  if (!obstacle_only && prior_reason.empty()) {
     context_reason = prior->context_trusted ? "" : "context_untrusted";
     if (context_reason.empty()) {
       novelty = prior->novelty_probability;
@@ -652,6 +654,9 @@ std::string CognitiveRiskCritic::appliedStatus(
     "cost_delta_applied=false;zero_cost_delta";
   status += obstacle_applied ? ";obstacle_applied=true" :
     ";obstacle_applied=false;obstacle_suppressed=zero_cost_delta";
+  if (prior_reason == "not_required_obstacle_only") {
+    return status + ";active_effect_scope=obstacle_only;prior_required=false";
+  }
   if (!prior_reason.empty()) {
     return status + ";prior_suppressed=" + prior_reason +
            ";context_suppressed=" + prior_reason +

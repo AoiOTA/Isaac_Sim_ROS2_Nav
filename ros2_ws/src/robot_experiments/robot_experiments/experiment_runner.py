@@ -140,6 +140,7 @@ TERMINAL_ZERO_CADENCE_TOLERANCE_SEC = 0.10
 # without relaxing any source-stamp, sequence, identity, or zero-cell gate.
 DYNAMIC_RETIREMENT_CLEAR_TIMEOUT_SEC = 2.0
 COGNITIVE_ADMISSION_MIN_CONSECUTIVE = 3
+CRITIC_COMMAND_SAME_CYCLE_TOLERANCE_NS = 1_000_000
 COGNITIVE_COMPONENT_CONSUMERS = {
     "global_layer": "/global_costmap/global_costmap:cognitive_obstacle_layer",
     "local_layer": "/local_costmap/local_costmap:cognitive_obstacle_layer",
@@ -204,7 +205,19 @@ FINAL_V6_SCENARIO_IDS = frozenset(
 COGNITIVE_ADMISSION_COMPONENTS = frozenset({
     "global_layer", "local_layer", "critic",
 })
+COGNITIVE_PREDISPATCH_COMPONENTS = frozenset({
+    "global_layer", "local_layer",
+})
+COGNITIVE_POSTDISPATCH_COMPONENTS = frozenset({"critic"})
 KNOWN_OUTDOOR_LOCALIZATION_CONFLICTS = frozenset({"amcl", "slam_toolbox"})
+
+
+def _valid_sha256(value: object) -> bool:
+    return bool(
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 def _module2_readiness_required(scenario_id: str, configured: object) -> bool:
@@ -515,6 +528,7 @@ def _cognitive_status_fallback_healthy(
             "novelty_applied", "novelty_suppressed", "uncertainty_applied",
             "uncertainty_suppressed", "direction_applied",
             "direction_suppressed", "accepted_source_sequence",
+            "active_effect_scope", "prior_required",
             "maximum_obstacle_cost_delta", "obstacle_count", "aggregation",
         }
     values: dict[str, str] = {}
@@ -572,8 +586,13 @@ def _cognitive_status_fallback_healthy(
                 return False
         except ValueError:
             return False
+    obstacle_only = bool(
+        values.get("active_effect_scope") == "obstacle_only"
+        and values.get("prior_required") == "false"
+        and "prior_accepted" not in values
+    )
     return bool(
-        values.get("prior_accepted") == "true"
+        (obstacle_only or values.get("prior_accepted") == "true")
         and values.get("cost_delta_applied") in {"true", "false"}
         and values.get("obstacle_applied") in {"true", "false"}
     )
@@ -608,25 +627,10 @@ def _coherent_cognitive_component_state(
             last_sequence = sequence
             source = sources.get(key)
             prior = planning.get(key)
-            healthy = bool(
-                status.get("local_healthy") is True
-                and isinstance(source, Mapping)
-                and source.get("healthy") is True
-                and isinstance(prior, Mapping)
-                and prior.get("healthy") is True
-                and all(
-                    source.get(field) == prior.get(field)
-                    for field in (
-                        "reset_epoch", "recurrent_session_id", "map_version",
-                        "cognitive_tile_id", "tile_revision", "graph_revision",
-                        "model_id", "risk_model_sha256",
-                        "qualification_receipt_sha256",
-                    )
-                )
-                and status.get("risk_model_sha256")
-                == source.get("risk_model_sha256")
-                and status.get("qualification_receipt_sha256")
-                == source.get("qualification_receipt_sha256")
+            healthy = _cognitive_tuple_healthy(
+                status=status,
+                source=source,
+                planning=prior,
             )
             streak = streak + 1 if healthy else 0
             latest = {
@@ -641,6 +645,34 @@ def _coherent_cognitive_component_state(
             "latest": latest or {},
         }
     return result
+
+
+def _cognitive_tuple_healthy(
+    *,
+    status: Mapping[str, Any],
+    source: Mapping[str, Any] | None,
+    planning: Mapping[str, Any] | None,
+) -> bool:
+    return bool(
+        status.get("local_healthy") is True
+        and isinstance(source, Mapping)
+        and source.get("healthy") is True
+        and isinstance(planning, Mapping)
+        and planning.get("healthy") is True
+        and all(
+            source.get(field) == planning.get(field)
+            for field in (
+                "reset_epoch", "recurrent_session_id", "map_version",
+                "cognitive_tile_id", "tile_revision", "graph_revision",
+                "model_id", "risk_model_sha256",
+                "qualification_receipt_sha256",
+            )
+        )
+        and status.get("risk_model_sha256")
+        == source.get("risk_model_sha256")
+        and status.get("qualification_receipt_sha256")
+        == source.get("qualification_receipt_sha256")
+    )
 
 
 def _mcap_inventory_evidence(root: Path) -> dict[str, Any]:
@@ -707,6 +739,8 @@ def _mcap_inventory_evidence(root: Path) -> dict[str, Any]:
         cognitive_sources: list[dict[str, Any]] = []
         cognitive_statuses: list[dict[str, Any]] = []
         planning_priors: list[dict[str, Any]] = []
+        cmd_vel_sim_rows: list[dict[str, Any]] = []
+        navigation_graph_rows: list[dict[str, Any]] = []
         odom_stamp_ns: set[int] = set()
         record_order = 0
         semantic_types = {
@@ -715,6 +749,9 @@ def _mcap_inventory_evidence(root: Path) -> dict[str, Any]:
             "/cmd_vel_sim": "geometry_msgs/msg/Twist",
             "/odom": "nav_msgs/msg/Odometry",
             "/bio_nav/route_edge_costs": "bio_nav_interfaces/msg/RouteEdgeCostArray",
+            "/bio_nav/navigation_graph": RECORDED_TOPIC_TYPES[
+                "/bio_nav/navigation_graph"
+            ],
         }
         cognitive_types = {
             topic: RECORDED_TOPIC_TYPES[topic]
@@ -750,13 +787,19 @@ def _mcap_inventory_evidence(root: Path) -> dict[str, Any]:
                 terminal_started = True
                 terminal_zero = 0
                 terminal_nonzero = 0
-            elif topic == "/cmd_vel_sim" and terminal_started:
+            elif topic == "/cmd_vel_sim":
                 is_zero = (
                     abs(float(message.linear.x)) <= COMMAND_ZERO_TOLERANCE
                     and abs(float(message.angular.z)) <= COMMAND_ZERO_TOLERANCE
                 )
-                terminal_zero += int(is_zero)
-                terminal_nonzero += int(not is_zero)
+                cmd_vel_sim_rows.append({
+                    "record_order": record_order,
+                    "record_timestamp_ns": int(record_timestamp_ns),
+                    "is_zero": is_zero,
+                })
+                if terminal_started:
+                    terminal_zero += int(is_zero)
+                    terminal_nonzero += int(not is_zero)
             elif topic == "/bio_nav/route_edge_costs":
                 positive_requested += sum(
                     float(item.requested_module2_delta_m) > 0.0
@@ -766,6 +809,14 @@ def _mcap_inventory_evidence(root: Path) -> dict[str, Any]:
                     float(item.applied_module2_delta_m) > 0.0
                     for item in message.costs
                 )
+            elif topic == "/bio_nav/navigation_graph":
+                navigation_graph_rows.append({
+                    "record_order": record_order,
+                    "record_timestamp_ns": int(record_timestamp_ns),
+                    "graph_id": str(message.graph_id),
+                    "revision": int(message.revision),
+                    "map_version": str(message.map_version),
+                })
             elif topic == "/bio_nav/module2/cognitive_obstacles":
                 cognitive_sources.append({
                     "record_order": record_order,
@@ -853,6 +904,13 @@ def _mcap_inventory_evidence(root: Path) -> dict[str, Any]:
                     "cognitive_tile_id": str(message.cognitive_tile_id),
                     "tile_revision": int(message.tile_revision),
                     "graph_revision": int(message.graph_revision),
+                    "source_physical_graph_id": str(
+                        message.source_physical_graph_id
+                    ),
+                    "source_physical_graph_revision": int(
+                        message.source_physical_graph_revision
+                    ),
+                    "topology_revision": int(message.topology_revision),
                     "risk_model_sha256": str(message.risk_model_sha256),
                     "qualification_receipt_sha256": str(
                         message.qualification_receipt_sha256
@@ -861,6 +919,10 @@ def _mcap_inventory_evidence(root: Path) -> dict[str, Any]:
                     "input_healthy": bool(message.input_healthy),
                     "observation_valid": bool(message.observation_valid),
                     "trusted_write": bool(message.trusted_write),
+                    "context_trusted": bool(message.context_trusted),
+                    "trust_rejection_mask": int(message.trust_rejection_mask),
+                    "risk_healthy": bool(message.risk_healthy),
+                    "risk_rejection_mask": int(message.risk_rejection_mask),
                     "place_entropy_normalized": float(
                         message.place_entropy_normalized
                     ),
@@ -908,6 +970,8 @@ def _mcap_inventory_evidence(root: Path) -> dict[str, Any]:
                 "statuses": cognitive_statuses,
                 "planning_priors": planning_priors,
                 "odom_stamp_ns": sorted(odom_stamp_ns),
+                "cmd_vel_sim": cmd_vel_sim_rows,
+                "navigation_graphs": navigation_graph_rows,
             },
         },
     }
@@ -1079,7 +1143,7 @@ def _recorded_planning_healthy(
         and row.get("module2_healthy") is True
         and row.get("input_healthy") is True
         and row.get("observation_valid") is True
-        and row.get("trusted_write") is True
+        and row.get("trust_rejection_mask") == 0
         and isinstance(entropy, (int, float))
         and not isinstance(entropy, bool)
         and math.isfinite(float(entropy))
@@ -1087,6 +1151,83 @@ def _recorded_planning_healthy(
         and not isinstance(uncertainty, bool)
         and math.isfinite(float(uncertainty))
     )
+
+
+def _planning_graph_provenance_matches(
+    planning: Mapping[str, Any], navigation_graph: Mapping[str, Any]
+) -> bool:
+    graph_id = planning.get("source_physical_graph_id")
+    graph_revision = planning.get("source_physical_graph_revision")
+    topology_revision = planning.get("topology_revision")
+    if graph_id in {None, ""} and graph_revision in {None, 0} and topology_revision in {
+        None, 0,
+    }:
+        return True
+    return bool(
+        isinstance(graph_id, str)
+        and bool(graph_id)
+        and graph_id == navigation_graph.get("graph_id")
+        and isinstance(graph_revision, int)
+        and not isinstance(graph_revision, bool)
+        and graph_revision == navigation_graph.get("revision")
+        and isinstance(topology_revision, int)
+        and not isinstance(topology_revision, bool)
+        and topology_revision == navigation_graph.get("revision")
+    )
+
+
+def _cognitive_namespace_evidence(
+    *,
+    semantic_navigation_map_version: object,
+    navigation_graph: Mapping[str, Any] | None,
+    periodic_planning: Mapping[str, Any] | None,
+    cognitive_source: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    graph = navigation_graph if isinstance(navigation_graph, Mapping) else {}
+    planning = periodic_planning if isinstance(periodic_planning, Mapping) else {}
+    source = cognitive_source if isinstance(cognitive_source, Mapping) else {}
+    content_map_id = planning.get("map_version")
+    semantic_match = bool(
+        isinstance(semantic_navigation_map_version, str)
+        and bool(semantic_navigation_map_version)
+        and graph.get("map_version") == semantic_navigation_map_version
+    )
+    content_match = bool(
+        _valid_sha256(content_map_id)
+        and (
+            not source
+            or source.get("map_version") == content_map_id
+        )
+    )
+    graph_provenance_match = bool(
+        graph
+        and _planning_graph_provenance_matches(planning, graph)
+    )
+    legacy_graph_provenance = bool(
+        planning.get("source_physical_graph_id") in {None, ""}
+        and planning.get("source_physical_graph_revision") in {None, 0}
+        and planning.get("topology_revision") in {None, 0}
+    )
+    return {
+        "semantic_navigation_map_version": semantic_navigation_map_version,
+        "cognitive_content_map_id": content_map_id,
+        "source_physical_graph_id": planning.get("source_physical_graph_id", ""),
+        "source_physical_graph_revision": planning.get(
+            "source_physical_graph_revision", 0
+        ),
+        "topology_revision": planning.get("topology_revision", 0),
+        "active_effect_scope": "obstacle_only",
+        "navigation_graph_id": graph.get("graph_id"),
+        "navigation_graph_revision": graph.get("revision"),
+        "navigation_graph_map_version": graph.get("map_version"),
+        "semantic_navigation_map_match": semantic_match,
+        "cognitive_content_map_match": content_match,
+        "graph_provenance_status": (
+            "legacy_empty" if legacy_graph_provenance else "current"
+        ),
+        "graph_provenance_match": graph_provenance_match,
+        "passed": bool(semantic_match and content_match and graph_provenance_match),
+    }
 
 
 def _recorded_status_healthy(
@@ -1212,24 +1353,27 @@ def _recorded_cognitive_admission_evidence(
         and summary_receipt.get("minimum_consecutive_samples")
         == COGNITIVE_ADMISSION_MIN_CONSECUTIVE
         and set(summary_receipt.get("required_components", []))
-        == COGNITIVE_ADMISSION_COMPONENTS
+        == COGNITIVE_PREDISPATCH_COMPONENTS
+        and set(summary_receipt.get("deferred_postdispatch_components", []))
+        == COGNITIVE_POSTDISPATCH_COMPONENTS
         and set(summary_receipt.get("components", {}))
-        == COGNITIVE_ADMISSION_COMPONENTS
+        == COGNITIVE_PREDISPATCH_COMPONENTS
     ):
         return {"passed": False, "error": "cognitive_receipt_contract_mismatch"}
     required_receipt_fields = {
         "required", "required_components", "minimum_consecutive_samples",
         "barrier_ros_s", "expected_reset_epoch",
         "forbidden_previous_recurrent_session_id",
-        "module2_planning_identity", "status", "ready", "reason",
-        "reset_generation", "ready_ros_s", "planning_prior", "components",
+        "periodic_planning_identity", "status", "ready", "reason",
+        "reset_generation", "ready_ros_s", "periodic_planning_health",
+        "deferred_postdispatch_components", "identity_namespaces", "components",
     }
     if not required_receipt_fields <= set(summary_receipt):
         return {"passed": False, "error": "cognitive_receipt_fields_missing"}
     dispatch_s = trial.get("ros_stamp_s")
     ready_s = summary_receipt.get("ready_ros_s")
     barrier_s = summary_receipt.get("barrier_ros_s")
-    planning = summary_receipt.get("planning_prior")
+    planning = summary_receipt.get("periodic_planning_health")
     if not (
         isinstance(dispatch_s, (int, float))
         and not isinstance(dispatch_s, bool)
@@ -1255,11 +1399,14 @@ def _recorded_cognitive_admission_evidence(
         "observation_valid", "trusted_write", "schema_version", "accepted",
         "place_entropy_normalized", "context_uncertainty", "model_id",
         "cognitive_tile_id", "tile_revision", "graph_revision",
-        "risk_model_sha256", "qualification_receipt_sha256", "healthy",
+        "risk_model_sha256", "qualification_receipt_sha256",
+        "context_trusted", "trust_rejection_mask", "risk_healthy",
+        "risk_rejection_mask", "source_physical_graph_id",
+        "source_physical_graph_revision", "topology_revision", "healthy",
     }
     if set(planning) != required_planning:
         return {"passed": False, "error": "cognitive_planning_fields_invalid"}
-    if summary_receipt.get("module2_planning_identity") != {
+    if summary_receipt.get("periodic_planning_identity") != {
         key: planning.get(key)
         for key in ("sequence", "reset_epoch", "recurrent_session_id", "map_version")
     }:
@@ -1282,8 +1429,9 @@ def _recorded_cognitive_admission_evidence(
         and planning.get("accepted") is True
         and planning.get("input_healthy") is True
         and planning.get("observation_valid") is True
-        and planning.get("trusted_write") is True
+        and planning.get("trust_rejection_mask") == 0
         and planning.get("healthy") is True
+        and _valid_sha256(identity[2])
         and planning.get("schema_version") in {
             "bio_nav_planning_prior_v4", "bio_nav_planning_prior_v310",
         }
@@ -1312,8 +1460,13 @@ def _recorded_cognitive_admission_evidence(
         replay.get("planning_priors", []) if isinstance(replay, Mapping) else []
     )
     odom_rows = replay.get("odom_stamp_ns", []) if isinstance(replay, Mapping) else []
+    cmd_vel_rows = replay.get("cmd_vel_sim", []) if isinstance(replay, Mapping) else []
+    navigation_graph_rows = (
+        replay.get("navigation_graphs", []) if isinstance(replay, Mapping) else []
+    )
     if not all(isinstance(value, list) for value in (
-        sources, statuses, planning_rows, odom_rows,
+        sources, statuses, planning_rows, odom_rows, cmd_vel_rows,
+        navigation_graph_rows,
     )):
         return {"passed": False, "error": "cognitive_mcap_semantics_missing"}
     dispatch_ns = round(float(dispatch_s) * 1_000_000_000)
@@ -1373,10 +1526,35 @@ def _recorded_cognitive_admission_evidence(
                 "graph_revision", "risk_model_sha256",
                 "qualification_receipt_sha256",
                 "place_entropy_normalized", "context_uncertainty",
+                "context_trusted", "trust_rejection_mask", "risk_healthy",
+                "risk_rejection_mask", "source_physical_graph_id",
+                "source_physical_graph_revision", "topology_revision",
             )
         )
     ):
         return {"passed": False, "error": "cognitive_planning_mcap_mismatch"}
+    navigation_graph = max(
+        (
+            row for row in navigation_graph_rows
+            if isinstance(row, Mapping)
+            and isinstance(row.get("record_timestamp_ns"), int)
+            and row["record_timestamp_ns"] <= dispatch_ns
+        ),
+        key=lambda row: int(row.get("record_order", 0)),
+        default=None,
+    )
+    source_for_namespace = sources_by_sequence.get(planning_sequence)
+    namespace_evidence = _cognitive_namespace_evidence(
+        semantic_navigation_map_version=manifest.get("map_version"),
+        navigation_graph=navigation_graph,
+        periodic_planning=planning_row,
+        cognitive_source=source_for_namespace,
+    )
+    if not (
+        namespace_evidence.get("passed") is True
+        and summary_receipt.get("identity_namespaces") == namespace_evidence
+    ):
+        return {"passed": False, "error": "cognitive_identity_namespace_mismatch"}
 
     def role_of(row: Mapping[str, Any]) -> str | None:
         consumer = str(row.get("consumer", ""))
@@ -1436,7 +1614,7 @@ def _recorded_cognitive_admission_evidence(
         "message_age_ms",
     }
     readiness_orders: list[int] = []
-    for role in sorted(COGNITIVE_ADMISSION_COMPONENTS):
+    for role in sorted(COGNITIVE_PREDISPATCH_COMPONENTS):
         configuration = summary_receipt["components"].get(role)
         expected_latest = (
             configuration.get("latest")
@@ -1542,6 +1720,8 @@ def _recorded_cognitive_admission_evidence(
                 "passed": False,
                 "error": "cognitive_component_spoof_after_latch",
             }
+        if role in COGNITIVE_POSTDISPATCH_COMPONENTS:
+            continue
         configuration = summary_receipt["components"][role]
         sequence = row.get("source_sequence")
         source = (
@@ -1568,13 +1748,13 @@ def _recorded_cognitive_admission_evidence(
                 "error": f"cognitive_bad_status_after_latch:{role}",
             }
 
-    for role in sorted(COGNITIVE_ADMISSION_COMPONENTS):
+    for role in sorted(COGNITIVE_PREDISPATCH_COMPONENTS):
         configuration = summary_receipt["components"][role]
         if not isinstance(configuration, Mapping):
             return {"passed": False, "error": f"cognitive_component_invalid:{role}"}
         expected_latest = configuration.get("latest")
         expected_source = configuration.get("source")
-        expected_planning = configuration.get("planning_prior")
+        expected_planning = configuration.get("periodic_planning_health")
         if (
             not isinstance(expected_latest, Mapping)
             or not isinstance(expected_source, Mapping)
@@ -1803,6 +1983,9 @@ def _recorded_cognitive_admission_evidence(
                     "graph_revision", "risk_model_sha256",
                     "qualification_receipt_sha256",
                     "place_entropy_normalized", "context_uncertainty",
+                    "context_trusted", "trust_rejection_mask", "risk_healthy",
+                    "risk_rejection_mask", "source_physical_graph_id",
+                    "source_physical_graph_revision", "topology_revision",
                 )
             },
             "accepted": True,
@@ -1818,6 +2001,124 @@ def _recorded_cognitive_admission_evidence(
                 "passed": False,
                 "error": f"cognitive_planning_receipt_mismatch:{role}",
             }
+    stored_critic = summary.get("postdispatch_critic_evidence")
+    if not (
+        isinstance(stored_critic, Mapping)
+        and stored_critic == manifest.get("postdispatch_critic_evidence")
+        and stored_critic.get("required") is True
+        and stored_critic.get("passed") is True
+        and stored_critic.get("active_effect_scope") == "obstacle_only"
+        and stored_critic.get("expected_mode") == "active"
+        and isinstance(stored_critic.get("maximum_age_s"), (int, float))
+    ):
+        return {"passed": False, "error": "postdispatch_critic_receipt_invalid"}
+    end_ns = max(
+        (
+            int(row["record_timestamp_ns"])
+            for rows in (sources, planning_rows, statuses, cmd_vel_rows)
+            for row in rows
+            if isinstance(row, Mapping)
+            and isinstance(row.get("record_timestamp_ns"), int)
+        ),
+        default=dispatch_ns,
+    )
+    post_sources = [
+        row for row in sources
+        if isinstance(row, Mapping)
+        and _recorded_source_healthy(
+            row,
+            identity=identity,
+            forbidden_session=forbidden_session,
+            barrier_ns=barrier_ns,
+            dispatch_ns=end_ns,
+            odom_stamps=odom_stamps,
+        )
+    ]
+    post_planning = [
+        row for row in planning_rows
+        if isinstance(row, Mapping)
+        and _recorded_planning_healthy(
+            row,
+            identity=identity,
+            forbidden_session=forbidden_session,
+            barrier_ns=barrier_ns,
+            dispatch_ns=end_ns,
+        )
+    ]
+    critic_rows = [
+        row for row in statuses
+        if isinstance(row, Mapping)
+        and role_of(row) == "critic"
+        and isinstance(row.get("record_timestamp_ns"), int)
+        and dispatch_ns <= row["record_timestamp_ns"] <= end_ns
+    ]
+    first_healthy_critic: Mapping[str, Any] | None = None
+    critic_bad = False
+    for row in sorted(critic_rows, key=lambda item: int(item["record_order"])):
+        sequence = row.get("source_sequence")
+        record_order = row.get("record_order")
+        source = (
+            latest_before(post_sources, sequence, int(record_order))
+            if isinstance(sequence, int) and isinstance(record_order, int)
+            else None
+        )
+        periodic = (
+            latest_before(post_planning, sequence, int(record_order))
+            if isinstance(sequence, int) and isinstance(record_order, int)
+            else None
+        )
+        healthy = _recorded_status_healthy(
+            role="critic",
+            row=row,
+            source=source,
+            planning=periodic,
+            expected_mode="active",
+            maximum_age_s=float(stored_critic["maximum_age_s"]),
+            odom_stamps=odom_stamps,
+        )
+        critic_bad = critic_bad or not healthy
+        if healthy and first_healthy_critic is None:
+            first_healthy_critic = row
+    first_nonzero = min(
+        (
+            row for row in cmd_vel_rows
+            if isinstance(row, Mapping)
+            and row.get("is_zero") is False
+            and isinstance(row.get("record_timestamp_ns"), int)
+            and row["record_timestamp_ns"] >= dispatch_ns
+        ),
+        key=lambda row: int(row.get("record_order", 0)),
+        default=None,
+    )
+    critic_before_motion = bool(
+        first_healthy_critic is not None
+        and (
+            first_nonzero is None
+            or int(first_healthy_critic["record_order"])
+            < int(first_nonzero["record_order"])
+            or (
+                int(first_healthy_critic["record_order"])
+                > int(first_nonzero["record_order"])
+                and abs(
+                    int(first_healthy_critic["record_timestamp_ns"])
+                    - int(first_nonzero["record_timestamp_ns"])
+                ) <= CRITIC_COMMAND_SAME_CYCLE_TOLERANCE_NS
+            )
+        )
+    )
+    stored_first = stored_critic.get("first_healthy_critic")
+    if not (
+        first_healthy_critic is not None
+        and not critic_bad
+        and critic_before_motion
+        and isinstance(stored_first, Mapping)
+        and stored_first.get("source_sequence")
+        == first_healthy_critic.get("source_sequence")
+        and stored_first.get("reset_epoch") == identity[0]
+        and stored_first.get("recurrent_session_id") == identity[1]
+        and stored_first.get("cognitive_content_map_id") == identity[2]
+    ):
+        return {"passed": False, "error": "postdispatch_critic_mcap_invalid"}
     return {
         "passed": True,
         "dispatch_ros_s": float(dispatch_s),
@@ -1827,6 +2128,16 @@ def _recorded_cognitive_admission_evidence(
             "map_version": identity[2],
         },
         "components": replay_components,
+        "identity_namespaces": namespace_evidence,
+        "postdispatch_critic_evidence": {
+            "passed": True,
+            "first_healthy_record_order": first_healthy_critic["record_order"],
+            "first_nonzero_record_order": (
+                first_nonzero.get("record_order")
+                if isinstance(first_nonzero, Mapping) else None
+            ),
+            "same_cycle_tolerance_ns": CRITIC_COMMAND_SAME_CYCLE_TOLERANCE_NS,
+        },
     }
 
 
@@ -2183,6 +2494,13 @@ def _episode_validity(summary: Mapping[str, Any]) -> dict[str, Any]:
         and cognitive_admission.get("ready") is not True
     ):
         reasons.append("cognitive_admission_readiness_failed")
+    critic_evidence = summary.get("postdispatch_critic_evidence", {})
+    if (
+        isinstance(critic_evidence, Mapping)
+        and critic_evidence.get("required") is True
+        and critic_evidence.get("passed") is not True
+    ):
+        reasons.append("postdispatch_critic_evidence_failed")
     stack = summary.get("condition_stack_attestation", {})
     if isinstance(stack, Mapping) and stack.get("required") is True:
         if stack.get("confirmed") is not True:
@@ -3444,6 +3762,8 @@ class ExperimentRunner(Node):
         if self._goal_dispatch_recorded:
             return
         if not self._record_evidence:
+            self._cognitive_dispatch_ros_s = self._clock_seconds()
+            self._cognitive_dispatch_monotonic = time.monotonic()
             self._lifecycle_event("goal_dispatched")
             self._goal_dispatch_recorded = True
             return
@@ -3505,12 +3825,20 @@ class ExperimentRunner(Node):
                 "trial dispatch receipt write failed"
             ) from exc
         self._lifecycle_event("goal_dispatched")
+        self._cognitive_dispatch_ros_s = dispatch_ros_s
+        self._cognitive_dispatch_monotonic = time.monotonic()
         self._goal_dispatch_recorded = True
 
     def _validate_cognitive_admission_before_dispatch(
         self, dispatch_ros_s: float | None
     ) -> None:
-        components = getattr(self, "_cognitive_admission_components", {})
+        components = {
+            role: configuration
+            for role, configuration in getattr(
+                self, "_cognitive_admission_components", {}
+            ).items()
+            if role in COGNITIVE_PREDISPATCH_COMPONENTS
+        }
         if not components:
             return
         if (
@@ -3578,6 +3906,15 @@ class ExperimentRunner(Node):
         """Observe executor-side commands without publishing or changing control."""
 
         now = time.monotonic()
+        self._cognitive_runtime_event_order = getattr(
+            self, "_cognitive_runtime_event_order", 0
+        ) + 1
+        event_order = self._cognitive_runtime_event_order
+        ros_stamp_s = (
+            self._clock_seconds()
+            if getattr(self, "_cognitive_dispatch_monotonic", None) is not None
+            else None
+        )
         values = (
             float(message.linear.x),
             float(message.linear.y),
@@ -3588,6 +3925,16 @@ class ExperimentRunner(Node):
             abs(value) > COMMAND_ZERO_TOLERANCE for value in values
         )
         if nonzero:
+            if (
+                getattr(self, "_cognitive_dispatch_monotonic", None) is not None
+                and now >= self._cognitive_dispatch_monotonic
+                and getattr(self, "_first_nonzero_cmd_vel_event", None) is None
+            ):
+                self._first_nonzero_cmd_vel_event = {
+                    "runtime_order": event_order,
+                    "ros_stamp_s": ros_stamp_s,
+                    "received_monotonic": now,
+                }
             self._cmd_vel_sim_last_nonzero_monotonic = now
             self._cmd_vel_sim_zero_stamps.clear()
             if (
@@ -3701,7 +4048,15 @@ class ExperimentRunner(Node):
                 and identity[1]
                 == self._cognitive_admission_forbidden_recurrent_session_id
             )
-            and identity[2] == self._scenario.map_version
+            and _valid_sha256(identity[2])
+            and (
+                not isinstance(self._latest_planning_prior_readiness, Mapping)
+                or not _valid_sha256(
+                    self._latest_planning_prior_readiness.get("map_version")
+                )
+                or identity[2]
+                == self._latest_planning_prior_readiness.get("map_version")
+            )
         )
         if not source_contract_valid:
             if (
@@ -3753,6 +4108,7 @@ class ExperimentRunner(Node):
         if self._cognitive_admission_ready_receipt is not None and not source_healthy:
             self._cognitive_admission_bad_after_latch = True
         self._recompute_cognitive_admission_state()
+        self._refresh_postdispatch_critic_evidence()
 
     def _cognitive_layer_status_callback(self, message: RiskLayerStatus) -> None:
         consumer = str(message.consumer)
@@ -3798,6 +4154,12 @@ class ExperimentRunner(Node):
             str, list[dict[str, Any]]
         ] = {role: [] for role in components}
         self._cognitive_admission_event_order = 0
+        self._cognitive_runtime_event_order = 0
+        self._cognitive_dispatch_monotonic: float | None = None
+        self._cognitive_dispatch_ros_s: float | None = None
+        self._first_nonzero_cmd_vel_event: dict[str, Any] | None = None
+        self._first_healthy_critic_event: dict[str, Any] | None = None
+        self._postdispatch_critic_bad = False
         self._cognitive_admission_bad_after_latch = False
         self._cognitive_admission_streaks = {role: 0 for role in components}
         self._cognitive_admission_last_sequences = {
@@ -3848,8 +4210,13 @@ class ExperimentRunner(Node):
             and identity[1] == self._cognitive_admission_forbidden_recurrent_session_id
         ):
             rejection_reason = "recurrent_session_reused"
-        elif identity[2] != self._scenario.map_version:
-            rejection_reason = "map_version_mismatch"
+        elif not _valid_sha256(identity[2]):
+            rejection_reason = "cognitive_content_map_id_invalid"
+        elif (
+            self._cognitive_admission_current_identity is not None
+            and identity != self._cognitive_admission_current_identity
+        ):
+            rejection_reason = "cognitive_content_identity_mismatch"
         elif (
             self._cognitive_admission_ready_receipt is not None
             and identity != self._cognitive_admission_current_identity
@@ -3885,6 +4252,7 @@ class ExperimentRunner(Node):
                 rejection_reason = "critic_source_sequence_mismatch"
 
         self._cognitive_admission_event_order += 1
+        self._cognitive_runtime_event_order += 1
         clock_s = self._clock_seconds()
         key = (*identity, sequence)
         source = self._cognitive_admission_sources.get(key)
@@ -3897,6 +4265,8 @@ class ExperimentRunner(Node):
         status = {
             "key": key,
             "order": self._cognitive_admission_event_order,
+            "runtime_order": self._cognitive_runtime_event_order,
+            "received_at": received_at,
             "local_healthy": not rejection_reason,
             "consumer": str(message.consumer),
             "role": role,
@@ -3929,11 +4299,18 @@ class ExperimentRunner(Node):
             self._cognitive_admission_status_history[role] = (
                 self._cognitive_admission_status_history[role][-256:]
             )
-        if self._cognitive_admission_ready_receipt is not None and rejection_reason:
+        if (
+            role in COGNITIVE_PREDISPATCH_COMPONENTS
+            and self._cognitive_admission_ready_receipt is not None
+            and rejection_reason
+        ):
             self._cognitive_admission_bad_after_latch = True
         self._recompute_cognitive_admission_state()
+        if role == "critic":
+            self._refresh_postdispatch_critic_evidence()
         if (
             self._cognitive_admission_ready_receipt is not None
+            and role in COGNITIVE_PREDISPATCH_COMPONENTS
             and self._cognitive_admission_latest.get(role, {}).get("healthy")
             is not True
         ):
@@ -3962,12 +4339,133 @@ class ExperimentRunner(Node):
             for role in roles
         }
 
+    def _refresh_postdispatch_critic_evidence(self, *, finalize: bool = False) -> None:
+        dispatch_monotonic = getattr(self, "_cognitive_dispatch_monotonic", None)
+        if dispatch_monotonic is None:
+            return
+        candidates = [
+            status
+            for status in self._cognitive_admission_status_history.get("critic", [])
+            if isinstance(status.get("received_at"), (int, float))
+            and float(status["received_at"]) >= dispatch_monotonic
+            and isinstance(status.get("status_stamp_s"), (int, float))
+            and (
+                self._cognitive_dispatch_ros_s is None
+                or float(status["status_stamp_s"])
+                >= float(self._cognitive_dispatch_ros_s)
+            )
+        ]
+        for status in sorted(
+            candidates, key=lambda row: int(row.get("runtime_order", 0))
+        ):
+            key = status.get("key")
+            source = self._cognitive_admission_sources.get(key)
+            planning = self._cognitive_admission_planning.get(key)
+            healthy = _cognitive_tuple_healthy(
+                status=status,
+                source=source,
+                planning=planning,
+            )
+            if healthy and self._first_healthy_critic_event is None:
+                self._first_healthy_critic_event = {
+                    "runtime_order": int(status["runtime_order"]),
+                    "ros_stamp_s": status.get("status_stamp_s"),
+                    "received_monotonic": status.get("received_at"),
+                    "source_sequence": status.get("source_sequence"),
+                    "reset_epoch": status.get("reset_epoch"),
+                    "recurrent_session_id": status.get("recurrent_session_id"),
+                    "cognitive_content_map_id": status.get("map_version"),
+                }
+            if status.get("local_healthy") is not True or (
+                finalize and not healthy
+            ):
+                self._postdispatch_critic_bad = True
+
+    def _postdispatch_critic_evidence(self) -> dict[str, Any]:
+        critic = getattr(self, "_cognitive_admission_components", {}).get("critic")
+        required = bool(
+            isinstance(critic, Mapping)
+            and str(critic.get("mode", "")).strip().lower() == "active"
+        )
+        self._refresh_postdispatch_critic_evidence(finalize=True)
+        first_critic = copy.deepcopy(
+            getattr(self, "_first_healthy_critic_event", None)
+        )
+        first_nonzero = copy.deepcopy(
+            getattr(self, "_first_nonzero_cmd_vel_event", None)
+        )
+        same_cycle = False
+        ordered_before_command = False
+        if isinstance(first_critic, Mapping) and isinstance(first_nonzero, Mapping):
+            ordered_before_command = bool(
+                int(first_critic["runtime_order"])
+                < int(first_nonzero["runtime_order"])
+            )
+            critic_stamp = first_critic.get("ros_stamp_s")
+            command_stamp = first_nonzero.get("ros_stamp_s")
+            same_cycle = bool(
+                isinstance(critic_stamp, (int, float))
+                and isinstance(command_stamp, (int, float))
+                and abs(float(critic_stamp) - float(command_stamp))
+                <= CRITIC_COMMAND_SAME_CYCLE_TOLERANCE_NS * 1.0e-9
+                and int(first_critic["runtime_order"])
+                > int(first_nonzero["runtime_order"])
+            )
+        timing_passed = bool(
+            isinstance(first_critic, Mapping)
+            and (
+                first_nonzero is None
+                or ordered_before_command
+                or same_cycle
+            )
+        )
+        bad = bool(getattr(self, "_postdispatch_critic_bad", False))
+        passed = bool(not required or (timing_passed and not bad))
+        if not required:
+            reason = "critic_not_active"
+        elif first_critic is None:
+            reason = "healthy_critic_status_missing_after_dispatch"
+        elif bad:
+            reason = "critic_rejected_or_degraded_after_dispatch"
+        elif not timing_passed:
+            reason = "healthy_critic_status_after_first_nonzero_cmd_vel"
+        else:
+            reason = "healthy_critic_processed_before_motion"
+        return {
+            "required": required,
+            "passed": passed,
+            "reason": reason,
+            "active_effect_scope": "obstacle_only",
+            "expected_mode": (
+                str(critic.get("mode", "active"))
+                if isinstance(critic, Mapping) else None
+            ),
+            "maximum_age_s": (
+                float(critic.get("maximum_age_s", 0.5))
+                if isinstance(critic, Mapping) else None
+            ),
+            "first_healthy_critic": first_critic,
+            "first_nonzero_cmd_vel": first_nonzero,
+            "same_cycle_tolerance_ns": CRITIC_COMMAND_SAME_CYCLE_TOLERANCE_NS,
+            "ordered_before_command": ordered_before_command,
+            "same_cycle_allowed": same_cycle,
+            "rejection_or_degraded_seen": bad,
+        }
+
     def _current_cognitive_admission_snapshot(self) -> dict[str, Any]:
-        components = getattr(self, "_cognitive_admission_components", {})
+        runtime_components = getattr(self, "_cognitive_admission_components", {})
+        components = {
+            role: configuration
+            for role, configuration in runtime_components.items()
+            if role in COGNITIVE_PREDISPATCH_COMPONENTS
+        }
         planning = getattr(self, "_latest_planning_prior_readiness", None)
         return {
             "required": bool(components),
             "required_components": sorted(components),
+            "deferred_postdispatch_components": sorted(
+                set(runtime_components) & COGNITIVE_POSTDISPATCH_COMPONENTS
+            ),
             "minimum_consecutive_samples": COGNITIVE_ADMISSION_MIN_CONSECUTIVE,
             "barrier_ros_s": getattr(
                 self, "_cognitive_admission_barrier_ros_s", None
@@ -3980,7 +4478,7 @@ class ExperimentRunner(Node):
                 "_cognitive_admission_forbidden_recurrent_session_id",
                 None,
             ),
-            "module2_planning_identity": (
+            "periodic_planning_identity": (
                 {
                     key: planning.get(key)
                     for key in (
@@ -4024,7 +4522,13 @@ class ExperimentRunner(Node):
         return self._current_cognitive_admission_snapshot()
 
     def _latch_cognitive_admission_receipt(self) -> None:
-        components = getattr(self, "_cognitive_admission_components", {})
+        components = {
+            role: configuration
+            for role, configuration in getattr(
+                self, "_cognitive_admission_components", {}
+            ).items()
+            if role in COGNITIVE_PREDISPATCH_COMPONENTS
+        }
         identity = getattr(self, "_cognitive_admission_current_identity", None)
         reset_receipt = getattr(self, "_reset_receipt", None)
         if (
@@ -4035,6 +4539,7 @@ class ExperimentRunner(Node):
             raise RuntimeError("cognitive admission identity is incomplete at readiness")
         component_receipts: dict[str, dict[str, Any]] = {}
         bound_planning: list[dict[str, Any]] = []
+        bound_sources: list[dict[str, Any]] = []
         for role in sorted(components):
             latest = self._cognitive_admission_latest.get(role)
             if not isinstance(latest, Mapping):
@@ -4099,35 +4604,61 @@ class ExperimentRunner(Node):
                     "schema_version", "accepted", "place_entropy_normalized",
                     "context_uncertainty", "model_id", "cognitive_tile_id",
                     "tile_revision", "graph_revision", "risk_model_sha256",
-                    "qualification_receipt_sha256", "healthy",
+                    "qualification_receipt_sha256", "context_trusted",
+                    "trust_rejection_mask", "risk_healthy",
+                    "risk_rejection_mask", "source_physical_graph_id",
+                    "source_physical_graph_revision", "topology_revision",
+                    "healthy",
                 )
             }
             component_receipts[role] = {
                 "latest": status_receipt,
                 "source": source_receipt,
-                "planning_prior": planning_receipt,
+                "periodic_planning_health": planning_receipt,
             }
             bound_planning.append(planning_receipt)
+            bound_sources.append(source_receipt)
         ready_ros_s = self._clock_seconds()
         if ready_ros_s is None or not math.isfinite(ready_ros_s):
             raise RuntimeError("cognitive admission readiness requires finite ROS time")
         self._cognitive_admission_result_status = "ready"
         self._cognitive_admission_result_reason = (
-            "three_consecutive_current_healthy_samples_per_component"
+            "three_consecutive_current_healthy_source_and_layer_samples"
         )
         snapshot = self._current_cognitive_admission_snapshot()
         planning = max(bound_planning, key=lambda row: float(row["stamp_s"]))
+        source = max(
+            bound_sources, key=lambda row: float(row["validation_stamp_s"])
+        )
+        graph = getattr(self, "_navigation_graph", None)
+        namespace_evidence = _cognitive_namespace_evidence(
+            semantic_navigation_map_version=self._scenario.map_version,
+            navigation_graph=(
+                {
+                    "graph_id": str(graph.graph_id),
+                    "revision": int(graph.revision),
+                    "map_version": str(graph.map_version),
+                }
+                if graph is not None else None
+            ),
+            periodic_planning=planning,
+            cognitive_source=source,
+        )
+        if namespace_evidence["passed"] is not True:
+            raise RuntimeError(
+                "cognitive readiness namespace or graph provenance mismatch"
+            )
         snapshot.update({
             "reset_generation": identity[0],
             "ready_ros_s": float(ready_ros_s),
-            "module2_planning_identity": {
+            "periodic_planning_identity": {
                 key: planning[key]
                 for key in (
                     "sequence", "reset_epoch", "recurrent_session_id",
                     "map_version",
                 )
             },
-            "planning_prior": {
+            "periodic_planning_health": {
                 key: copy.deepcopy(planning.get(key))
                 for key in (
                     "stamp_s",
@@ -4149,9 +4680,17 @@ class ExperimentRunner(Node):
                     "graph_revision",
                     "risk_model_sha256",
                     "qualification_receipt_sha256",
+                    "context_trusted",
+                    "trust_rejection_mask",
+                    "risk_healthy",
+                    "risk_rejection_mask",
+                    "source_physical_graph_id",
+                    "source_physical_graph_revision",
+                    "topology_revision",
                     "healthy",
                 )
             },
+            "identity_namespaces": namespace_evidence,
             "components": {
                 role: {
                     **snapshot["components"][role],
@@ -4163,11 +4702,17 @@ class ExperimentRunner(Node):
         self._cognitive_admission_ready_receipt = copy.deepcopy(snapshot)
 
     def _wait_for_cognitive_admission_ready(self) -> None:
-        components = getattr(self, "_cognitive_admission_components", {})
+        components = {
+            role: configuration
+            for role, configuration in getattr(
+                self, "_cognitive_admission_components", {}
+            ).items()
+            if role in COGNITIVE_PREDISPATCH_COMPONENTS
+        }
         if not components:
             self._cognitive_admission_result_status = "exempt"
             self._cognitive_admission_result_reason = (
-                "all_cognitive_components_explicitly_off"
+                "all_predispatch_cognitive_components_explicitly_off"
             )
             return
 
@@ -4191,10 +4736,10 @@ class ExperimentRunner(Node):
             < COGNITIVE_ADMISSION_MIN_CONSECUTIVE
         ]
         self._cognitive_admission_result_reason = (
-            "cognitive_admission_readiness_timeout:" + ",".join(missing)
+            "predispatch_cognitive_readiness_timeout:" + ",".join(missing)
         )
         raise RuntimeError(
-            "cognitive admission readiness timed out before route dispatch: "
+            "predispatch cognitive readiness timed out before route dispatch: "
             + ",".join(missing)
         )
 
@@ -4353,6 +4898,11 @@ class ExperimentRunner(Node):
             "cognitive_tile_id": str(message.cognitive_tile_id),
             "tile_revision": int(message.tile_revision),
             "graph_revision": int(message.graph_revision),
+            "source_physical_graph_id": str(message.source_physical_graph_id),
+            "source_physical_graph_revision": int(
+                message.source_physical_graph_revision
+            ),
+            "topology_revision": int(message.topology_revision),
             "risk_model_sha256": str(message.risk_model_sha256),
             "qualification_receipt_sha256": str(
                 message.qualification_receipt_sha256
@@ -4361,6 +4911,10 @@ class ExperimentRunner(Node):
                 message.place_entropy_normalized
             ),
             "context_uncertainty": float(message.context_uncertainty),
+            "context_trusted": bool(message.context_trusted),
+            "trust_rejection_mask": int(message.trust_rejection_mask),
+            "risk_healthy": bool(message.risk_healthy),
+            "risk_rejection_mask": int(message.risk_rejection_mask),
         }
         planning_accepted = bool(
             int(message.sequence) > 0
@@ -4378,7 +4932,7 @@ class ExperimentRunner(Node):
             and bool(message.module2_healthy)
             and bool(message.input_healthy)
             and bool(message.observation_valid)
-            and bool(message.trusted_write)
+            and int(message.trust_rejection_mask) == 0
             and math.isfinite(float(message.place_entropy_normalized))
             and math.isfinite(float(message.context_uncertainty))
         )
@@ -4413,12 +4967,15 @@ class ExperimentRunner(Node):
         identity_allowed = bool(
             identity[0]
             == getattr(self, "_cognitive_admission_expected_reset_epoch", None)
-            and identity[2]
-            == getattr(getattr(self, "_scenario", None), "map_version", None)
+            and _valid_sha256(identity[2])
             and identity[1]
             and identity[1]
             != getattr(
                 self, "_cognitive_admission_forbidden_recurrent_session_id", None
+            )
+            and (
+                self._cognitive_admission_current_identity is None
+                or identity == self._cognitive_admission_current_identity
             )
         )
         if (
@@ -4456,6 +5013,7 @@ class ExperimentRunner(Node):
             ):
                 self._cognitive_admission_bad_after_latch = True
             self._recompute_cognitive_admission_state()
+            self._refresh_postdispatch_critic_evidence()
         if not self._navigation_active:
             return
         scalar = {
@@ -7025,6 +7583,9 @@ class ExperimentRunner(Node):
             "cognitive_admission_readiness": (
                 self._cognitive_admission_snapshot()
             ),
+            "postdispatch_critic_evidence": (
+                self._postdispatch_critic_evidence()
+            ),
             "condition_id": (
                 self._active_selection.condition_id
                 if self._active_selection is not None
@@ -7777,6 +8338,9 @@ class ExperimentRunner(Node):
             "cognitive_admission_readiness": dict(
                 manifest.get("cognitive_admission_readiness", {})
             ),
+            "postdispatch_critic_evidence": dict(
+                manifest.get("postdispatch_critic_evidence", {})
+            ),
             "startup_invalid_reason": (
                 manifest.get("cognitive_admission_readiness", {}).get("reason")
                 if manifest.get("cognitive_admission_readiness", {}).get(
@@ -8026,6 +8590,12 @@ class ExperimentRunner(Node):
     ) -> dict[str, Any]:
         if not self._condition_stack_contract:
             return {}
+        readiness = self._cognitive_admission_snapshot()
+        namespaces = readiness.get("identity_namespaces", {})
+        if not isinstance(namespaces, Mapping) or namespaces.get("passed") is not True:
+            raise ConfigurationError(
+                "stack episode receipt requires separated cognitive map namespaces"
+            )
         sequence_path = Path(
             str(self._condition_stack_contract["episode_sequence_path"])
         ).expanduser().resolve()
@@ -8101,6 +8671,20 @@ class ExperimentRunner(Node):
             "viewport_winner_manifest_sha256": self._condition_stack_contract.get(
                 "viewport_winner_manifest_sha256"
             ),
+            "semantic_navigation_map_version": namespaces.get(
+                "semantic_navigation_map_version"
+            ),
+            "cognitive_content_map_id": namespaces.get(
+                "cognitive_content_map_id"
+            ),
+            "source_physical_graph_id": namespaces.get(
+                "source_physical_graph_id"
+            ),
+            "source_physical_graph_revision": namespaces.get(
+                "source_physical_graph_revision"
+            ),
+            "topology_revision": namespaces.get("topology_revision"),
+            "active_effect_scope": namespaces.get("active_effect_scope"),
         }
 
     def run_all(self) -> list[dict[str, Any]]:
@@ -8185,8 +8769,10 @@ class ExperimentRunner(Node):
                     reset_variant_id,
                     selection.appearance_profile_id,
                 )
-                # Pre-dispatch contract: reset/stop release, Module2 planning
-                # readiness, then per-consumer cognitive admission readiness.
+                # Pre-dispatch contract: reset/stop release, periodic Module2
+                # health, then source plus both cognitive costmap consumers.
+                # The MPPI critic is proven only after dispatch when score()
+                # can actually process the current source.
                 if self._navigation_execution_backend == "route_guided":
                     self._wait_for_reset_stop_gate_release()
                 if self._record_evidence:
@@ -8200,7 +8786,7 @@ class ExperimentRunner(Node):
                     self._module2_planning_ready_timeout_sec,
                 ):
                     raise RuntimeError(
-                        "Module2 planning prior did not become goal-query ready"
+                        "Module2 periodic planning prior did not become healthy"
                     )
                 self._wait_for_cognitive_admission_ready()
                 if self._record_evidence:
