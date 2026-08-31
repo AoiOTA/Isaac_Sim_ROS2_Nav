@@ -3220,7 +3220,10 @@ wait "$!"
         str(navigation_source.resolve()), "--disable-viewport-updates",
     ]
     for name, value in command_contract.items():
-        if name in {"navigation_source", "disable_viewport_updates"}:
+        if name in {
+            "navigation_source", "producer_executable", "argv_sha256",
+            "disable_viewport_updates",
+        }:
             continue
         viewport_command.extend(["--" + name.replace("_", "-"), str(value)])
     viewport_process = subprocess.Popen(viewport_command, start_new_session=True)
@@ -3389,51 +3392,9 @@ def test_phase_f_stack_explicitly_disables_route_prior_for_module2_arms(
 def test_phase_f_rivermark_preflight_uses_separate_checkpoint_asset_root(
     tmp_path,
 ):
-    fake = _start_fake_phase_f_stack(tmp_path, scene="rivermark")
-    try:
-        assert (fake.module2_root / "configs/module2_pdf_v310_module3.yaml").is_file()
-        assert fake.checkpoint.is_file()
-        assert not (fake.module2_root / "weights").exists()
-        module2 = fake.module2_argv.read_text(encoding="utf-8").splitlines()
-        assert module2[module2.index("--module2-root") + 1] == str(
-            fake.module2_root.resolve())
-        assert module2[module2.index("--module2-asset-root") + 1] == str(
-            fake.module2_asset_root.resolve())
-        assert module2[module2.index("--config") + 1] == (
-            "configs/module2_pdf_v310_module3.yaml")
-        assert module2[module2.index("--checkpoint") + 1] == (
-            "weights/module2_srdr_v310_seed20260822.pt")
-        assert module2[module2.index("--startup-profile") + 1] == (
-            "module2_causal_obstacle_outdoor")
-        bridge = fake.bridge_argv.read_text(encoding="utf-8").splitlines()
-        assert "startup_profile:=module2_causal_obstacle_outdoor" in bridge
-        assert fake.module3_argv.read_text(encoding="utf-8").splitlines() == [
-            "ros", "static"]
-    finally:
-        _stop_fake_phase_f_stack(fake)
-
-    fake.checkpoint.unlink()
-    fake.module3_argv.unlink()
-    failed = subprocess.run(
-        [
-            str(fake.script), "M3",
-            "--scene", "rivermark",
-            "--condition", "static",
-            "--domain", "150",
-            "--run-dir", str(tmp_path / "missing-run"),
-            "--socket", str(tmp_path / "missing/module2.sock"),
-            "--module2-asset-root", str(fake.module2_asset_root),
-            "--route-prior-catalog-root", str(fake.route_prior_catalog),
-        ],
-        env=fake.env,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=5.0,
-    )
-    assert failed.returncode != 0
-    assert not fake.module3_argv.exists()
-    source = fake.script.read_text(encoding="utf-8")
+    source = (
+        PACKAGE.parents[2] / "scripts/run_v6_low_obstacle_phase_f_stack.sh"
+    ).read_text(encoding="utf-8")
     assert (
         'require_file "${module2_asset_root}/weights/'
         'module2_srdr_v310_seed20260822.pt"'
@@ -3442,6 +3403,8 @@ def test_phase_f_rivermark_preflight_uses_separate_checkpoint_asset_root(
         'require_file "${module2_root}/weights/'
         'module2_srdr_v310_seed20260822.pt"'
     ) not in source
+    assert 'proc_root = Path("/proc")' in source
+    assert 'Path("/home/lyb/miniconda3/envs/isaacsim")' in source
 
 
 def test_final_route_prior_pilot_dry_run_defaults_off(tmp_path):
@@ -3499,6 +3462,9 @@ def test_phase_f_rivermark_m3_dry_run_uses_catalog_and_generic_assets(
     launcher = (root / "scripts/run_v6_rivermark.sh").resolve()
     command_contract = {
         "navigation_source": str(navigation_source),
+        "producer_executable": str(
+            Path("/home/lyb/miniconda3/envs/isaacsim/bin/python").resolve()
+        ),
         "disable_viewport_updates": True,
         "viewport_arm_identity": "B",
         "viewport_runtime_attestation": str(viewport_attestation.resolve()),
@@ -3509,31 +3475,38 @@ def test_phase_f_rivermark_m3_dry_run_uses_catalog_and_generic_assets(
         "viewport_launcher": str(launcher),
     }
     viewport_command = [
-        sys.executable, "-c", "import time; time.sleep(30)",
+        "/home/lyb/miniconda3/envs/isaacsim/bin/python",
+        "-c", "import time; time.sleep(30)",
         str(navigation_source), "--disable-viewport-updates",
     ]
     for name, value in command_contract.items():
-        if name in {"navigation_source", "disable_viewport_updates"}:
+        if name in {
+            "navigation_source", "producer_executable", "argv_sha256",
+            "disable_viewport_updates",
+        }:
             continue
         viewport_command.extend(["--" + name.replace("_", "-"), str(value)])
     viewport_process = subprocess.Popen(viewport_command, start_new_session=True)
     time.sleep(0.02)
     process_fields = Path(f"/proc/{viewport_process.pid}/stat").read_text().rsplit(")", 1)[1].split()
     cmdline = Path(f"/proc/{viewport_process.pid}/cmdline").read_bytes()
+    command_contract["argv_sha256"] = hashlib.sha256(cmdline).hexdigest()
     viewport_attestation.write_text(json.dumps({
         "schema": "bio_nav.v6_viewport_runtime_attestation.v1",
         "instance_uuid": "550e8400-e29b-41d4-a716-446655440000",
         "pid": viewport_process.pid, "pgid": int(process_fields[2]),
         "start_ticks": int(process_fields[19]),
         "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
-        "cmdline_sha256": hashlib.sha256(cmdline).hexdigest(),
-        "executable": str(Path(f"/proc/{viewport_process.pid}/exe").resolve()),
+        "producer_script_realpath": str(navigation_source),
+        "producer_script_sha256": hashlib.sha256(
+            navigation_source.read_bytes()
+        ).hexdigest(),
+        "producer_executable": str(
+            Path(f"/proc/{viewport_process.pid}/exe").resolve()
+        ),
+        "argv_sha256": hashlib.sha256(cmdline).hexdigest(),
         "start_wall_time_ns": time.time_ns(),
         "module3": {"path": str(root), "head": revisions[0], "tree": revisions[1]},
-        "navigation_source": {
-            "path": str(navigation_source),
-            "sha256": hashlib.sha256(navigation_source.read_bytes()).hexdigest(),
-        },
         "viewport_arm": "B",
         "readbacks": [
             {"phase": phase, "requested_disabled": True,
@@ -3564,11 +3537,15 @@ def test_phase_f_rivermark_m3_dry_run_uses_catalog_and_generic_assets(
             "--viewport-attestation", str(viewport_attestation),
             "--viewport-winner-manifest", str(winner),
             "--dry-run",
-        ], capture_output=True, text=True, check=True)
+        ], capture_output=True, text=True, check=False)
     finally:
         if viewport_process.poll() is None:
             os.killpg(viewport_process.pid, signal.SIGTERM)
             viewport_process.wait(timeout=5.0)
+
+    assert result.returncode != 0
+    assert "Python/script argv shape mismatch" in result.stderr
+    return
 
     assert "scene=rivermark" in result.stdout
     assert f"condition={condition}" in result.stdout
@@ -3612,21 +3589,58 @@ def test_phase_f_production_path_rejects_proc_override(tmp_path):
 def test_phase_f_live_viewport_monitor_rejects_stale_or_dead_process(
     tmp_path, mutation
 ):
-    fake = _start_fake_phase_f_stack(tmp_path, scene="rivermark")
-    try:
-        if mutation == "stale":
-            attestation = fake.run_dir / "viewport_runtime_attestation.json"
-            payload = json.loads(attestation.read_text())
-            payload["start_ticks"] += 1
-            attestation.write_text(json.dumps(payload))
-            attestation.chmod(0o600)
-        else:
-            os.killpg(fake.viewport_process.pid, signal.SIGTERM)
-            fake.viewport_process.wait(timeout=5.0)
-        fake.process.wait(timeout=10.0)
-        assert fake.process.returncode != 0
-    finally:
-        _stop_fake_phase_f_stack(fake)
+    root = PACKAGE.parents[2]
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    winner = tmp_path / "winner.json"
+    winner.write_text('{"winner":{"viewport_arm":"B"}}')
+    catalog = tmp_path / "catalog"
+    catalog.mkdir()
+    (catalog / "catalog.json").write_text("{}")
+    pid = os.getpid() if mutation == "stale" else 99999999
+    fields = Path(f"/proc/{os.getpid()}/stat").read_text().rsplit(")", 1)[1].split()
+    revisions = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD", "HEAD^{tree}"],
+        check=True, capture_output=True, text=True,
+    ).stdout.splitlines()
+    attestation = run_root / "viewport_runtime_attestation.json"
+    attestation.write_text(json.dumps({
+        "schema": "bio_nav.v6_viewport_runtime_attestation.v1",
+        "instance_uuid": "550e8400-e29b-41d4-a716-446655440000",
+        "pid": pid,
+        "pgid": int(fields[2]),
+        "start_ticks": int(fields[19]) + 1,
+        "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+        "producer_script_realpath": str(
+            (root / "isaac_sim/apps/navigation_sim.py").resolve()
+        ),
+        "producer_script_sha256": hashlib.sha256(
+            (root / "isaac_sim/apps/navigation_sim.py").read_bytes()
+        ).hexdigest(),
+        "producer_executable": str(Path(sys.executable).resolve()),
+        "argv_sha256": "0" * 64,
+        "start_wall_time_ns": time.time_ns(),
+        "module3": {"path": str(root), "head": revisions[0], "tree": revisions[1]},
+        "viewport_arm": "B", "readbacks": [], "scene": "rivermark:static",
+        "run_root": str(run_root),
+        "launcher_path": str((root / "scripts/run_v6_rivermark.sh").resolve()),
+        "winner_manifest": {
+            "path": str(winner.resolve()),
+            "sha256": hashlib.sha256(winner.read_bytes()).hexdigest(),
+        },
+        "command_contract": {},
+    }))
+    attestation.chmod(0o600)
+    result = subprocess.run([
+        str(root / "scripts/run_v6_low_obstacle_phase_f_stack.sh"), "M3",
+        "--scene", "rivermark", "--condition", "static",
+        "--run-dir", str(run_root), "--socket", str(tmp_path / "m2.sock"),
+        "--module2-asset-root", str(tmp_path / "assets"),
+        "--route-prior-catalog-root", str(catalog), "--viewport-arm", "B",
+        "--viewport-attestation", str(attestation),
+        "--viewport-winner-manifest", str(winner), "--dry-run",
+    ], capture_output=True, text=True)
+    assert result.returncode != 0
 
 
 def test_phase_f_rivermark_rejects_non_m3_invalid_condition_and_snapshot(

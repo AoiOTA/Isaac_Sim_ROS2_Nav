@@ -5339,8 +5339,8 @@ def _validate_viewport_runtime_snapshot(
     runtime = _mapping(runtime, "viewport_runtime_attestation")
     _require_exact_keys(runtime, {
         "schema", "instance_uuid", "pid", "pgid", "start_ticks", "boot_id",
-        "cmdline_sha256", "executable", "start_wall_time_ns", "module3",
-        "navigation_source", "viewport_arm", "readbacks", "scene",
+        "producer_script_realpath", "producer_script_sha256", "producer_executable",
+        "argv_sha256", "start_wall_time_ns", "module3", "viewport_arm", "readbacks", "scene",
         "run_root", "launcher_path", "winner_manifest", "command_contract",
     }, "viewport_runtime_attestation")
     try:
@@ -5357,6 +5357,8 @@ def _validate_viewport_runtime_snapshot(
             Path(repositories["module3"]["path"])
             / "isaac_sim/apps/navigation_sim.py"
         ),
+        "producer_executable": runtime.get("producer_executable"),
+        "argv_sha256": runtime.get("argv_sha256"),
         "disable_viewport_updates": True,
         "viewport_arm_identity": "B",
         "viewport_runtime_attestation": str(
@@ -5387,16 +5389,14 @@ def _validate_viewport_runtime_snapshot(
         == _file_sha256(evidence_path)
         == stack.get("viewport_startup_attestation_sha256")
         and runtime.get("module3") == repositories["module3"]
-        and runtime.get("navigation_source") == {
-            "path": str(
-                Path(repositories["module3"]["path"])
-                / "isaac_sim/apps/navigation_sim.py"
-            ),
-            "sha256": _file_sha256(
-                Path(repositories["module3"]["path"])
-                / "isaac_sim/apps/navigation_sim.py"
-            ),
-        }
+        and runtime.get("producer_script_realpath") == str(
+            Path(repositories["module3"]["path"])
+            / "isaac_sim/apps/navigation_sim.py"
+        )
+        and runtime.get("producer_script_sha256") == _file_sha256(
+            Path(repositories["module3"]["path"])
+            / "isaac_sim/apps/navigation_sim.py"
+        )
         and runtime.get("viewport_arm") == stack.get("viewport_arm") == "B"
         and runtime.get("command_contract") == expected_command
         and isinstance(readbacks, list)

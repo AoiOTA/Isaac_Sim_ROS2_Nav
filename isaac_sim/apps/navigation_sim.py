@@ -843,8 +843,7 @@ def _self_process_identity() -> dict[str, object]:
     try:
         fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
         boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
-        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
-        executable = Path(f"/proc/{pid}/exe").resolve()
+        proc_executable = Path(f"/proc/{pid}/exe").resolve()
     except OSError as exc:
         raise RuntimeError("viewport attestation process identity unavailable") from exc
     if len(fields) <= 19:
@@ -854,9 +853,28 @@ def _self_process_identity() -> dict[str, object]:
         "pgid": int(fields[2]),
         "start_ticks": int(fields[19]),
         "boot_id": boot_id,
-        "cmdline_sha256": hashlib.sha256(cmdline).hexdigest(),
-        "executable": str(executable),
+        "producer_executable": str(Path(sys.executable).resolve()),
+        "proc_executable": str(proc_executable),
     }
+
+
+def _validate_python_script_argv(
+    tokens: Sequence[str],
+    *,
+    expected_script: Path,
+    expected_executable: Path,
+) -> str:
+    expected_script = expected_script.resolve()
+    expected_executable = expected_executable.resolve()
+    if (
+        len(tokens) < 2
+        or Path(tokens[0]).resolve() != expected_executable
+        or tokens[1] != str(expected_script)
+        or Path(tokens[1]).resolve() != expected_script
+    ):
+        raise RuntimeError("viewport producer Python/script argv shape mismatch")
+    encoded = b"\0".join(os.fsencode(token) for token in tokens) + b"\0"
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _validate_viewport_command_contract(
@@ -870,6 +888,11 @@ def _validate_viewport_command_contract(
     launcher_path: Path,
 ) -> dict[str, object]:
     navigation_source = str(Path(__file__).resolve())
+    argv_sha256 = _validate_python_script_argv(
+        tokens,
+        expected_script=Path(__file__),
+        expected_executable=Path(sys.executable),
+    )
     expected_values = {
         "--viewport-arm-identity": "B",
         "--viewport-runtime-attestation": str(output_path.resolve()),
@@ -891,6 +914,8 @@ def _validate_viewport_command_contract(
             raise RuntimeError(f"viewport runtime command value mismatch: {flag}")
     return {
         "navigation_source": navigation_source,
+        "producer_executable": str(Path(sys.executable).resolve()),
+        "argv_sha256": argv_sha256,
         "disable_viewport_updates": True,
         **{flag.removeprefix("--").replace("-", "_"): value for flag, value in expected_values.items()},
     }
@@ -955,6 +980,9 @@ def _publish_viewport_runtime_attestation(
     ) != "B":
         raise RuntimeError("viewport startup A/B manifest did not select arm B")
     process_identity = _self_process_identity()
+    proc_executable = process_identity.pop("proc_executable")
+    if process_identity["producer_executable"] != proc_executable:
+        raise RuntimeError("viewport producer executable differs from /proc identity")
     command_contract = _validate_viewport_command_contract(
         _process_cmdline_tokens(int(process_identity["pid"])),
         output_path=output_path,
@@ -970,10 +998,8 @@ def _publish_viewport_runtime_attestation(
         **process_identity,
         "start_wall_time_ns": start_wall_time_ns,
         "module3": _git_head_tree(PROJECT_ROOT),
-        "navigation_source": {
-            "path": str(Path(__file__).resolve()),
-            "sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-        },
+        "producer_script_realpath": str(Path(__file__).resolve()),
+        "producer_script_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "viewport_arm": "B",
         "readbacks": [dict(row) for row in readbacks],
         "scene": scene,

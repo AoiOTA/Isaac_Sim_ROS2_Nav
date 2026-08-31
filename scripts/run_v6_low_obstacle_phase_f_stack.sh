@@ -127,8 +127,8 @@ except (OSError, json.JSONDecodeError) as exc:
     raise SystemExit(f"viewport runtime attestation unreadable: {exc}")
 required = {
     "schema", "instance_uuid", "pid", "pgid", "start_ticks", "boot_id",
-    "cmdline_sha256", "executable", "start_wall_time_ns", "module3",
-    "navigation_source", "viewport_arm", "readbacks", "scene",
+    "producer_script_realpath", "producer_script_sha256", "producer_executable",
+    "argv_sha256", "start_wall_time_ns", "module3", "viewport_arm", "readbacks", "scene",
     "run_root", "launcher_path", "winner_manifest",
     "command_contract",
 }
@@ -165,8 +165,8 @@ if (
     or int(fields[2]) != pgid
     or int(fields[19]) != start_ticks
     or boot_id != payload.get("boot_id")
-    or hashlib.sha256(cmdline).hexdigest() != payload.get("cmdline_sha256")
-    or str(executable) != payload.get("executable")
+    or hashlib.sha256(cmdline).hexdigest() != payload.get("argv_sha256")
+    or str(executable) != payload.get("producer_executable")
 ):
     raise SystemExit("viewport runtime process identity is stale or reused")
 git_lines = subprocess.run(
@@ -178,11 +178,17 @@ if payload.get("module3") != {
 }:
     raise SystemExit("viewport runtime Module3 HEAD/tree mismatch")
 navigation_source = module3_root / "isaac_sim/apps/navigation_sim.py"
-if payload.get("navigation_source") != {
-    "path": str(navigation_source.resolve()),
-    "sha256": hashlib.sha256(navigation_source.read_bytes()).hexdigest(),
-} or str(navigation_source.resolve()).encode() not in cmdline.split(b"\0"):
+if (
+    payload.get("producer_script_realpath") != str(navigation_source.resolve())
+    or payload.get("producer_script_sha256")
+    != hashlib.sha256(navigation_source.read_bytes()).hexdigest()
+):
     raise SystemExit("viewport runtime navigation process/source mismatch")
+canonical_isaac_root = Path("/home/lyb/miniconda3/envs/isaacsim").resolve()
+try:
+    executable.relative_to(canonical_isaac_root)
+except ValueError as exc:
+    raise SystemExit("viewport producer executable is outside canonical Isaac runtime") from exc
 winner_digest = hashlib.sha256(winner_manifest.read_bytes()).hexdigest()
 try:
     winner_payload = json.loads(winner_manifest.read_text(encoding="utf-8"))
@@ -200,6 +206,13 @@ if payload.get("winner_manifest") != {
 }:
     raise SystemExit("viewport runtime winner manifest digest mismatch")
 tokens = [item.decode() for item in cmdline.split(b"\0") if item]
+if (
+    len(tokens) < 2
+    or Path(tokens[0]).resolve() != executable
+    or tokens[1] != str(navigation_source.resolve())
+    or Path(tokens[1]).resolve() != navigation_source.resolve()
+):
+    raise SystemExit("viewport producer Python/script argv shape mismatch")
 expected_values = {
     "--viewport-arm-identity": "B",
     "--viewport-runtime-attestation": str(attestation.resolve()),
@@ -221,6 +234,8 @@ for flag, expected in expected_values.items():
         raise SystemExit(f"viewport runtime command value mismatch: {flag}")
 expected_command = {
     "navigation_source": str(navigation_source.resolve()),
+    "producer_executable": str(executable),
+    "argv_sha256": hashlib.sha256(cmdline).hexdigest(),
     "disable_viewport_updates": True,
     **{
         flag.removeprefix("--").replace("-", "_"): value

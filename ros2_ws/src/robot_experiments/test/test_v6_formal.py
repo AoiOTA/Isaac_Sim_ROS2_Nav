@@ -1751,18 +1751,18 @@ def _write_outdoor_production_pilot_root(tmp_path: Path, monkeypatch):
             "pgid": int(fields[2]),
             "start_ticks": int(fields[19]),
             "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
-            "cmdline_sha256": hashlib.sha256(
+            "argv_sha256": hashlib.sha256(
                 Path(f"/proc/{own_pid}/cmdline").read_bytes()
             ).hexdigest(),
-            "executable": str(Path(f"/proc/{own_pid}/exe").resolve()),
+            "producer_executable": str(Path(f"/proc/{own_pid}/exe").resolve()),
             "start_wall_time_ns": time.time_ns(),
             "module3": repositories["module3"],
-            "navigation_source": {
-                "path": str((REPO / "isaac_sim/apps/navigation_sim.py").resolve()),
-                "sha256": hashlib.sha256(
-                    (REPO / "isaac_sim/apps/navigation_sim.py").read_bytes()
-                ).hexdigest(),
-            },
+            "producer_script_realpath": str(
+                (REPO / "isaac_sim/apps/navigation_sim.py").resolve()
+            ),
+            "producer_script_sha256": hashlib.sha256(
+                (REPO / "isaac_sim/apps/navigation_sim.py").read_bytes()
+            ).hexdigest(),
             "viewport_arm": "B",
             "readbacks": [
                 {"phase": phase, "requested_disabled": True,
@@ -1777,6 +1777,10 @@ def _write_outdoor_production_pilot_root(tmp_path: Path, monkeypatch):
                 "navigation_source": str(
                     (REPO / "isaac_sim/apps/navigation_sim.py").resolve()
                 ),
+                "producer_executable": str(Path(f"/proc/{own_pid}/exe").resolve()),
+                "argv_sha256": hashlib.sha256(
+                    Path(f"/proc/{own_pid}/cmdline").read_bytes()
+                ).hexdigest(),
                 "disable_viewport_updates": True,
                 "viewport_arm_identity": "B",
                 "viewport_runtime_attestation": str(runtime_attestation.resolve()),

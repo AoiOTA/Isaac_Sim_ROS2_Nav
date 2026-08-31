@@ -19,6 +19,7 @@ from isaac_sim.apps.navigation_sim import (
     _publish_viewport_runtime_attestation,
     _simulation_app_config,
     _validate_viewport_command_contract,
+    _validate_python_script_argv,
     _verify_default_viewport_updates,
     _verify_rtx_descriptor_sets,
     run,
@@ -460,15 +461,16 @@ def test_viewport_runtime_attestation_is_atomic_0600_and_process_bound(
             "pgid": 120,
             "start_ticks": 456,
             "boot_id": "boot",
-            "cmdline_sha256": "c" * 64,
-            "executable": "/python",
+            "producer_executable": str(Path(sys.executable).resolve()),
+            "proc_executable": str(Path(sys.executable).resolve()),
         },
     )
     monkeypatch.setattr(
         navigation_sim,
         "_process_cmdline_tokens",
         lambda _pid: [
-            "/python", str(Path(navigation_sim.__file__).resolve()),
+            str(Path(sys.executable).resolve()),
+            str(Path(navigation_sim.__file__).resolve()),
             "--disable-viewport-updates",
             "--viewport-arm-identity", "B",
             "--viewport-runtime-attestation", str(output.resolve()),
@@ -543,7 +545,11 @@ def test_viewport_command_contract_rejects_arm_missing_flag_or_wrong_binding(
         "--viewport-scene": "rivermark:static",
         "--viewport-launcher": str(launcher.resolve()),
     }
-    tokens = [str(Path(navigation_sim.__file__).resolve()), "--disable-viewport-updates"]
+    tokens = [
+        str(Path(sys.executable).resolve()),
+        str(Path(navigation_sim.__file__).resolve()),
+        "--disable-viewport-updates",
+    ]
     for flag, value in values.items():
         tokens.extend([flag, value])
     if mutation == "arm_a":
@@ -568,6 +574,26 @@ def test_viewport_command_contract_rejects_arm_missing_flag_or_wrong_binding(
             run_root=tmp_path,
             scene="rivermark:static",
             launcher_path=launcher,
+        )
+
+
+def test_python_script_argv_shape_accepts_real_script_at_argv1_and_rejects_dash_c(
+    tmp_path,
+):
+    script = tmp_path / "producer.py"
+    script.write_text("pass\n")
+    executable = Path(sys.executable).resolve()
+    digest = _validate_python_script_argv(
+        [str(executable), str(script.resolve()), "--flag"],
+        expected_script=script,
+        expected_executable=executable,
+    )
+    assert len(digest) == 64
+    with pytest.raises(RuntimeError, match="Python/script argv shape"):
+        _validate_python_script_argv(
+            [str(executable), "-c", "pass", str(script.resolve())],
+            expected_script=script,
+            expected_executable=executable,
         )
 
 
