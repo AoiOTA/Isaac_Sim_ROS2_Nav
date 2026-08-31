@@ -83,6 +83,10 @@ def _planning_prior(*, stamp_sec: int, healthy: bool):
         recurrent_session_id="session-2",
         map_version="map-v1",
         module2_healthy=healthy,
+        input_healthy=healthy,
+        observation_valid=healthy,
+        trusted_write=healthy,
+        schema_version="bio_nav_planning_prior_v4",
         place_entropy_normalized=0.58,
         context_uncertainty=0.58,
         place_belief=[],
@@ -110,6 +114,11 @@ def test_planning_readiness_uses_consecutive_fresh_healthy_priors_only():
         "recurrent_session_id": "session-2",
         "map_version": "map-v1",
         "module2_healthy": True,
+        "input_healthy": True,
+        "observation_valid": True,
+        "trusted_write": True,
+        "schema_version": "bio_nav_planning_prior_v4",
+        "accepted": True,
         "place_entropy_normalized": 0.58,
         "context_uncertainty": 0.58,
     }
@@ -118,6 +127,12 @@ def test_planning_readiness_uses_consecutive_fresh_healthy_priors_only():
         runner, _planning_prior(stamp_sec=6, healthy=False)
     )
     assert runner._planning_prior_ready_streak == 0
+
+    untrusted = _planning_prior(stamp_sec=7, healthy=True)
+    untrusted.trusted_write = False
+    ExperimentRunner._planning_prior_callback(runner, untrusted)
+    assert runner._planning_prior_ready_streak == 0
+    assert runner._latest_planning_prior_readiness["accepted"] is False
 
 
 def _transform(x: float, y: float, yaw_rad: float, stamp_s: float):

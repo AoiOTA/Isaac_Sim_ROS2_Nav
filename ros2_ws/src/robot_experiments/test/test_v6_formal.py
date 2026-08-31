@@ -248,7 +248,10 @@ def _write_formal_run(
     collision_detected: bool = False,
     route_completion_count: int = 5,
     path_deviation_percent: float = 10.0,
+    cognitive_mutation: str | None = None,
+    reset_generation: int | None = None,
 ) -> Path:
+    generation = run_index if reset_generation is None else reset_generation
     identity = condition.episode_identities[run_index - 1]
     seed = identity["seed"]
     root = (
@@ -265,8 +268,8 @@ def _write_formal_run(
     )
     import rosbag2_py
     from bio_nav_interfaces.msg import (
-        CanonicalRoute, CognitiveObstacleArray, NavigationGraph, RiskLayerStatus,
-        RouteEdgeCost, RouteEdgeCostArray, RouteProgress,
+        CanonicalRoute, CognitiveObstacleArray, NavigationGraph, PlanningPrior,
+        RiskLayerStatus, RouteEdgeCost, RouteEdgeCostArray, RouteProgress,
     )
     from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
     from nav_msgs.msg import Odometry
@@ -298,38 +301,43 @@ def _write_formal_run(
     messages["/bio_nav/route_edge_costs"] = route_cost_message
     messages["/bio_nav/route_goal_complete"] = Bool(data=True)
     cognitive_identity = {
-        "reset_epoch": run_index,
-        "recurrent_session_id": f"recurrent-session-{run_index}",
+        "reset_epoch": generation,
+        "recurrent_session_id": f"recurrent-session-{generation}",
         "map_version": load_scenario(condition.scenario_file).map_version,
     }
     component_consumers = {
         "global_layer": "/global_costmap/global_costmap:cognitive_obstacle_layer",
         "local_layer": "/local_costmap/local_costmap:cognitive_obstacle_layer",
-        "critic": "FollowPath/CognitiveRiskCritic",
+        "critic": "FollowPath.CognitiveRiskCritic",
     }
     cognitive_receipt = {
         "required": True,
         "required_components": ["critic", "global_layer", "local_layer"],
         "minimum_consecutive_samples": 3,
         "barrier_ros_s": 9.0,
-        "expected_reset_epoch": run_index,
+        "expected_reset_epoch": generation,
         "forbidden_previous_recurrent_session_id": (
-            f"recurrent-session-{run_index - 1}" if run_index > 1 else "pre-reset"
+            f"recurrent-session-{generation - 1}" if generation > 1 else "pre-reset"
         ),
         "module2_planning_identity": {
-            "sequence": 99,
+            "sequence": 3,
             **cognitive_identity,
         },
         "status": "ready",
         "ready": True,
         "reason": "three_consecutive_current_healthy_samples_per_component",
-        "reset_generation": run_index,
+        "reset_generation": generation,
         "ready_ros_s": 13.2,
         "planning_prior": {
-            "stamp_s": 13.0,
-            "sequence": 99,
+            "stamp_s": 13.000000998,
+            "sequence": 3,
             **cognitive_identity,
             "module2_healthy": True,
+            "input_healthy": True,
+            "observation_valid": True,
+            "trusted_write": True,
+            "schema_version": "bio_nav_planning_prior_v4",
+            "accepted": True,
             "place_entropy_normalized": 0.2,
             "context_uncertainty": 0.1,
         },
@@ -342,17 +350,24 @@ def _write_formal_run(
             "consecutive_healthy_samples": 3,
             "latest": {
                 "consumer": consumer,
+                "role": role,
                 "mode": "shadow",
                 "offered": True,
                 "applied": False,
                 "rejected": False,
-                "fallback_reason": "zero_cost_delta",
+                "fallback_reason": (
+                    "shadow;maximum_obstacle_cost_delta=0;obstacle_count=0;"
+                    "aggregation=max_per_step_mean_horizon"
+                    if role == "critic"
+                    else "validation_mode=2;source_age_ms=0.000998;"
+                    "rejection_reason=shadow;confirmed_count=0"
+                ),
                 "admission_rejection_reason": None,
                 "source_sequence": 3,
                 **cognitive_identity,
-                "status_stamp_s": 13.1,
-                "message_age_ms": 25.0,
-                "validation_stamp_s": 13.0,
+                "status_stamp_s": 13.025,
+                "message_age_ms": 24.99900245666504,
+                "validation_stamp_s": 13.000000998,
                 "sim_time_s": 13.2,
                 "validation_stamp_vs_sim_time_skew_ms": 200.0,
                 "received_after_reset_barrier": True,
@@ -392,6 +407,10 @@ def _write_formal_run(
             "/bio_nav/cognitive_risk_critic/status",
             "bio_nav_interfaces/msg/RiskLayerStatus",
         ),
+        (
+            "/bio_nav/module2/planning_prior",
+            "bio_nav_interfaces/msg/PlanningPrior",
+        ),
     ):
         writer.create_topic(rosbag2_py.TopicMetadata(
             id=0,
@@ -412,34 +431,120 @@ def _write_formal_run(
         writer.write(topic, serialize_message(message), stamp)
         stamp += 1
     for sequence in (1, 2, 3):
+        semantic_sec = 8 if cognitive_mutation == "pre_barrier" and sequence == 1 else 10 + sequence
+        offered_epoch = (
+            generation + 1 if cognitive_mutation == "generation_mismatch" else generation
+        )
+        offered_session = (
+            cognitive_receipt["forbidden_previous_recurrent_session_id"]
+            if cognitive_mutation == "session_reuse"
+            else cognitive_identity["recurrent_session_id"]
+        )
+        planning = PlanningPrior()
+        planning.stamp.sec = semantic_sec
+        planning.stamp.nanosec = 998
+        planning.sequence = (
+            99
+            if cognitive_mutation == "planning_mismatch" and sequence == 2
+            else sequence
+        )
+        planning.reset_epoch = offered_epoch
+        planning.recurrent_session_id = offered_session
+        planning.map_version = cognitive_identity["map_version"]
+        planning.schema_version = "bio_nav_planning_prior_v4"
+        planning.module2_healthy = True
+        planning.input_healthy = True
+        planning.observation_valid = True
+        planning.trusted_write = True
+        writer.write(
+            "/bio_nav/module2/planning_prior",
+            serialize_message(planning),
+            stamp,
+        )
+        stamp += 1
         source = CognitiveObstacleArray()
-        source.header.stamp.sec = 10 + sequence
+        source.header.stamp.sec = semantic_sec
         source.sequence = sequence
-        source.reset_epoch = cognitive_identity["reset_epoch"]
-        source.recurrent_session_id = cognitive_identity["recurrent_session_id"]
+        source.reset_epoch = offered_epoch
+        source.recurrent_session_id = offered_session
         source.map_version = cognitive_identity["map_version"]
-        source.validation_stamp.sec = 10 + sequence
+        source.validation_stamp.sec = semantic_sec
+        source.validation_stamp.nanosec = 998
+        source.source_age.nanosec = 998
+        source.validation_mode = CognitiveObstacleArray.VALIDATION_STATIC_DEPTH_REVALIDATED
+        source.validation_sensor_mask = CognitiveObstacleArray.VALIDATION_SENSOR_DEPTH
+        source.source_odom_stamp.sec = semantic_sec
+        source.source_odom_stamp.nanosec = (
+            100000001
+            if cognitive_mutation == "odom_over_100ms" and sequence == 2
+            else 16665668
+        )
+        source.validation_odom_stamp.sec = semantic_sec
+        source.validation_odom_stamp.nanosec = (
+            100000002
+            if cognitive_mutation == "odom_over_100ms" and sequence == 2
+            else 16666666
+        )
+        source.input_healthy = True
+        source.module2_healthy = True
+        source.observation_valid = True
+        source.trusted_write = True
         writer.write(
             "/bio_nav/module2/cognitive_obstacles",
             serialize_message(source),
             stamp,
         )
         stamp += 1
+        for endpoint in (
+            source.source_odom_stamp,
+            source.validation_odom_stamp,
+        ):
+            odom = Odometry()
+            odom.header.stamp = endpoint
+            writer.write("/odom", serialize_message(odom), stamp)
+            stamp += 1
         for role, consumer in component_consumers.items():
             status = RiskLayerStatus()
-            status.stamp.sec = 10 + sequence
-            status.stamp.nanosec = 100000000
-            status.consumer = consumer
+            status.stamp.sec = semantic_sec
+            status.stamp.nanosec = 25000000
+            status.consumer = (
+                "spoof.FollowPath.CognitiveRiskCritic"
+                if cognitive_mutation == "component_spoof"
+                and sequence == 2 and role == "critic"
+                else consumer
+            )
             status.mode = "shadow"
-            status.offered = True
+            status.offered = not (
+                cognitive_mutation == "offered_false"
+                and sequence == 2 and role == "critic"
+            )
             status.applied = False
             status.rejected = False
             status.source_sequence = sequence
-            status.reset_epoch = cognitive_identity["reset_epoch"]
-            status.recurrent_session_id = cognitive_identity["recurrent_session_id"]
+            status.reset_epoch = offered_epoch
+            status.recurrent_session_id = offered_session
             status.map_version = cognitive_identity["map_version"]
-            status.message_age_ms = 25.0
-            status.fallback_reason = "zero_cost_delta"
+            status.message_age_ms = (
+                30.0
+                if cognitive_mutation == "age_mismatch"
+                and sequence == 2 and role == "critic"
+                else 24.999002
+            )
+            status.fallback_reason = (
+                "cost_delta_applied=false;zero_cost_delta;"
+                f"prior_suppressed={cognitive_mutation.removeprefix('degraded_')};"
+                "maximum_obstacle_cost_delta=0;obstacle_count=0;"
+                "aggregation=max_per_step_mean_horizon"
+                if cognitive_mutation is not None
+                and cognitive_mutation.startswith("degraded_")
+                and sequence == 2 and role == "critic"
+                else
+                "shadow;maximum_obstacle_cost_delta=0;obstacle_count=0;"
+                "aggregation=max_per_step_mean_horizon"
+                if role == "critic"
+                else "validation_mode=2;source_age_ms=0.000998;"
+                "rejection_reason=shadow;confirmed_count=0"
+            )
             writer.write(
                 (
                     "/bio_nav/cognitive_risk_critic/status"
@@ -519,7 +624,7 @@ def _write_formal_run(
         "navigation_contract_success": strict_success,
         "strict_success": strict_success,
         "terminal_zero_confirmed": True,
-        "reset_receipt": {"generation": run_index},
+        "reset_receipt": {"generation": generation},
         "reset_receipt_confirmed": True,
         "physical_collision_free": not collision_detected,
         "isaac_contact_sensor_collision_detected": collision_detected,
@@ -573,7 +678,7 @@ def _write_formal_run(
         "condition_stack_id": condition.condition_id,
         "stack_session_id": stack_session_id,
         "formal_freeze_digest": formal_freeze_digest,
-        "reset_receipt": {"generation": run_index},
+        "reset_receipt": {"generation": generation},
         "metrics": {"path_deviation_percent": path_deviation_percent},
         "cognitive_admission_readiness": cognitive_receipt,
     }
@@ -761,6 +866,7 @@ def _write_sufficient_pilot_inputs(
                     if condition.condition_id == "indoor_static" and rep == 1
                     else 5
                 ),
+                reset_generation=rep + 1,
             )
             manifest_path = root / "run_manifest.json"
             summary_path = root / "run_summary.json"
@@ -1093,6 +1199,7 @@ def _write_indoor_continuation_inputs(tmp_path: Path, monkeypatch):
         formal_freeze_digest=parent.freeze_digest,
         stack_session_id=session,
         path_deviation_percent=None,
+        reset_generation=2,
     )
     manifest_path = run_root / "run_manifest.json"
     summary_path = run_root / "run_summary.json"
@@ -3248,7 +3355,7 @@ def test_indoor_freezer_allows_untracked_diagnostics_when_tracked_clean(
     [
         ("head", "source/config provenance mismatch"),
         ("session", "frozen tuple/session mismatch"),
-        ("generation", "reset generations"),
+        ("generation", "primary evidence failed"),
     ],
 )
 def test_indoor_freezer_rejects_mixed_head_session_or_generation(
@@ -4694,6 +4801,53 @@ def test_formal_primary_mcap_replays_three_cognitive_components(tmp_path):
         row["consecutive_healthy_samples"] == 3
         for row in replay["components"].values()
     )
+    inventory = evidence["inventory"]["semantic"]["cognitive_admission"]
+    assert all(
+        source["validation_odom_stamp_ns"]
+        - source["source_odom_stamp_ns"] == 998
+        for source in inventory["sources"]
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "planning_mismatch", "component_spoof", "offered_false",
+        "degraded_prior_sequence", "degraded_prior_untrusted",
+        "degraded_prior_ood", "degraded_prior_nonfinite", "degraded_missing",
+        "degraded_prior_missing", "degraded_obstacle_missing",
+        "age_mismatch", "pre_barrier",
+        "generation_mismatch", "session_reuse", "odom_over_100ms",
+    ),
+)
+def test_formal_binary_mcap_replay_rejects_adversarial_cognitive_chain(
+    tmp_path, mutation,
+):
+    campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
+    root = _write_formal_run(
+        campaign.conditions[0],
+        1,
+        strict_success=True,
+        formal_freeze_digest=campaign.freeze_digest,
+        cognitive_mutation=mutation,
+    )
+    summary = json.loads((root / "run_summary.json").read_text())
+    episode = json.loads((root / "run_manifest.json").read_text())
+
+    with pytest.raises(
+        experiment_runner_module.ConfigurationError,
+        match="recorded_cognitive_admission_invalid",
+    ):
+        experiment_runner_module.validate_recorded_run_evidence(
+            root,
+            summary,
+            episode,
+            scene="indoor",
+            route_guided=True,
+            route_prior_required=True,
+            expected_leg_count=5,
+            cognitive_admission_required=True,
+        )
 
 
 @pytest.mark.parametrize(
