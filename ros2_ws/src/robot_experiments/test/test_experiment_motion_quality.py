@@ -1007,10 +1007,9 @@ def test_different_nonforbidden_session_after_latch_blocks_old_receipt():
             source_physical_graph_id="",
             source_physical_graph_revision=0,
             topology_revision=0,
+            ),
+            _planning_prior_message(4, source_physical_graph_revision=2),
         ),
-        _planning_prior_message(4, source_physical_graph_revision=2),
-        _planning_prior_message(4, topology_revision=2),
-    ),
 )
 def test_noncurrent_planning_after_latch_invalidates_dispatch(prior):
     runner = _cognitive_admission_runner()
@@ -1184,11 +1183,6 @@ def test_predispatch_readiness_does_not_wait_for_unscored_critic():
             "source_physical_graph_revision": 2,
             "topology_revision": 1,
         },
-        {
-            "source_physical_graph_id": f"{SEMANTIC_NAVIGATION_MAP_VERSION}:gvg_v1",
-            "source_physical_graph_revision": 1,
-            "topology_revision": 2,
-        },
     ),
 )
 def test_predispatch_readiness_rejects_noncurrent_graph_provenance(provenance):
@@ -1205,18 +1199,77 @@ def test_predispatch_readiness_rejects_noncurrent_graph_provenance(provenance):
         runner._wait_for_cognitive_admission_ready()
 
 
-def test_planning_graph_provenance_accepts_exact_current_graph():
+def test_planning_graph_provenance_accepts_independent_positive_topology_revision():
     assert experiment_runner_module._planning_graph_provenance_matches(
         {
             "source_physical_graph_id": f"{SEMANTIC_NAVIGATION_MAP_VERSION}:gvg_v1",
             "source_physical_graph_revision": 1,
-            "topology_revision": 1,
+            "topology_revision": 17,
         },
         {
             "graph_id": f"{SEMANTIC_NAVIGATION_MAP_VERSION}:gvg_v1",
             "revision": 1,
         },
     ) is True
+
+
+@pytest.mark.parametrize(
+    "planning",
+    (
+        {
+            "source_physical_graph_id": f"{SEMANTIC_NAVIGATION_MAP_VERSION}:gvg_v1",
+            "source_physical_graph_revision": 1,
+            "topology_revision": 0,
+        },
+        {
+            "source_physical_graph_id": f"{SEMANTIC_NAVIGATION_MAP_VERSION}:gvg_v1",
+            "source_physical_graph_revision": 1,
+            "topology_revision": True,
+        },
+        {
+            "source_physical_graph_id": "wrong-physical-graph",
+            "source_physical_graph_revision": 1,
+            "topology_revision": 17,
+        },
+    ),
+)
+def test_planning_graph_provenance_rejects_invalid_topology_or_physical_graph(
+    planning,
+):
+    assert experiment_runner_module._planning_graph_provenance_matches(
+        planning,
+        {
+            "graph_id": f"{SEMANTIC_NAVIGATION_MAP_VERSION}:gvg_v1",
+            "revision": 1,
+        },
+    ) is False
+
+
+def test_predispatch_allows_topology_progression_on_same_physical_graph():
+    runner = _cognitive_admission_runner()
+    for sequence in (1, 2, 3):
+        _publish_cognitive_sample(
+            runner, sequence, roles=("global_layer", "local_layer")
+        )
+    runner._wait_for_cognitive_admission_ready()
+
+    runner._planning_prior_callback(
+        _planning_prior_message(4, topology_revision=2)
+    )
+    _publish_cognitive_sample(
+        runner,
+        4,
+        roles=("global_layer", "local_layer"),
+        source_overrides={"validation_stamp": 12.0},
+        status_overrides={
+            "global_layer": {"stamp": 12.05},
+            "local_layer": {"stamp": 12.05},
+        },
+    )
+
+    assert runner._latest_planning_prior_readiness["accepted"] is True
+    assert runner._cognitive_admission_bad_after_latch is False
+    runner._validate_cognitive_admission_before_dispatch(12.1)
 
 
 def test_periodic_untrusted_prior_is_healthy_without_goal_conditioning():
@@ -1491,7 +1544,7 @@ def _cold_planning_baseline(**overrides):
             f"{SEMANTIC_NAVIGATION_MAP_VERSION}:gvg_v1"
         ),
         "source_physical_graph_revision": 1,
-        "topology_revision": 1,
+        "topology_revision": 17,
     }
     baseline.update(overrides)
     return baseline
@@ -1549,7 +1602,7 @@ def test_cold_baseline_rechecks_current_graph_before_reset(monkeypatch):
         runner._latest_planning_prior_readiness = _cold_planning_baseline(
             recurrent_session_id="cold-session-2",
             source_physical_graph_revision=2,
-            topology_revision=2,
+            topology_revision=17,
         )
         runner._planning_prior_callback_count = 2
         return predicate()

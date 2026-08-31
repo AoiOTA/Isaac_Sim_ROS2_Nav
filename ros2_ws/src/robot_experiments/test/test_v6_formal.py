@@ -334,6 +334,9 @@ def _write_formal_run(
     )
     source_graph_revision = 1 if source_graph_id else 0
     topology_revision = 1 if source_graph_id else 0
+    receipt_topology_revision = (
+        17 if cognitive_mutation == "topology_progression" else topology_revision
+    )
     component_consumers = {
         "global_layer": "/global_costmap/global_costmap:cognitive_obstacle_layer",
         "local_layer": "/local_costmap/local_costmap:cognitive_obstacle_layer",
@@ -373,7 +376,7 @@ def _write_formal_run(
             "graph_revision": 1,
             "source_physical_graph_id": source_graph_id,
             "source_physical_graph_revision": source_graph_revision,
-            "topology_revision": topology_revision,
+            "topology_revision": receipt_topology_revision,
             "risk_model_sha256": "risk-sha256",
             "qualification_receipt_sha256": "qualification-sha256",
             "accepted": True,
@@ -390,7 +393,7 @@ def _write_formal_run(
             "cognitive_content_map_id": cognitive_content_map_id,
             "source_physical_graph_id": source_graph_id,
             "source_physical_graph_revision": source_graph_revision,
-            "topology_revision": topology_revision,
+            "topology_revision": receipt_topology_revision,
             "active_effect_scope": "obstacle_only",
             "navigation_graph_id": f"{semantic_map_version}:gvg_v1",
             "navigation_graph_revision": 1,
@@ -584,7 +587,15 @@ def _write_formal_run(
         planning.graph_revision = 1
         planning.source_physical_graph_id = source_graph_id
         planning.source_physical_graph_revision = source_graph_revision
-        planning.topology_revision = topology_revision
+        planning.topology_revision = (
+            17
+            if cognitive_mutation == "topology_progression" and sequence == 3
+            else 0
+            if cognitive_mutation == "topology_zero"
+            else 16
+            if cognitive_mutation == "topology_row_tamper" and sequence == 3
+            else topology_revision
+        )
         planning.risk_model_sha256 = "risk-sha256"
         planning.qualification_receipt_sha256 = "qualification-sha256"
         planning.module2_healthy = True
@@ -5940,6 +5951,33 @@ def test_formal_binary_mcap_accepts_current_graph_provenance(tmp_path):
     assert namespaces["source_physical_graph_id"].endswith(":gvg_v1")
 
 
+def test_formal_binary_mcap_accepts_topology_progression_on_same_physical_graph(
+    tmp_path,
+):
+    campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
+    root = _write_formal_run(
+        campaign.conditions[0],
+        1,
+        strict_success=True,
+        formal_freeze_digest=campaign.freeze_digest,
+        cognitive_mutation="topology_progression",
+    )
+    evidence = experiment_runner_module.validate_recorded_run_evidence(
+        root,
+        json.loads((root / "run_summary.json").read_text()),
+        json.loads((root / "run_manifest.json").read_text()),
+        scene="indoor",
+        route_guided=True,
+        route_prior_required=True,
+        expected_leg_count=5,
+        cognitive_admission_required=True,
+    )
+
+    namespaces = evidence["cognitive_admission_replay"]["identity_namespaces"]
+    assert namespaces["source_physical_graph_revision"] == 1
+    assert namespaces["topology_revision"] == 17
+
+
 def test_formal_binary_mcap_accepts_same_graph_repeat_after_latch(tmp_path):
     campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
     root = _write_formal_run(
@@ -6056,6 +6094,7 @@ def test_product_failure_terminal_false_starts_zero_tail(tmp_path, terminals):
         "navigation_graph_change_after_latch",
         "navigation_graph_change_then_restore",
         "semantic_map_mismatch", "content_map_mismatch",
+        "topology_zero", "topology_row_tamper",
         "graph_provenance_empty", "graph_provenance_mismatch",
     ),
 )

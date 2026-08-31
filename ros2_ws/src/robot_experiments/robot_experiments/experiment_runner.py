@@ -1179,7 +1179,6 @@ def _planning_graph_provenance_matches(
         and isinstance(topology_revision, int)
         and not isinstance(topology_revision, bool)
         and topology_revision > 0
-        and topology_revision == navigation_revision
     )
 
 
