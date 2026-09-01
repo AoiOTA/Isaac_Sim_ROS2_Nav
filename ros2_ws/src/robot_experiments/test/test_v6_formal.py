@@ -1694,13 +1694,13 @@ def _write_hardening_freeze_inputs(tmp_path: Path, monkeypatch):
     integration, aggregate_integration, hardened_integration = (
         _integration_promotion_repository(tmp_path)
     )
-    module3, hardened_module3_freeze, aggregate_module3_runtime = (
-        _hardening_promotion_repository(tmp_path, "hardening")
+    module3, aggregate_module3, hardened_module3 = (
+        _real_hardening_repository(tmp_path)
     )
     aggregate_repositories = {
         "integration": aggregate_integration,
         "module2": hardened_integration,
-        "module3": aggregate_module3_runtime["repositories"]["module3"],
+        "module3": aggregate_module3,
     }
     pilot = json.loads(pilot_manifest.read_text())
     first_stage = pilot["freeze"]["validator_only_head_promotion"]
@@ -1717,7 +1717,7 @@ def _write_hardening_freeze_inputs(tmp_path: Path, monkeypatch):
     current_repositories = {
         "integration": hardened_integration,
         "module2": hardened_integration,
-        "module3": hardened_module3_freeze["repositories"]["module3"],
+        "module3": hardened_module3,
     }
     historical_calls = []
     monkeypatch.setattr(
@@ -2846,6 +2846,67 @@ def _promotion_entry(repository: Path, head: str) -> dict[str, str]:
     return {"path": str(repository), "head": head, "tree": tree}
 
 
+def _real_hardening_repository(tmp_path: Path):
+    repository = tmp_path / "real-evaluator-hardening"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    active_head = "42d9baaee4c5a150c61519d651045a3b4a4e7d7c"
+    paths = (
+        "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py",
+        "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py",
+        "ros2_ws/src/robot_experiments/test/test_v6_formal.py",
+    )
+    for relative in paths:
+        destination = repository / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(subprocess.run(
+            ["git", "-C", str(REPO), "show", f"{active_head}:{relative}"],
+            check=True,
+            capture_output=True,
+        ).stdout)
+    commit_env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Codex Test",
+        "GIT_AUTHOR_EMAIL": "codex@example.invalid",
+        "GIT_COMMITTER_NAME": "Codex Test",
+        "GIT_COMMITTER_EMAIL": "codex@example.invalid",
+    }
+    subprocess.run(["git", "-C", str(repository), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(repository), "commit", "-qm", "active migration"],
+        check=True,
+        env=commit_env,
+    )
+    aggregate_head = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    for relative in paths[1:]:
+        (repository / relative).write_bytes((REPO / relative).read_bytes())
+    subprocess.run(
+        ["git", "-C", str(repository), "add", "--", *paths[1:]],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "commit", "-qm", "prospective hardening"],
+        check=True,
+        env=commit_env,
+    )
+    hardened_head = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return (
+        repository,
+        _promotion_entry(repository, aggregate_head),
+        _promotion_entry(repository, hardened_head),
+    )
+
+
 def _integration_promotion_repository(tmp_path: Path, mutation: str = "docs"):
     repository = tmp_path / f"integration-promotion-{mutation}"
     repository.mkdir()
@@ -3443,6 +3504,16 @@ def test_evaluator_hardening_accepts_one_way_active_to_false_policy_transition(
         "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py",
         "ros2_ws/src/robot_experiments/test/test_v6_formal.py",
     }
+
+
+def test_real_42d_ast_accepts_prospective_hardening_with_unchanged_guard_signature(
+    tmp_path,
+):
+    repository, aggregate, hardened = _real_hardening_repository(tmp_path)
+
+    assert v6_formal_module._evaluator_only_ast_guard(
+        repository, aggregate["head"], hardened["head"]
+    ) is None
 
 
 def test_evaluator_steady_state_allows_only_offline_runner_and_test(
@@ -4642,7 +4713,9 @@ def test_indoor_hardening_chain_rejects_each_stage_or_repository_tamper(
         monkeypatch.setattr(
             v6_formal_module,
             "_evaluator_only_ast_guard",
-            lambda _repository, _from, _to: "steady",
+            lambda _repository, _from, _to: (_ for _ in ()).throw(
+                V6ContractError("evaluator promotion marker transition is not one-way")
+            ),
         )
     output.write_text(json.dumps(raw), encoding="utf-8")
 

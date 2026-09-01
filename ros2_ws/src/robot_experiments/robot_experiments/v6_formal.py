@@ -1437,7 +1437,7 @@ def _validator_only_loaded_identity(
 
 def _evaluator_only_ast_guard(
     repository: Path, from_head: str, to_head: str
-):
+) -> None:
     import ast
     import copy
 
@@ -1652,7 +1652,39 @@ def _evaluator_only_ast_guard(
                     raise V6ContractError(
                         "evaluator hardening chain helper changed outside hardening"
                     )
-    return transition
+    diff_rows, _digest = _validator_only_diff_evidence(
+        repository, from_head, to_head
+    )
+    diff_paths = {row["path"] for row in diff_rows}
+    migration_paths = {
+        "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py",
+        "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py",
+        "ros2_ws/src/robot_experiments/test/test_v6_formal.py",
+    }
+    hardening_paths = {
+        "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py",
+        "ros2_ws/src/robot_experiments/test/test_v6_formal.py",
+    }
+    steady_paths = {
+        "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py",
+        "ros2_ws/src/robot_experiments/test/test_v6_formal.py",
+    }
+    if (
+        any(row["status"] != "M" for row in diff_rows)
+        or (transition == "migration" and diff_paths != migration_paths)
+        or (transition == "hardening" and diff_paths != hardening_paths)
+        or (
+            transition == "steady"
+            and (
+                not diff_paths <= steady_paths
+                or "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py"
+                not in diff_paths
+            )
+        )
+    ):
+        raise V6ContractError(
+            "validator-only evaluator promotion path transition mismatch"
+        )
 
 
 def _validate_validator_only_head_promotion(
@@ -1836,35 +1868,7 @@ def _validate_validator_only_head_promotion(
     if legacy_promotion:
         _validator_only_ast_guard(module3_root, from_head, to_head)
     else:
-        transition = _evaluator_only_ast_guard(module3_root, from_head, to_head)
-        migration_paths = {
-            "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py",
-            "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py",
-            "ros2_ws/src/robot_experiments/test/test_v6_formal.py",
-        }
-        hardening_paths = {
-            "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py",
-            "ros2_ws/src/robot_experiments/test/test_v6_formal.py",
-        }
-        steady_allowed_paths = {
-            "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py",
-            "ros2_ws/src/robot_experiments/test/test_v6_formal.py",
-        }
-        if (
-            (transition == "migration" and diff_paths != migration_paths)
-            or (transition == "hardening" and diff_paths != hardening_paths)
-            or (
-                transition == "steady"
-                and (
-                    not diff_paths <= steady_allowed_paths
-                    or "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py"
-                    not in diff_paths
-                )
-            )
-        ):
-            raise V6ContractError(
-                "validator-only evaluator promotion path transition mismatch"
-            )
+        _evaluator_only_ast_guard(module3_root, from_head, to_head)
     loaded_identity = _validator_only_loaded_identity(module3_root, to_head)
     if promotion.get("loaded_validator") != loaded_identity:
         raise V6ContractError("validator-only promotion loaded validator identity mismatch")
@@ -2358,35 +2362,7 @@ def _validate_historical_validator_promotion(
     ):
         _validator_only_ast_guard(module3_root, from_head, to_head)
     else:
-        transition = _evaluator_only_ast_guard(module3_root, from_head, to_head)
-        migration_paths = {
-            "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py",
-            "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py",
-            "ros2_ws/src/robot_experiments/test/test_v6_formal.py",
-        }
-        hardening_paths = {
-            "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py",
-            "ros2_ws/src/robot_experiments/test/test_v6_formal.py",
-        }
-        steady_paths = {
-            "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py",
-            "ros2_ws/src/robot_experiments/test/test_v6_formal.py",
-        }
-        if (
-            (transition == "migration" and historical_paths != migration_paths)
-            or (transition == "hardening" and historical_paths != hardening_paths)
-            or (
-                transition == "steady"
-                and (
-                    not historical_paths <= steady_paths
-                    or "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py"
-                    not in historical_paths
-                )
-            )
-        ):
-            raise V6ContractError(
-                "historical evaluator promotion path transition mismatch"
-            )
+        _evaluator_only_ast_guard(module3_root, from_head, to_head)
     loaded = _mapping(promotion.get("loaded_validator"), "historical loaded_validator")
     relative = "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py"
     source = _validator_only_git_output(
@@ -2520,8 +2496,7 @@ def _validate_evaluator_hardening_chain(
                 "ros2_ws/src/robot_experiments/test/test_v6_formal.py",
             } or {row["status"] for row in rows} != expected:
                 raise V6ContractError("evaluator hardening Module3 diff mismatch")
-            if _evaluator_only_ast_guard(repository, from_head, to_head) != "hardening":
-                raise V6ContractError("evaluator hardening AST transition mismatch")
+            _evaluator_only_ast_guard(repository, from_head, to_head)
     loaded = _validator_only_loaded_identity(
         Path(freeze["repositories"]["module3"]["path"]),
         freeze["repositories"]["module3"]["head"],
