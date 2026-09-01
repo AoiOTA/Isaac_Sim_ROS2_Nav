@@ -1,4 +1,5 @@
 from collections import deque
+import copy
 from dataclasses import replace
 import errno
 import hashlib
@@ -953,11 +954,52 @@ def _write_formal_run(
             serialize_message(planning),
             13_190_000_000,
         )
+    critic_refresh_mutations = {
+        "critic_refresh_age_selects_older_source",
+        "critic_refresh_no_matching_validation",
+        "critic_refresh_wrong_sequence",
+        "critic_refresh_identity_mismatch",
+        "critic_refresh_source_stamp_mismatch",
+        "critic_refresh_source_age_mismatch",
+        "critic_refresh_future_source",
+    }
+    if cognitive_mutation in critic_refresh_mutations:
+        refresh = copy.deepcopy(source)
+        refresh.validation_stamp.nanosec = 350000998
+        refresh.header.stamp.nanosec = 350000000
+        refresh.source_odom_stamp.nanosec = 366665668
+        refresh.validation_odom_stamp.nanosec = 366666666
+        if cognitive_mutation == "critic_refresh_wrong_sequence":
+            refresh.sequence = 99
+        elif cognitive_mutation == "critic_refresh_identity_mismatch":
+            refresh.map_version = "0" * 64
+        elif cognitive_mutation == "critic_refresh_source_stamp_mismatch":
+            refresh.header.stamp.nanosec += 1
+        elif cognitive_mutation == "critic_refresh_source_age_mismatch":
+            refresh.source_age.nanosec += 1
+        if cognitive_mutation != "critic_refresh_future_source":
+            writer.write(
+                "/bio_nav/module2/cognitive_obstacles",
+                serialize_message(refresh),
+                13_400_000_000,
+            )
+        for endpoint in (
+            refresh.source_odom_stamp,
+            refresh.validation_odom_stamp,
+        ):
+            odom = Odometry()
+            odom.header.stamp = endpoint
+            writer.write("/odom", serialize_message(odom), stamp)
+            stamp += 1
     post_sequence = 4 if cognitive_mutation == "async_lag" else 3
     post_validation_stamp_s = 13.100000998 if post_sequence == 4 else 13.000000998
     critic_status = RiskLayerStatus()
     critic_status.stamp.sec = 13
-    critic_status.stamp.nanosec = 300000000
+    critic_status.stamp.nanosec = (
+        450000000
+        if cognitive_mutation in critic_refresh_mutations
+        else 300000000
+    )
     critic_status.consumer = (
         "spoof.FollowPath.CognitiveRiskCritic"
         if cognitive_mutation == "component_spoof"
@@ -974,6 +1016,15 @@ def _write_formal_run(
     critic_status.message_age_ms = (
         350.0
         if cognitive_mutation == "age_mismatch"
+        else 250.0
+        if cognitive_mutation == "critic_refresh_no_matching_validation"
+        else 99.999002
+        if cognitive_mutation in critic_refresh_mutations - {
+            "critic_refresh_age_selects_older_source",
+            "critic_refresh_no_matching_validation",
+        }
+        else 449.999002
+        if cognitive_mutation == "critic_refresh_age_selects_older_source"
         else (13.3 - post_validation_stamp_s) * 1000.0
     )
     critic_status.fallback_reason = (
@@ -1013,6 +1064,8 @@ def _write_formal_run(
     critic_record_ns = (
         13_310_000_000
         if cognitive_mutation == "critic_same_timestamp_before_motion"
+        else 13_500_000_000
+        if cognitive_mutation in critic_refresh_mutations
         else 13_300_000_000
     )
     if cognitive_mutation not in {
@@ -1024,9 +1077,23 @@ def _write_formal_run(
             serialize_message(critic_status),
             critic_record_ns,
         )
+    if cognitive_mutation == "critic_refresh_future_source":
+        writer.write(
+            "/bio_nav/module2/cognitive_obstacles",
+            serialize_message(refresh),
+            13_505_000_000,
+        )
     nonzero = Twist()
     nonzero.linear.x = 0.2
-    writer.write("/cmd_vel_sim", serialize_message(nonzero), 13_310_000_000)
+    writer.write(
+        "/cmd_vel_sim",
+        serialize_message(nonzero),
+        (
+            13_510_000_000
+            if cognitive_mutation in critic_refresh_mutations
+            else 13_310_000_000
+        ),
+    )
     if cognitive_mutation in {
         "postdispatch_critic_late", "critic_same_timestamp_after_motion",
     }:
@@ -1058,7 +1125,11 @@ def _write_formal_run(
             serialize_message(critic_status),
             13_400_000_000,
         )
-    terminal_record_ns = 13_500_000_000
+    terminal_record_ns = (
+        13_700_000_000
+        if cognitive_mutation in critic_refresh_mutations
+        else 13_500_000_000
+    )
     for terminal_value in terminal_values:
         writer.write(
             "/bio_nav/route_goal_complete",
@@ -1066,8 +1137,18 @@ def _write_formal_run(
             terminal_record_ns,
         )
         terminal_record_ns += 1_000_000
-    writer.write("/cmd_vel_sim", serialize_message(Twist()), 13_600_000_000)
-    writer.write("/cmd_vel_sim", serialize_message(Twist()), 13_610_000_000)
+    writer.write(
+        "/cmd_vel_sim", serialize_message(Twist()),
+        13_800_000_000
+        if cognitive_mutation in critic_refresh_mutations
+        else 13_600_000_000,
+    )
+    writer.write(
+        "/cmd_vel_sim", serialize_message(Twist()),
+        13_810_000_000
+        if cognitive_mutation in critic_refresh_mutations
+        else 13_610_000_000,
+    )
     del writer
     coverage = experiment_runner_module._mcap_required_topic_coverage(
         telemetry / "metadata.yaml",
@@ -1112,7 +1193,11 @@ def _write_formal_run(
         "first_healthy_critic": (
             {
                 "runtime_order": 1,
-                "ros_stamp_s": 13.3,
+                "ros_stamp_s": (
+                    13.45
+                    if cognitive_mutation in critic_refresh_mutations
+                    else 13.3
+                ),
                 "received_monotonic": 1.0,
                 "source_sequence": post_sequence,
                 "reset_epoch": generation,
@@ -1125,7 +1210,11 @@ def _write_formal_run(
         ),
         "first_nonzero_cmd_vel": {
             "runtime_order": 2,
-            "ros_stamp_s": 13.31,
+            "ros_stamp_s": (
+                13.51
+                if cognitive_mutation in critic_refresh_mutations
+                else 13.31
+            ),
             "received_monotonic": 1.01,
         },
         "same_cycle_tolerance_ns": 1000000,
@@ -6935,6 +7024,73 @@ def test_formal_binary_mcap_accepts_lagging_critic_coherent_tuple(tmp_path):
     )
 
     assert evidence["cognitive_admission_replay"]["passed"] is True
+
+
+def test_formal_binary_mcap_critic_age_selects_older_same_sequence_source(
+    tmp_path,
+):
+    campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
+    root = _write_formal_run(
+        campaign.conditions[0],
+        1,
+        strict_success=True,
+        formal_freeze_digest=campaign.freeze_digest,
+        cognitive_mutation="critic_refresh_age_selects_older_source",
+    )
+
+    evidence = experiment_runner_module.validate_recorded_run_evidence(
+        root,
+        json.loads((root / "run_summary.json").read_text()),
+        json.loads((root / "run_manifest.json").read_text()),
+        scene="indoor",
+        route_guided=True,
+        route_prior_required=True,
+        expected_leg_count=5,
+        cognitive_admission_required=True,
+    )
+
+    assert evidence["cognitive_admission_replay"][
+        "postdispatch_critic_evidence"
+    ]["passed"] is True
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "critic_refresh_no_matching_validation",
+        "critic_refresh_wrong_sequence",
+        "critic_refresh_identity_mismatch",
+        "critic_refresh_source_stamp_mismatch",
+        "critic_refresh_source_age_mismatch",
+        "critic_refresh_future_source",
+    ),
+)
+def test_formal_binary_mcap_critic_source_refresh_fails_closed(
+    tmp_path, mutation,
+):
+    campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
+    root = _write_formal_run(
+        campaign.conditions[0],
+        1,
+        strict_success=True,
+        formal_freeze_digest=campaign.freeze_digest,
+        cognitive_mutation=mutation,
+    )
+
+    with pytest.raises(
+        experiment_runner_module.ConfigurationError,
+        match="recorded_cognitive_admission_invalid",
+    ):
+        experiment_runner_module.validate_recorded_run_evidence(
+            root,
+            json.loads((root / "run_summary.json").read_text()),
+            json.loads((root / "run_manifest.json").read_text()),
+            scene="indoor",
+            route_guided=True,
+            route_prior_required=True,
+            expected_leg_count=5,
+            cognitive_admission_required=True,
+        )
 
 
 def test_formal_binary_mcap_accepts_same_timestamp_reversed_layer_source(

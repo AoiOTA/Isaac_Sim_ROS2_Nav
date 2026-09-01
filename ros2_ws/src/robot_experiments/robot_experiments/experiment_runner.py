@@ -2196,25 +2196,29 @@ def _recorded_cognitive_admission_evidence(
     for row in sorted(critic_rows, key=lambda item: int(item["record_order"])):
         sequence = row.get("source_sequence")
         record_order = row.get("record_order")
-        source = (
-            latest_before(post_sources, sequence, int(record_order))
-            if isinstance(sequence, int) and isinstance(record_order, int)
-            else None
-        )
         periodic = (
             latest_before(post_planning, sequence, int(record_order))
             if isinstance(sequence, int) and isinstance(record_order, int)
             else None
         )
-        healthy = _recorded_status_healthy(
-            role="critic",
-            row=row,
-            source=source,
-            planning=periodic,
-            expected_mode="active",
-            maximum_age_s=float(stored_critic["maximum_age_s"]),
-            odom_stamps=odom_stamps,
-        )
+        matching_sources = [
+            source for source in post_sources
+            if isinstance(sequence, int)
+            and isinstance(record_order, int)
+            and source.get("sequence") == sequence
+            and isinstance(source.get("record_order"), int)
+            and source["record_order"] < record_order
+            and _recorded_status_healthy(
+                role="critic",
+                row=row,
+                source=source,
+                planning=periodic,
+                expected_mode="active",
+                maximum_age_s=float(stored_critic["maximum_age_s"]),
+                odom_stamps=odom_stamps,
+            )
+        ]
+        healthy = len(matching_sources) == 1
         critic_bad = critic_bad or not healthy
         if healthy and first_healthy_critic is None:
             first_healthy_critic = row
