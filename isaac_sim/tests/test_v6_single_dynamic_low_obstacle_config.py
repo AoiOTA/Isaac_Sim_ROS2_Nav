@@ -19,9 +19,9 @@ def test_single_dynamic_low_box_geometry_motion_and_visibility_contract():
     assert scenario.coordinate_frame == "map"
     assert scenario.seed == 8601
     assert actor.obstacle_id == "v6_dynamic_low_box_solo"
-    assert actor.size == pytest.approx((0.30, 0.30, 0.16))
-    assert case.waypoints[0] == pytest.approx((-1.25, -0.35, 0.08))
-    assert case.waypoints[1] == pytest.approx((-0.45, -0.35, 0.08))
+    assert actor.size == pytest.approx((0.30, 0.30, 0.40))
+    assert case.waypoints[0] == pytest.approx((-1.25, -0.35, 0.20))
+    assert case.waypoints[1] == pytest.approx((-0.45, -0.35, 0.20))
     assert actor.speed == pytest.approx(0.25)
     assert case.max_acceleration == pytest.approx(0.50)
     assert actor.post_motion == "park"
@@ -36,8 +36,8 @@ def test_single_dynamic_low_box_geometry_motion_and_visibility_contract():
     lower = actor.start[2] - actor.size[2] / 2.0
     upper = actor.start[2] + actor.size[2] / 2.0
     assert lower == pytest.approx(0.0)
-    assert upper == pytest.approx(0.16)
-    assert upper < 0.333
+    assert upper == pytest.approx(0.40)
+    assert upper > 0.333
 
 
 def test_single_dynamic_low_box_gate_requires_the_frozen_g2_approach():
@@ -70,9 +70,9 @@ def test_single_dynamic_low_box_profile_reaches_park_point_with_limits():
     )
     finish = manager._trajectory(case, case.variant("v1"), duration + 0.01)
 
-    assert start[0] == pytest.approx((-1.25, -0.35, 0.08))
+    assert start[0] == pytest.approx((-1.25, -0.35, 0.20))
     assert start[1] == pytest.approx(0.0)
-    assert finish[0] == pytest.approx((-0.45, -0.35, 0.08))
+    assert finish[0] == pytest.approx((-0.45, -0.35, 0.20))
     assert finish[1] == pytest.approx(0.0)
     assert finish[2] == pytest.approx(1.0)
     assert finish[3] == "clearing"

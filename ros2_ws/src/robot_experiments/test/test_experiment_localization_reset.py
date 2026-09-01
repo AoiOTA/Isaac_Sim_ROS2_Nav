@@ -78,6 +78,10 @@ def test_default_enabled_slam_buffer_clear_still_fails_closed_when_service_missi
 def _planning_prior(*, stamp_sec: int, healthy: bool):
     return SimpleNamespace(
         stamp=SimpleNamespace(sec=stamp_sec, nanosec=0),
+        sequence=stamp_sec,
+        reset_epoch=2,
+        recurrent_session_id="session-2",
+        map_version="cf9eb6dce097b3a58b82c3b52b7a12f5d77ef6901c00d31029a1eda8038e63fc",
         module2_healthy=healthy,
         place_entropy_normalized=0.58,
         context_uncertainty=0.58,
@@ -101,6 +105,10 @@ def test_planning_readiness_uses_consecutive_fresh_healthy_priors_only():
     assert runner._planning_prior_ready_streak == 5
     assert runner._latest_planning_prior_readiness == {
         "stamp_s": 5.0,
+        "sequence": 5,
+        "reset_epoch": 2,
+        "recurrent_session_id": "session-2",
+        "map_version": "cf9eb6dce097b3a58b82c3b52b7a12f5d77ef6901c00d31029a1eda8038e63fc",
         "module2_healthy": True,
         "place_entropy_normalized": 0.58,
         "context_uncertainty": 0.58,
@@ -312,14 +320,17 @@ def test_route_guided_arms_only_after_four_legs_and_before_final_goal():
     assert arm_publication_counts == [4]
 
 
-def test_g2_retirement_barrier_failure_stops_before_g3_dispatch():
+def test_g2_retirement_identity_failure_stops_before_g3_dispatch():
     specifications = tuple(
         SimpleNamespace(goal_id=identifier) for identifier in ("G1", "G2", "G3")
     )
 
     def complete(goal_id):
         if goal_id == "G2":
-            raise RuntimeError("retirement barrier timed out")
+            raise RuntimeError(
+                "dynamic obstacle retirement clearance source/PlanningPrior "
+                "identity mismatch"
+            )
         return (f"actor-{goal_id}",)
 
     runner = SimpleNamespace(
@@ -355,7 +366,7 @@ def test_g2_retirement_barrier_failure_stops_before_g3_dispatch():
     )
     runner._route_goal_publisher = _RouteGoalPublisher(runner)
 
-    with pytest.raises(RuntimeError, match="retirement barrier timed out"):
+    with pytest.raises(RuntimeError, match="source/PlanningPrior identity mismatch"):
         ExperimentRunner._navigate_route_guided(runner)
 
     assert [item.goal_id for item in runner._route_goal_publisher.messages] == [

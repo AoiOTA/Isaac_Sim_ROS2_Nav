@@ -138,6 +138,14 @@ DYNAMIC_RETIREMENT_CLEAR_TIMEOUT_SEC = 2.0
 V6_STATIC_REFERENCE_SCENARIO_ID = "v6_final_kujiale_static"
 
 
+def _valid_sha256(value: object) -> bool:
+    return bool(
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
 def _strict_success_from_leg_count(
     result: object,
     leg_count: int,
@@ -1696,6 +1704,10 @@ class ExperimentRunner(Node):
         dynamic = [float(value) for value in message.dynamic_cost]
         self._latest_planning_prior_readiness = {
             "stamp_s": stamp_s,
+            "sequence": int(message.sequence),
+            "reset_epoch": int(message.reset_epoch),
+            "recurrent_session_id": str(message.recurrent_session_id),
+            "map_version": str(message.map_version),
             "module2_healthy": bool(message.module2_healthy),
             "place_entropy_normalized": float(
                 message.place_entropy_normalized
@@ -2929,13 +2941,35 @@ class ExperimentRunner(Node):
                     "dynamic obstacle retirement clearance has no current cognitive source"
                 )
             reset_generation = int((self._reset_receipt or {}).get("generation", -1))
+            planning = self._latest_planning_prior_readiness
+            if not isinstance(planning, Mapping):
+                raise RuntimeError(
+                    "dynamic obstacle retirement clearance has no current PlanningPrior"
+                )
+            planning_identity = (
+                int(planning.get("reset_epoch", -1)),
+                str(planning.get("recurrent_session_id", "")),
+                str(planning.get("map_version", "")),
+            )
             if (
                 expected_source_identity[0] != reset_generation
                 or not expected_source_identity[1]
-                or expected_source_identity[2] != self._scenario.map_version
             ):
                 raise RuntimeError(
                     "dynamic obstacle retirement clearance source identity is not current"
+                )
+            if (
+                not _valid_sha256(expected_source_identity[2])
+                or not _valid_sha256(planning_identity[2])
+            ):
+                raise RuntimeError(
+                    "dynamic obstacle retirement clearance content map identity "
+                    "is not a SHA256"
+                )
+            if expected_source_identity != planning_identity:
+                raise RuntimeError(
+                    "dynamic obstacle retirement clearance source/PlanningPrior "
+                    "identity mismatch"
                 )
             barrier_ros_s = self._clock_seconds()
             if barrier_ros_s is None:

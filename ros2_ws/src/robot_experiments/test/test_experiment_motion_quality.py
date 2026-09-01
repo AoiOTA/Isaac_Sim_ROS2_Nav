@@ -1,6 +1,7 @@
 import hashlib
 import json
 import math
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -21,7 +22,12 @@ from robot_experiments.experiment_runner import (
     _reset_dynamic_selection,
 )
 from robot_experiments.configuration import ConfigurationError
-from robot_experiments.scenario import RunSelection
+from robot_experiments.scenario import RunSelection, load_scenario
+
+
+COGNITIVE_CONTENT_MAP_ID = (
+    "cf9eb6dce097b3a58b82c3b52b7a12f5d77ef6901c00d31029a1eda8038e63fc"
+)
 
 
 def test_tracked_route_length_replaces_untrimmed_canonical_edge_sum():
@@ -73,12 +79,15 @@ def _retirement_stamp(value):
     )
 
 
-def _retirement_source(*, sequence=9, session="session-2", obstacles=()):
+def _retirement_source(
+    *, sequence=9, session="session-2", map_version=COGNITIVE_CONTENT_MAP_ID,
+    obstacles=(),
+):
     return SimpleNamespace(
         sequence=sequence,
         reset_epoch=2,
         recurrent_session_id=session,
-        map_version="v6_kujiale_isaacgen_v1",
+        map_version=map_version,
         header=SimpleNamespace(stamp=_retirement_stamp(11.0)),
         validation_stamp=_retirement_stamp(11.0),
         obstacles=list(obstacles),
@@ -87,7 +96,7 @@ def _retirement_source(*, sequence=9, session="session-2", obstacles=()):
 
 def _retirement_status(
     scope, *, sequence=9, active_cells=0, maximum_cost=0, rejected=False,
-    reason="rejection_reason=offered",
+    reason="rejection_reason=offered", map_version=COGNITIVE_CONTENT_MAP_ID,
 ):
     return SimpleNamespace(
         consumer=f"/{scope}_costmap/{scope}_costmap:cognitive_obstacle_layer",
@@ -102,7 +111,7 @@ def _retirement_status(
         source_sequence=sequence,
         reset_epoch=2,
         recurrent_session_id="session-2",
-        map_version="v6_kujiale_isaacgen_v1",
+        map_version=map_version,
         stamp=_retirement_stamp(11.0),
     )
 
@@ -134,7 +143,7 @@ def _retirement_observed(runner):
         {"dynamic_box"},
         10.0,
         8,
-        (2, "session-2", "v6_kujiale_isaacgen_v1"),
+        (2, "session-2", COGNITIVE_CONTENT_MAP_ID),
         {"global": 8, "local": 8},
     )
 
@@ -212,6 +221,12 @@ def _completion_runner(future):
     runner._obstacle_complete_clients = {"G2": _CompletionClient(future)}
     runner._wait_future = lambda _future, _deadline: True
     runner._reset_receipt = {"generation": 2}
+    runner._latest_planning_prior_readiness = {
+        "sequence": 8,
+        "reset_epoch": 2,
+        "recurrent_session_id": "session-2",
+        "map_version": COGNITIVE_CONTENT_MAP_ID,
+    }
     runner._clock_seconds = lambda: 10.0
     runner._clear_navigation_costmaps = lambda **_kwargs: None
     return runner
@@ -257,7 +272,36 @@ def test_completion_shares_two_second_budget_between_clear_and_receipt_wait(
     runner._wait_until = wait_until
 
     assert runner._complete_obstacle_group("G2") == ("dynamic_box",)
+    assert runner._scenario.map_version != COGNITIVE_CONTENT_MAP_ID
     assert calls == [("clear", 102.0), ("wait", 0.75)]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("source-non-sha", "prior-non-sha", "source-prior-mismatch"),
+)
+def test_completion_rejects_invalid_or_mismatched_content_map_identity(mutation):
+    response = SimpleNamespace(
+        success=True,
+        message=json.dumps({"group": "G2", "retired": ["dynamic_box"]}),
+    )
+    runner = _completion_runner(_CompletionFuture(response))
+    if mutation == "source-non-sha":
+        runner._latest_cognitive_obstacles.map_version = "semantic-map-label"
+        expected = "not a SHA256"
+    elif mutation == "prior-non-sha":
+        runner._latest_planning_prior_readiness["map_version"] = "not-a-sha"
+        expected = "not a SHA256"
+    else:
+        runner._latest_planning_prior_readiness["map_version"] = "a" * 64
+        expected = "source/PlanningPrior identity mismatch"
+    clears = []
+    runner._clear_navigation_costmaps = lambda **_kwargs: clears.append(True)
+
+    with pytest.raises(RuntimeError, match=expected):
+        runner._complete_obstacle_group("G2")
+
+    assert clears == []
 
 
 def test_missing_costmap_clear_service_consumes_no_more_than_barrier_budget(
@@ -337,6 +381,25 @@ def test_static_reference_gate_excludes_appearance_scenario_identity():
     )
     assert not _requires_v6_static_reference(appearance)
     assert _static_reference_metric_failure(appearance, None) is None
+
+
+def test_static_and_appearance_keep_fixed_obstacle_selector_outside_retirement_barrier():
+    config_root = Path(__file__).parents[1] / "config"
+    scenarios = [
+        load_scenario(config_root / f"v6_final_kujiale_{condition}.yaml")
+        for condition in ("static", "appearance")
+    ]
+    runner = object.__new__(ExperimentRunner)
+
+    for scenario in scenarios:
+        runner._scenario = scenario
+        runner._active_selection = scenario.run_matrix[0]
+        assert scenario.dynamic_config_file.endswith(
+            "v6_kujiale_low_obstacles_frozen.yaml"
+        )
+        assert scenario.obstacles["static"] == [{"id": "v6_low_box_solo"}]
+        assert scenario.obstacle_trajectories == ()
+        assert not runner._requires_dynamic_retirement_clearance("G2", set())
 
 
 def test_strict_success_counts_single_goal_when_route_is_omitted():

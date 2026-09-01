@@ -468,9 +468,9 @@ def test_v6_final_kujiale_physical_geometry_variants_and_appearance_profiles():
     case = dynamic["cases"]["single_dynamic_low_box"]
     assert case["trigger_group"] == "G2"
     assert case["obstacle"]["id"] == "v6_dynamic_low_box_solo"
-    assert case["obstacle"]["size"] == [0.30, 0.30, 0.16]
+    assert case["obstacle"]["size"] == [0.30, 0.30, 0.40]
     assert case["obstacle"]["waypoints"] == [
-        [-1.25, -0.35, 0.08], [-0.45, -0.35, 0.08],
+        [-1.25, -0.35, 0.20], [-0.45, -0.35, 0.20],
     ]
     assert case["obstacle"]["speed"] == pytest.approx(0.25)
     assert [row["start_delay_sec"] for row in case["variants"].values()] == [
