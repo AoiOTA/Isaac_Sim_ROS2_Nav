@@ -4145,13 +4145,12 @@ source_ros() { :; }
         "v6_final_kujiale_appearance.yaml",
     ):
         (scenario_directory / name).touch()
-    nav2_directory = project / "ros2_ws/src/robot_navigation/config"
-    nav2_directory.mkdir(parents=True, exist_ok=True)
-    for name in (
-        "nav2_v6_low_obstacle_isolation.yaml",
-        "nav2_v6_low_obstacle_static_appearance.yaml",
-    ):
-        (nav2_directory / name).touch()
+    nav2_config = (
+        project
+        / "ros2_ws/src/robot_navigation/config/nav2_v6_low_obstacle_isolation.yaml"
+    )
+    nav2_config.parent.mkdir(parents=True, exist_ok=True)
+    nav2_config.touch()
     spawn_poses = (
         project
         / "isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml"
@@ -4202,18 +4201,15 @@ def test_v6_low_obstacle_default_condition_is_explicit_static(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("condition", "scenario_name", "profile_name"),
+    ("condition", "scenario_name"),
     [
-        ("static", "v6_final_kujiale_static.yaml",
-         "v6_low_obstacle_static_appearance"),
-        ("dynamic", "v6_final_kujiale_dynamic.yaml",
-         "v6_low_obstacle_isolation"),
-        ("appearance", "v6_final_kujiale_appearance.yaml",
-         "v6_low_obstacle_static_appearance"),
+        ("static", "v6_final_kujiale_static.yaml"),
+        ("dynamic", "v6_final_kujiale_dynamic.yaml"),
+        ("appearance", "v6_final_kujiale_appearance.yaml"),
     ],
 )
 def test_v6_runner_condition_selects_scenario_and_fixed_nav2_config(
-    tmp_path, condition, scenario_name, profile_name
+    tmp_path, condition, scenario_name
 ):
     project, _constraints, result = _run_low_obstacle_wrapper(
         tmp_path,
@@ -4236,10 +4232,10 @@ def test_v6_runner_condition_selects_scenario_and_fixed_nav2_config(
         f"scenario_file:={project}/ros2_ws/src/robot_experiments/config/"
         f"{scenario_name}"
     ) in argv
-    assert f"nav2_profile:={profile_name}" in argv
+    assert "nav2_profile:=v6_low_obstacle_isolation" in argv
     assert (
         f"nav2_config_file:={project}/ros2_ws/src/robot_navigation/config/"
-        f"nav2_{profile_name}.yaml"
+        "nav2_v6_low_obstacle_isolation.yaml"
     ) in argv
     assert f"output_directory:={tmp_path / 'runs'}" in argv
     assert "run_indices:=1,3" in argv
@@ -4395,7 +4391,7 @@ def test_v6_physical_configs_stay_default_off_and_wrapper_activates_them():
         (("ros-d", "hybrid"), "dynamic"),
     ],
 )
-def test_v6_ros_profiles_fork_only_by_authorized_condition_profile(
+def test_v6_ros_profiles_do_not_fork_by_condition(
     tmp_path, profile_arguments, condition
 ):
     _project, _constraints, baseline = _run_low_obstacle_wrapper(
@@ -4405,20 +4401,7 @@ def test_v6_ros_profiles_fork_only_by_authorized_condition_profile(
         tmp_path, "--condition", condition, *profile_arguments
     )
 
-    expected = (
-        "v6_low_obstacle_isolation"
-        if condition == "dynamic"
-        else "v6_low_obstacle_static_appearance"
-    )
-    selected_argv = selected.stdout.splitlines()
-    baseline_argv = baseline.stdout.splitlines()
-    assert f"nav2_profile:={expected}" in selected_argv
-    assert "nav2_profile:=v6_low_obstacle_static_appearance" in baseline_argv
-    assert [
-        item for item in selected_argv if not item.startswith("nav2_profile:=")
-    ] == [
-        item for item in baseline_argv if not item.startswith("nav2_profile:=")
-    ]
+    assert selected.stdout == baseline.stdout
 
 
 @pytest.mark.parametrize(
@@ -4437,14 +4420,14 @@ def test_v6_wrapper_rejects_invalid_condition(tmp_path, arguments):
     assert result.stdout == ""
 
 
-def test_v6_static_appearance_profile_is_registered_as_appearance_safe():
+def test_v6_low_obstacle_profile_is_registered_as_appearance_safe():
     runner = (PACKAGE / "robot_experiments/experiment_runner.py").read_text(
         encoding="utf-8"
     )
     appearance_profiles = runner.split(
         "APPEARANCE_NAV2_PROFILES = frozenset({", 1
     )[1].split("})", 1)[0]
-    assert '"v6_low_obstacle_static_appearance"' in appearance_profiles
+    assert '"v6_low_obstacle_isolation"' in appearance_profiles
 
 
 def test_v6_runner_fixes_spawn_and_keeps_module2_readiness_explicit(tmp_path):
@@ -4487,7 +4470,7 @@ def test_phase_f_mixed_argv_uses_occupancy_map_without_posegraph(tmp_path, arm):
         "navigation",
         "odometry_mode:=mixed",
         "localization_profile:=kujiale",
-        "nav2_profile:=v6_low_obstacle_static_appearance",
+        "nav2_profile:=v6_low_obstacle_isolation",
         f"cognitive_profile:={arm}",
         "cognitive_graph_mode:=gvg",
         "initial_pose_source:=auto",
@@ -4518,7 +4501,7 @@ def test_legacy_shadow_argv_keeps_estimated_rf2o_posegraph_bundle(tmp_path):
         "navigation",
         "odometry_mode:=estimated",
         "localization_profile:=kujiale",
-        "nav2_profile:=v6_low_obstacle_static_appearance",
+        "nav2_profile:=v6_low_obstacle_isolation",
         "cognitive_profile:=M1",
         "cognitive_graph_mode:=gvg",
         "initial_pose_source:=rviz",

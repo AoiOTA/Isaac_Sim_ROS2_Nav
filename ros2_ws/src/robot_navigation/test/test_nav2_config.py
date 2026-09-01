@@ -1,6 +1,4 @@
 import ast
-import copy
-import hashlib
 import importlib.util
 import math
 from pathlib import Path
@@ -56,32 +54,6 @@ def test_v6_m3_isolation_disables_raw_depth_and_activates_cognitive_inputs():
     for name in ('local_costmap', 'global_costmap'):
         assert final[name][name]['ros__parameters'][
             'cognitive_obstacle_layer']['mode'] == 'active'
-
-
-def test_v6_static_appearance_effective_profile_changes_only_layer_modes():
-    old_path = PACKAGE_ROOT / 'config/nav2_v6_low_obstacle_isolation.yaml'
-    new_path = (
-        PACKAGE_ROOT / 'config/nav2_v6_low_obstacle_static_appearance.yaml')
-    assert old_path.read_bytes() == new_path.read_bytes()
-    assert hashlib.sha256(old_path.read_bytes()).hexdigest() == (
-        '954d8d891f66354f83a7b838217d40c9faabe8f970ff083c8504498b6e76c8fc')
-
-    modes_file = PACKAGE_ROOT.parent / 'robot_bringup/config/modes.yaml'
-    profile = validate_cognitive_profile('M3', modes_file)
-    dynamic = cognitive_nav2_parameters(profile)
-    static_appearance = cognitive_nav2_parameters(
-        profile, obstacle_layer_mode='shadow')
-    assert dynamic['controller_server'] == static_appearance['controller_server']
-    normalized = copy.deepcopy(static_appearance)
-    for name in ('local_costmap', 'global_costmap'):
-        dynamic_layer = dynamic[name][name]['ros__parameters'][
-            'cognitive_obstacle_layer']
-        candidate_layer = normalized[name][name]['ros__parameters'][
-            'cognitive_obstacle_layer']
-        assert dynamic_layer == {'mode': 'active'}
-        assert candidate_layer == {'mode': 'shadow'}
-        candidate_layer['mode'] = 'active'
-    assert normalized == dynamic
 
 
 def test_planner_controller_and_costmaps_are_strictly_two_dimensional():

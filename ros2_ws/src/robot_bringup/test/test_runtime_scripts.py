@@ -424,19 +424,7 @@ def test_v6_wrapper_separates_local_c_arms_from_explicit_d_graph_modes():
     assert 'cognitive_graph_mode:="${graph_mode}"' in source
 
 
-@pytest.mark.parametrize(
-    ("condition", "scenario_name", "profile_name"),
-    (
-        ("static", "v6_final_kujiale_static.yaml",
-         "v6_low_obstacle_static_appearance"),
-        ("appearance", "v6_final_kujiale_appearance.yaml",
-         "v6_low_obstacle_static_appearance"),
-        ("dynamic", "v6_final_kujiale_dynamic.yaml",
-         "v6_low_obstacle_isolation"),
-    ),
-)
-def test_v6_runner_argv_passes_condition_profile_identity(
-        tmp_path, condition, scenario_name, profile_name):
+def test_v6_runner_argv_passes_effective_base_overlay_profile_identity(tmp_path):
     scripts = tmp_path / 'scripts'
     (scripts / 'lib').mkdir(parents=True)
     shutil.copy2(RUN_V6_LOW_OBSTACLES, scripts / RUN_V6_LOW_OBSTACLES.name)
@@ -449,9 +437,9 @@ source_ros() {{ :; }}
         encoding='utf-8',
     )
     scenario = (tmp_path / 'ros2_ws/src/robot_experiments/config'
-                / scenario_name)
+                / 'v6_final_kujiale_static.yaml')
     overlay = (tmp_path / 'ros2_ws/src/robot_navigation/config'
-               / f'nav2_{profile_name}.yaml')
+               / 'nav2_v6_low_obstacle_isolation.yaml')
     spawn = (tmp_path / 'isaac_sim/configs/environments'
              / 'kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml')
     for path in (scenario, overlay, spawn):
@@ -466,8 +454,7 @@ source_ros() {{ :; }}
     output = tmp_path / 'runs'
 
     result = subprocess.run(
-        [str(scripts / RUN_V6_LOW_OBSTACLES.name), '--condition', condition,
-         'runner', str(output)],
+        [str(scripts / RUN_V6_LOW_OBSTACLES.name), 'runner', str(output)],
         cwd=tmp_path,
         env=_environment(PATH=f'{tmp_path}:{os.environ["PATH"]}'),
         text=True,
@@ -483,7 +470,7 @@ source_ros() {{ :; }}
         f'scenario_file:={scenario}',
         f'spawn_poses_file:={spawn}',
         f'output_directory:={output}',
-        f'nav2_profile:={profile_name}',
+        'nav2_profile:=v6_low_obstacle_isolation',
         f'nav2_config_file:={overlay}',
     ]
 
@@ -525,21 +512,6 @@ die() {{ printf '%s\\n' "$*" >&2; return 1; }}
     )
     assert result.returncode == 0, result.stderr
     return result.stdout.splitlines()
-
-
-@pytest.mark.parametrize(
-    ("condition", "profile_name"),
-    (
-        ("static", "v6_low_obstacle_static_appearance"),
-        ("appearance", "v6_low_obstacle_static_appearance"),
-        ("dynamic", "v6_low_obstacle_isolation"),
-    ),
-)
-def test_v6_ros_argv_selects_condition_profile(tmp_path, condition, profile_name):
-    arguments = _v6_wrapper_argv(
-        tmp_path, "--condition", condition, "ros", "M3")
-
-    assert f"nav2_profile:={profile_name}" in arguments
 
 
 def test_v6_shadow_argv_defaults_to_topic_only_rf2o_with_wheel_imu(tmp_path):

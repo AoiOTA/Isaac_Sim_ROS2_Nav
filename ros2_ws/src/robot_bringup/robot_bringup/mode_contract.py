@@ -20,7 +20,7 @@ LOCALIZATION_MAP_CONTRACTS = frozenset({
 LOCALIZATION_OWNERS = frozenset({'auto', 'ideal', 'amcl'})
 NAV2_PROFILES = frozenset({
     'stable', 'performance', 'dynamic_avoidance', 'bio_nav_planning_only',
-    'v6_low_obstacle_isolation', 'v6_low_obstacle_static_appearance',
+    'v6_low_obstacle_isolation',
     'bio_nav_risk_only', 'bio_nav_tiebreak_risk',
     'attempt21_static_collection',
     'attempt22_reachability_shadow',
@@ -177,13 +177,8 @@ def resolve_ekf_profile(
     return 'module1_wheel_imu'
 
 
-def cognitive_nav2_parameters(profile, *, obstacle_layer_mode=None):
+def cognitive_nav2_parameters(profile):
     """Return the last-precedence exact-node parameters for M0--M3."""
-    layer_mode = profile.obstacle_layer_mode
-    if obstacle_layer_mode is not None:
-        layer_mode = str(obstacle_layer_mode).strip().lower()
-        _require_choice(
-            'obstacle_layer_mode', layer_mode, {'off', 'shadow', 'active'})
     return {
         'controller_server': {
             'ros__parameters': {
@@ -199,7 +194,7 @@ def cognitive_nav2_parameters(profile, *, obstacle_layer_mode=None):
             'local_costmap': {
                 'ros__parameters': {
                     'cognitive_obstacle_layer': {
-                        'mode': layer_mode,
+                        'mode': profile.obstacle_layer_mode,
                     },
                 },
             },
@@ -208,7 +203,7 @@ def cognitive_nav2_parameters(profile, *, obstacle_layer_mode=None):
             'global_costmap': {
                 'ros__parameters': {
                     'cognitive_obstacle_layer': {
-                        'mode': layer_mode,
+                        'mode': profile.obstacle_layer_mode,
                     },
                 },
             },

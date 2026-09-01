@@ -23,8 +23,6 @@ def test_nav2_profiles_are_bounded_and_normalized():
     assert validate_nav2_profile('dynamic_avoidance') == 'dynamic_avoidance'
     assert validate_nav2_profile('v6_low_obstacle_isolation') == \
         'v6_low_obstacle_isolation'
-    assert validate_nav2_profile('v6_low_obstacle_static_appearance') == \
-        'v6_low_obstacle_static_appearance'
     assert validate_nav2_profile('bio_nav_planning_only') == \
         'bio_nav_planning_only'
     assert validate_nav2_profile('bio_nav_risk_only') == \
