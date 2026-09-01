@@ -589,24 +589,13 @@ void CognitiveObstacleLayer::obstacleCallback(
             message->model_id};
           identity_bound_ = true;
         }
-        if (message->obstacles.empty()) {
-          const auto retracted_identity = staticTrackKey(*message, "");
-          for (auto it = static_tracks_.begin(); it != static_tracks_.end(); ) {
-            if (sameStaticIdentity(it->first, retracted_identity)) {
-              it = static_tracks_.erase(it);
-            } else {
-              ++it;
-            }
-          }
-        }
         latest_ = message;
         latest_admission_reason_.clear();
         recordAccepted(*message, accepted_);
       } else {
         latest_ = message;
         latest_admission_reason_ = reason;
-        if (reason == "identity" && !message->obstacles.empty() &&
-          identityFieldsPresent(*message) &&
+        if (reason == "identity" && identityFieldsPresent(*message) &&
           !sameIdentity(*message, expected_))
         {
           clearStaticTracks();

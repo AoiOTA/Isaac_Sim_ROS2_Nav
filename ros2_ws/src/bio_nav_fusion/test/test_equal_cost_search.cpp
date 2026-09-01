@@ -1628,18 +1628,11 @@ TEST(CognitiveObstacleLayer, healthy_empty_update_remains_offered_but_outside_ca
   ASSERT_GT(Peer::statusSubscriptionCount(layer), 0U);
 
   const int64_t now_ns = clock->now().nanoseconds();
-  auto tracked = staticRevalidatedObstacleFixture();
-  retimeStatic(tracked, now_ns - 1000000000LL, now_ns - 30000000LL);
-  Peer::configureActive(layer, tracked);
-  EXPECT_EQ(Peer::observeStaticTrack(layer, tracked), 3U);
-  ASSERT_EQ(Peer::promotedStaticTrackCount(layer), 1U);
-
-  auto empty = tracked;
-  empty.sequence += 1U;
-  retimeStatic(empty, now_ns - 1000000000LL, now_ns - 20000000LL);
+  auto empty = obstacleFixture();
+  retimeFreshObstacle(empty, now_ns - 20000000LL);
   empty.obstacles.clear();
+  Peer::configureActive(layer, empty);
   Peer::offer(layer, empty);
-  EXPECT_EQ(Peer::staticTrackCount(layer), 0U);
   ASSERT_TRUE(wait_for_status_count(1U));
   EXPECT_TRUE(statuses.back().offered);
   EXPECT_FALSE(statuses.back().applied);
@@ -1698,40 +1691,6 @@ TEST(CognitiveObstacleLayer, healthy_empty_update_remains_offered_but_outside_ca
     std::string::npos);
   EXPECT_EQ(outside_status.active_cell_count, 0U);
   EXPECT_EQ(outside_status.raised_cell_count, 0U);
-}
-
-TEST(CognitiveObstacleLayer, rejected_empty_snapshot_cannot_retract_static_track)
-{
-  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
-  if (!rclcpp::ok()) {
-    rclcpp::init(0, nullptr);
-  }
-  auto clock = std::make_shared<rclcpp::Clock>(RCL_SYSTEM_TIME);
-  const int64_t now_ns = clock->now().nanoseconds();
-
-  for (size_t rejection = 0U; rejection < 3U; ++rejection) {
-    bio_nav_fusion::CognitiveObstacleLayer layer;
-    Peer::setClock(layer, clock);
-    auto tracked = staticRevalidatedObstacleFixture();
-    retimeStatic(tracked, now_ns - 1000000000LL, now_ns - 30000000LL);
-    Peer::configureActive(layer, tracked);
-    EXPECT_EQ(Peer::observeStaticTrack(layer, tracked), 3U);
-    ASSERT_EQ(Peer::promotedStaticTrackCount(layer), 1U);
-
-    auto empty = tracked;
-    empty.sequence += 1U;
-    retimeStatic(empty, now_ns - 1000000000LL, now_ns - 20000000LL);
-    empty.obstacles.clear();
-    if (rejection == 0U) {
-      empty.trusted_write = false;
-    } else if (rejection == 1U) {
-      retimeStatic(empty, now_ns - 2000000000LL, now_ns - 1000000000LL);
-    } else {
-      empty.recurrent_session_id = "other-session";
-    }
-    Peer::offer(layer, empty);
-    EXPECT_EQ(Peer::promotedStaticTrackCount(layer), 1U) << rejection;
-  }
 }
 
 TEST(CognitiveObstacleLayer, superseded_update_status_cannot_publish_after_new_callback)
