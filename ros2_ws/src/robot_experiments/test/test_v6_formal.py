@@ -619,11 +619,16 @@ def _write_formal_run(
             else 0.2
         )
         planning.context_uncertainty = 0.1
-        writer.write(
-            "/bio_nav/module2/planning_prior",
-            serialize_message(planning),
-            semantic_sec * 1_000_000_000 + semantic_nanosec + 2_000_000,
+        delayed_planning = bool(
+            cognitive_mutation == "layer_planning_not_before_status"
+            and sequence == 3
         )
+        if not delayed_planning:
+            writer.write(
+                "/bio_nav/module2/planning_prior",
+                serialize_message(planning),
+                semantic_sec * 1_000_000_000 + semantic_nanosec + 2_000_000,
+            )
         stamp += 1
         source = CognitiveObstacleArray()
         source.header.frame_id = "base_link"
@@ -673,11 +678,23 @@ def _write_formal_run(
         source.module2_healthy = True
         source.observation_valid = True
         source.trusted_write = True
-        writer.write(
-            "/bio_nav/module2/cognitive_obstacles",
-            serialize_message(source),
-            semantic_sec * 1_000_000_000 + semantic_nanosec + 3_000_000,
+        delayed_source = bool(
+            sequence == 3
+            and cognitive_mutation in {
+                "layer_source_same_timestamp_reversed",
+                "layer_source_later_than_status",
+                "layer_source_same_timestamp_sequence_mismatch",
+                "layer_source_same_timestamp_identity_mismatch",
+                "layer_source_same_timestamp_source_stamp_mismatch",
+                "layer_source_same_timestamp_age_mismatch",
+            }
         )
+        if not delayed_source:
+            writer.write(
+                "/bio_nav/module2/cognitive_obstacles",
+                serialize_message(source),
+                semantic_sec * 1_000_000_000 + semantic_nanosec + 3_000_000,
+            )
         stamp += 1
         for endpoint in (
             source.source_odom_stamp,
@@ -770,6 +787,31 @@ def _write_formal_run(
                 + semantic_nanosec + 25_000_000,
             )
             stamp += 1
+        if delayed_source:
+            if cognitive_mutation == "layer_source_same_timestamp_sequence_mismatch":
+                source.sequence = 99
+            elif cognitive_mutation == "layer_source_same_timestamp_identity_mismatch":
+                source.map_version = "0" * 64
+            elif cognitive_mutation == "layer_source_same_timestamp_source_stamp_mismatch":
+                source.header.stamp.nanosec += 1
+            elif cognitive_mutation == "layer_source_same_timestamp_age_mismatch":
+                source.source_age.nanosec += 1
+            writer.write(
+                "/bio_nav/module2/cognitive_obstacles",
+                serialize_message(source),
+                semantic_sec * 1_000_000_000 + semantic_nanosec
+                + (
+                    26_000_000
+                    if cognitive_mutation == "layer_source_later_than_status"
+                    else 25_000_000
+                ),
+            )
+        if delayed_planning:
+            writer.write(
+                "/bio_nav/module2/planning_prior",
+                serialize_message(planning),
+                semantic_sec * 1_000_000_000 + semantic_nanosec + 25_000_000,
+            )
     if cognitive_mutation in {
         "post_ready_same_sequence_status",
         "postdispatch_record_with_old_status_stamp",
@@ -6895,6 +6937,48 @@ def test_formal_binary_mcap_accepts_lagging_critic_coherent_tuple(tmp_path):
     assert evidence["cognitive_admission_replay"]["passed"] is True
 
 
+def test_formal_binary_mcap_accepts_same_timestamp_reversed_layer_source(
+    tmp_path,
+):
+    campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
+    root = _write_formal_run(
+        campaign.conditions[0],
+        1,
+        strict_success=True,
+        formal_freeze_digest=campaign.freeze_digest,
+        cognitive_mutation="layer_source_same_timestamp_reversed",
+    )
+
+    evidence = experiment_runner_module.validate_recorded_run_evidence(
+        root,
+        json.loads((root / "run_summary.json").read_text()),
+        json.loads((root / "run_manifest.json").read_text()),
+        scene="indoor",
+        route_guided=True,
+        route_prior_required=True,
+        expected_leg_count=5,
+        cognitive_admission_required=True,
+    )
+
+    assert evidence["cognitive_admission_replay"]["passed"] is True
+    recorded = evidence["inventory"]["semantic"]["cognitive_admission"]
+    source = next(row for row in recorded["sources"] if row["sequence"] == 3)
+    layers = [
+        row for row in recorded["statuses"]
+        if row["source_sequence"] == 3
+        and row["topic"] == "/bio_nav/cognitive_obstacle_layer/status"
+    ]
+    assert {row["consumer"] for row in layers} == {
+        "/global_costmap/global_costmap:cognitive_obstacle_layer",
+        "/local_costmap/local_costmap:cognitive_obstacle_layer",
+    }
+    assert all(source["record_order"] > row["record_order"] for row in layers)
+    assert all(
+        source["record_timestamp_ns"] == row["record_timestamp_ns"]
+        for row in layers
+    )
+
+
 def test_formal_binary_mcap_accepts_current_graph_provenance(tmp_path):
     campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
     root = _write_formal_run(
@@ -7102,6 +7186,12 @@ def test_product_failure_terminal_false_starts_zero_tail(tmp_path, terminals):
         "semantic_map_mismatch", "content_map_mismatch",
         "topology_zero", "topology_row_tamper",
         "graph_provenance_empty", "graph_provenance_mismatch",
+        "layer_source_later_than_status",
+        "layer_source_same_timestamp_sequence_mismatch",
+        "layer_source_same_timestamp_identity_mismatch",
+        "layer_source_same_timestamp_source_stamp_mismatch",
+        "layer_source_same_timestamp_age_mismatch",
+        "layer_planning_not_before_status",
     ),
 )
 def test_formal_binary_mcap_replay_rejects_adversarial_cognitive_chain(

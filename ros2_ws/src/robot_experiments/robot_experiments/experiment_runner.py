@@ -1265,10 +1265,21 @@ def _recorded_status_healthy(
         return False
     age_ms = row.get("message_age_ms")
     status_order = row.get("record_order")
-    if not (
+    source_order_precedes = bool(
         isinstance(status_order, int)
         and isinstance(source.get("record_order"), int)
         and source["record_order"] < status_order
+    )
+    source_shares_layer_storage_timestamp = bool(
+        role in {"global_layer", "local_layer"}
+        and isinstance(row.get("record_timestamp_ns"), int)
+        and isinstance(source.get("record_timestamp_ns"), int)
+        and source["record_timestamp_ns"] == row["record_timestamp_ns"]
+    )
+    if not (
+        isinstance(status_order, int)
+        and isinstance(source.get("record_order"), int)
+        and (source_order_precedes or source_shares_layer_storage_timestamp)
         and isinstance(planning.get("record_order"), int)
         and planning["record_order"] < status_order
         and row.get("source_sequence") == source.get("sequence")
@@ -1636,6 +1647,31 @@ def _recorded_cognitive_admission_evidence(
             candidates, key=lambda row: int(row["record_order"]), default=None
         )
 
+    def latest_source_for_layer_status(
+        rows: list[Mapping[str, Any]], sequence: int,
+        status: Mapping[str, Any],
+    ) -> Mapping[str, Any] | None:
+        record_order = status.get("record_order")
+        record_timestamp_ns = status.get("record_timestamp_ns")
+        if not isinstance(record_order, int):
+            return None
+        candidates = [
+            row for row in rows
+            if row.get("sequence") == sequence
+            and isinstance(row.get("record_order"), int)
+            and (
+                row["record_order"] < record_order
+                or (
+                    isinstance(record_timestamp_ns, int)
+                    and isinstance(row.get("record_timestamp_ns"), int)
+                    and row["record_timestamp_ns"] == record_timestamp_ns
+                )
+            )
+        ]
+        return max(
+            candidates, key=lambda row: int(row["record_order"]), default=None
+        )
+
     def predispatch_layer_status(row: Mapping[str, Any]) -> bool:
         return bool(
             role_of(row) in COGNITIVE_PREDISPATCH_COMPONENTS
@@ -1717,7 +1753,9 @@ def _recorded_cognitive_admission_evidence(
                 )
             ):
                 continue
-            source = latest_before(eligible_sources, sequence, record_order)
+            source = latest_source_for_layer_status(
+                eligible_sources, sequence, row
+            )
             planning_for_source = latest_before(
                 eligible_planning, sequence, record_order
             )
@@ -1789,7 +1827,7 @@ def _recorded_cognitive_admission_evidence(
         configuration = summary_receipt["components"][role]
         sequence = row.get("source_sequence")
         source = (
-            latest_before(eligible_sources, sequence, int(row["record_order"]))
+            latest_source_for_layer_status(eligible_sources, sequence, row)
             if isinstance(sequence, int) else None
         )
         planning_for_source = (
@@ -1870,7 +1908,7 @@ def _recorded_cognitive_admission_evidence(
             last_sequence = sequence
             record_order = row.get("record_order")
             source = (
-                latest_before(eligible_sources, sequence, int(record_order))
+                latest_source_for_layer_status(eligible_sources, sequence, row)
                 if isinstance(record_order, int) else None
             )
             planning_for_source = (
