@@ -58,7 +58,7 @@ def test_v6_m3_isolation_disables_raw_depth_and_activates_cognitive_inputs():
             'cognitive_obstacle_layer']['mode'] == 'active'
 
 
-def test_v6_static_appearance_effective_profile_changes_only_layer_modes():
+def test_v6_static_appearance_effective_profile_changes_only_cognitive_modes():
     old_path = PACKAGE_ROOT / 'config/nav2_v6_low_obstacle_isolation.yaml'
     new_path = (
         PACKAGE_ROOT / 'config/nav2_v6_low_obstacle_static_appearance.yaml')
@@ -70,9 +70,15 @@ def test_v6_static_appearance_effective_profile_changes_only_layer_modes():
     profile = validate_cognitive_profile('M3', modes_file)
     dynamic = cognitive_nav2_parameters(profile)
     static_appearance = cognitive_nav2_parameters(
-        profile, obstacle_layer_mode='shadow')
-    assert dynamic['controller_server'] == static_appearance['controller_server']
+        profile, obstacle_layer_mode='shadow', risk_critic_mode='shadow')
     normalized = copy.deepcopy(static_appearance)
+    dynamic_critic = dynamic['controller_server']['ros__parameters'][
+        'FollowPath']['CognitiveRiskCritic']
+    candidate_critic = normalized['controller_server']['ros__parameters'][
+        'FollowPath']['CognitiveRiskCritic']
+    assert dynamic_critic == {'mode': 'active'}
+    assert candidate_critic == {'mode': 'shadow'}
+    candidate_critic['mode'] = 'active'
     for name in ('local_costmap', 'global_costmap'):
         dynamic_layer = dynamic[name][name]['ros__parameters'][
             'cognitive_obstacle_layer']

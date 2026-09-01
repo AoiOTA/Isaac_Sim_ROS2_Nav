@@ -779,7 +779,10 @@ if [[ -n "${localization_supervisor_mode}" ]]; then
   )
 fi
 
-module3_entry=("${script_dir}/run_v6_kujiale_low_obstacles.sh" ros "${arm}")
+module3_entry=(
+  "${script_dir}/run_v6_kujiale_low_obstacles.sh"
+  --condition "${condition}" ros "${arm}"
+)
 if [[ "${scene}" == "rivermark" ]]; then
   module3_entry=("${script_dir}/run_v6_rivermark.sh" ros "${condition}")
 fi

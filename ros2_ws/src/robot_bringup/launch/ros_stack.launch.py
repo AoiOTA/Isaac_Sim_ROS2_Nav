@@ -43,10 +43,14 @@ _TELEOP_SPEED_ARGUMENTS = (
 )
 
 
-def _write_cognitive_nav2_overlay(profile, *, obstacle_layer_mode=None):
+def _write_cognitive_nav2_overlay(
+        profile, *, obstacle_layer_mode=None, risk_critic_mode=None):
     """Write the exact-node overlay that must follow the A21 overlay."""
     document = cognitive_nav2_parameters(
-        profile, obstacle_layer_mode=obstacle_layer_mode)
+        profile,
+        obstacle_layer_mode=obstacle_layer_mode,
+        risk_critic_mode=risk_critic_mode,
+    )
     with tempfile.NamedTemporaryFile(
             mode='w', prefix=f'v6_cognitive_{profile.name.lower()}_',
             suffix='.yaml', delete=False, encoding='utf-8') as stream:
@@ -261,6 +265,11 @@ def _launch_setup(context):
         cognitive_overlay_file = _write_cognitive_nav2_overlay(
             cognitive_profile,
             obstacle_layer_mode=(
+                'shadow'
+                if nav2_profile == 'v6_low_obstacle_static_appearance'
+                else None
+            ),
+            risk_critic_mode=(
                 'shadow'
                 if nav2_profile == 'v6_low_obstacle_static_appearance'
                 else None
