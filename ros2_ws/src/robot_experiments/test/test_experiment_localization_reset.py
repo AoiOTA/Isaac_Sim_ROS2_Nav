@@ -284,13 +284,14 @@ def test_route_guided_arms_only_after_four_legs_and_before_final_goal():
         _canonical_routes=[],
         _ground_truth_samples=[],
         _leg_results=[],
+        _completed_dynamic_obstacle_ids=set(),
         _goal_dispatch_recorded=True,
         _dynamic_guard_aborted=False,
         _wait_until=lambda predicate, _timeout: predicate(),
         _clock_seconds=lambda: 1.0,
         _pose_message=lambda specification: specification,
         _trigger_obstacle_group=lambda _goal_id: None,
-        _complete_obstacle_group=lambda _goal_id: None,
+        _complete_obstacle_group=lambda goal_id: (f"actor-{goal_id}",),
         _spin_once=lambda _timeout: None,
         _wait_for_reset_stop_gate_release=lambda: None,
     )
@@ -311,11 +312,67 @@ def test_route_guided_arms_only_after_four_legs_and_before_final_goal():
     assert arm_publication_counts == [4]
 
 
+def test_g2_retirement_barrier_failure_stops_before_g3_dispatch():
+    specifications = tuple(
+        SimpleNamespace(goal_id=identifier) for identifier in ("G1", "G2", "G3")
+    )
+
+    def complete(goal_id):
+        if goal_id == "G2":
+            raise RuntimeError("retirement barrier timed out")
+        return (f"actor-{goal_id}",)
+
+    runner = SimpleNamespace(
+        _navigation_graph=object(),
+        _service_timeout_sec=1.0,
+        _scenario=SimpleNamespace(
+            route=specifications,
+            goal=specifications[-1],
+            timeout_sec=30.0,
+            leg_timeout_sec=5.0,
+        ),
+        _navigation_active=False,
+        _navigation_start_stamp_s=None,
+        _navigation_end_stamp_s=None,
+        _minimum_poses_remaining=None,
+        _canonical_route_epoch=0,
+        _route_goal_complete_epoch=0,
+        _latest_route_goal_complete=False,
+        _canonical_routes=[],
+        _ground_truth_samples=[],
+        _leg_results=[],
+        _completed_dynamic_obstacle_ids=set(),
+        _goal_dispatch_recorded=True,
+        _dynamic_guard_aborted=False,
+        _wait_until=lambda predicate, _timeout: predicate(),
+        _clock_seconds=lambda: 1.0,
+        _pose_message=lambda specification: specification,
+        _trigger_obstacle_group=lambda _goal_id: None,
+        _complete_obstacle_group=complete,
+        _spin_once=lambda _timeout: None,
+        _wait_for_reset_stop_gate_release=lambda: None,
+        _arm_next_terminal_fence=lambda: None,
+    )
+    runner._route_goal_publisher = _RouteGoalPublisher(runner)
+
+    with pytest.raises(RuntimeError, match="retirement barrier timed out"):
+        ExperimentRunner._navigate_route_guided(runner)
+
+    assert [item.goal_id for item in runner._route_goal_publisher.messages] == [
+        "G1",
+        "G2",
+    ]
+    assert runner._completed_dynamic_obstacle_ids == {"actor-G1"}
+
+
 def test_route_goal_complete_bool_does_not_arm_terminal_fence():
     client = SimpleNamespace(call_count=0)
     runner = SimpleNamespace(
         _route_goal_complete_epoch=0,
         _latest_route_goal_complete=False,
+        _terminal_zero_expected_route_completion_epoch=None,
+        _terminal_zero_expected_route_leg_id=None,
+        _terminal_zero_expected_route_leg_is_final=False,
         _terminal_fence_arm_client=client,
     )
 
@@ -373,6 +430,7 @@ def _route_guided_gate_runner(
         _canonical_routes=[],
         _ground_truth_samples=[],
         _leg_results=[],
+        _completed_dynamic_obstacle_ids=set(),
         _goal_dispatch_recorded=False,
         _dynamic_guard_aborted=False,
         _reset_receipt={"generation": 4},
@@ -384,7 +442,7 @@ def _route_guided_gate_runner(
         _clock_seconds=lambda: 1.0,
         _pose_message=lambda value: value,
         _trigger_obstacle_group=lambda _goal_id: None,
-        _complete_obstacle_group=lambda _goal_id: None,
+        _complete_obstacle_group=lambda _goal_id: ("dynamic_box",),
         _arm_next_terminal_fence=lambda: None,
     )
 

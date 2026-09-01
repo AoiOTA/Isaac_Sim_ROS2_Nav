@@ -46,9 +46,11 @@ from tf2_ros import Buffer, TransformException, TransformListener
 
 from bio_nav_interfaces.msg import (
     CanonicalRoute,
+    CognitiveObstacleArray,
     EdgePriorArray,
     NavigationGraph,
     PlanningPrior,
+    RiskLayerStatus,
     RouteEdgeCostArray,
     RouteProgress,
     SRDREdgeDiagnosticArray,
@@ -60,6 +62,7 @@ from .metrics import (
     SingleRunThresholds,
     evaluate_single_run,
     path_length,
+    path_length_deviation_percent,
     wrap_angle,
 )
 from .motion_benchmark import parse_reset_stop_gate_status
@@ -131,6 +134,8 @@ DYNAMIC_CASE_SET_MOTIONS = {
 EXPERIMENT_ARMS = frozenset({"off", "sr_medium", "dr_medium", "medium"})
 COMMAND_ZERO_TOLERANCE = 1.0e-3
 TERMINAL_ZERO_CADENCE_TOLERANCE_SEC = 0.10
+DYNAMIC_RETIREMENT_CLEAR_TIMEOUT_SEC = 2.0
+V6_STATIC_REFERENCE_SCENARIO_ID = "v6_final_kujiale_static"
 
 
 def _strict_success_from_leg_count(
@@ -148,6 +153,186 @@ def _strict_success_from_leg_count(
         and leg_count == expected_leg_count
         and terminal_zero_confirmed
     )
+
+
+def _parse_obstacle_completion(
+    payload: str,
+    *,
+    expected_group: str,
+    expected_ids: set[str],
+) -> tuple[str, ...]:
+    try:
+        decoded = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"obstacle completion returned invalid JSON for {expected_group}: "
+            f"{payload!r}"
+        ) from exc
+    if not isinstance(decoded, dict) or decoded.get("group") != expected_group:
+        raise RuntimeError(
+            f"obstacle completion group mismatch for {expected_group}: {decoded!r}"
+        )
+    retired_raw = decoded.get("retired")
+    if not isinstance(retired_raw, list) or not all(
+        isinstance(identifier, str) and identifier for identifier in retired_raw
+    ):
+        raise RuntimeError(
+            f"obstacle completion returned invalid retired IDs for {expected_group}: "
+            f"{retired_raw!r}"
+        )
+    retired = tuple(retired_raw)
+    if len(retired) != len(set(retired)) or set(retired) != expected_ids:
+        raise RuntimeError(
+            f"obstacle completion retired IDs mismatch for {expected_group}: "
+            f"expected={sorted(expected_ids)!r}, actual={sorted(set(retired))!r}"
+        )
+    return retired
+
+
+def _requires_v6_static_reference(scenario: Scenario) -> bool:
+    return (
+        scenario.scenario_id == V6_STATIC_REFERENCE_SCENARIO_ID
+        and scenario.scenario_type == "static"
+        and scenario.appearance_config_file is None
+    )
+
+
+def _static_reference_metric_failure(
+    scenario: Scenario, deviation_percent: float | None
+) -> str | None:
+    if not _requires_v6_static_reference(scenario):
+        return None
+    if deviation_percent is None or not math.isfinite(deviation_percent):
+        return "ground_truth_path_deviation_missing_or_nonfinite"
+    if deviation_percent >= 20.0:
+        return "ground_truth_path_deviation_at_or_above_20_percent"
+    return None
+
+
+def _mapping_field(value: Any, name: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ConfigurationError(f"optimal reference {name} must be an object")
+    return value
+
+
+def _validate_v6_static_reference_identity(
+    reference: Mapping[str, Any],
+    *,
+    scenario: Scenario,
+    robot_footprint: tuple[tuple[float, float], ...],
+    nav2_base_config: Path,
+    nav2_overlay_config: Path,
+    nav2_profile: str,
+    workspace_root: Path,
+) -> None:
+    """Bind the path gate to the wrapper's effective base+profile inputs."""
+
+    if (
+        nav2_profile != "v6_low_obstacle_isolation"
+        or nav2_base_config.resolve()
+        != scenario.resolve_path(scenario.nav2_config_file)
+        or nav2_overlay_config.resolve()
+        != (
+            workspace_root
+            / "ros2_ws/src/robot_navigation/config/"
+            "nav2_v6_low_obstacle_isolation.yaml"
+        ).resolve()
+    ):
+        raise ConfigurationError("optimal reference Nav2 profile identity mismatch")
+
+    reference_map = _mapping_field(reference.get("map"), "map")
+    if reference_map.get("id") != scenario.map_version:
+        raise ConfigurationError("optimal reference map identity mismatch")
+    map_directory = workspace_root / "data/maps/occupancy"
+    map_yaml = map_directory / str(reference_map.get("yaml", ""))
+    map_image = map_directory / str(reference_map.get("image", ""))
+    if (
+        map_yaml.name != reference_map.get("yaml")
+        or map_image.name != reference_map.get("image")
+        or reference_map.get("yaml_sha256") != configuration_sha256(map_yaml)
+        or reference_map.get("image_sha256") != configuration_sha256(map_image)
+    ):
+        raise ConfigurationError("optimal reference map asset identity mismatch")
+
+    footprint = _mapping_field(reference.get("footprint"), "footprint")
+    try:
+        reference_vertices = {
+            (float(item[0]), float(item[1])) for item in footprint.get("vertices")
+        }
+    except (TypeError, ValueError, IndexError) as exc:
+        raise ConfigurationError("optimal reference footprint is invalid") from exc
+    if reference_vertices != set(robot_footprint):
+        raise ConfigurationError("optimal reference footprint vertices mismatch")
+    base = _mapping_field(
+        yaml.safe_load(nav2_base_config.read_text(encoding="utf-8")),
+        "Nav2 base",
+    )
+    overlay = _mapping_field(
+        yaml.safe_load(nav2_overlay_config.read_text(encoding="utf-8")),
+        "Nav2 overlay",
+    )
+    try:
+        paddings = set()
+        for name in ("global_costmap", "local_costmap"):
+            base_params = base[name][name]["ros__parameters"]
+            overlay_params = overlay.get(name, {}).get(name, {}).get(
+                "ros__parameters", {}
+            )
+            paddings.add(
+                float(
+                    overlay_params.get(
+                        "footprint_padding", base_params["footprint_padding"]
+                    )
+                )
+            )
+        reference_padding = float(footprint.get("padding_m"))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ConfigurationError("effective Nav2 footprint padding is invalid") from exc
+    if (
+        len(paddings) != 1
+        or not math.isfinite(reference_padding)
+        or paddings != {reference_padding}
+    ):
+        raise ConfigurationError("optimal reference footprint padding mismatch")
+
+    acceptance = _mapping_field(
+        reference.get("goal_acceptance"), "goal_acceptance"
+    )
+    if (
+        acceptance.get("position_tolerance_m")
+        != scenario.success.position_tolerance_m
+        or any(goal.require_orientation for goal in (*scenario.route, scenario.goal))
+        or acceptance.get("orientation_handling")
+        != (
+            "all collision-free terminal headings; rotations are checked but have "
+            "zero reported translation length"
+        )
+    ):
+        raise ConfigurationError("optimal reference goal acceptance mismatch")
+
+    legs = reference.get("legs")
+    if not isinstance(legs, list):
+        raise ConfigurationError("optimal reference legs must be a list")
+    actual_leg_ids = [
+        item.get("id") if isinstance(item, Mapping) else None for item in legs
+    ]
+    if (
+        actual_leg_ids != [goal.goal_id for goal in scenario.route]
+        or len(set(actual_leg_ids)) != len(legs)
+    ):
+        raise ConfigurationError("optimal reference route leg identity mismatch")
+    try:
+        lengths = [float(item["length_m_0_05"]) for item in legs]
+        total = float(reference["total_length_m_0_05"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ConfigurationError("optimal reference path lengths are invalid") from exc
+    if (
+        not all(math.isfinite(value) and value > 0.0 for value in lengths)
+        or not math.isfinite(total)
+        or total <= 0.0
+        or not math.isclose(total, sum(lengths), rel_tol=1.0e-12, abs_tol=1.0e-12)
+    ):
+        raise ConfigurationError("optimal reference path lengths are invalid")
 
 
 def _result_with_terminal_zero(
@@ -464,8 +649,9 @@ class ExperimentRunner(Node):
             raise ConfigurationError(
                 "spawn_poses_file is required (or set ISAAC_NAV_SPAWN_POSES)"
             )
+        spawn_path = Path(spawn_file).expanduser().resolve()
         self._spawn_pose: SpawnPose = load_spawn_pose(
-            spawn_file,
+            spawn_path,
             self._scenario.spawn_pose_name,
             require_calibrated=True,
         )
@@ -495,10 +681,13 @@ class ExperimentRunner(Node):
             if robot_override
             else self._scenario.resolve_path(self._scenario.robot_config_file)
         )
+        nav2_base_config = self._scenario.resolve_path(
+            self._scenario.nav2_config_file
+        )
         nav2_config = (
             Path(nav2_override).expanduser().resolve()
             if nav2_override
-            else self._scenario.resolve_path(self._scenario.nav2_config_file)
+            else nav2_base_config
         )
         self._robot_config_hash = configuration_sha256(robot_config)
         self._robot_footprint = load_robot_footprint(robot_config)
@@ -528,6 +717,13 @@ class ExperimentRunner(Node):
             self._appearance_config_hash = configuration_sha256(appearance_config)
         self._optimal_reference: Mapping[str, Any] | None = None
         self._optimal_reference_hash: str | None = None
+        if (
+            _requires_v6_static_reference(self._scenario)
+            and self._scenario.optimal_reference_file is None
+        ):
+            raise ConfigurationError(
+                "v6 final static scenario requires its frozen optimal reference"
+            )
         if self._scenario.optimal_reference_file is not None:
             reference_path = self._scenario.resolve_path(
                 self._scenario.optimal_reference_file
@@ -545,6 +741,16 @@ class ExperimentRunner(Node):
                 or not reference.get("converged")
             ):
                 raise ConfigurationError("optimal reference is incomplete or unconverged")
+            if _requires_v6_static_reference(self._scenario):
+                _validate_v6_static_reference_identity(
+                    reference,
+                    scenario=self._scenario,
+                    robot_footprint=self._robot_footprint,
+                    nav2_base_config=nav2_base_config,
+                    nav2_overlay_config=nav2_config,
+                    nav2_profile=self._nav2_profile,
+                    workspace_root=self._workspace_root,
+                )
             self._optimal_reference = reference
             self._optimal_reference_hash = configuration_sha256(reference_path)
 
@@ -841,6 +1047,18 @@ class ExperimentRunner(Node):
             self._obstacle_state_callback,
             reliable,
         )
+        self._cognitive_obstacle_subscription = self.create_subscription(
+            CognitiveObstacleArray,
+            "/bio_nav/module2/cognitive_obstacles",
+            self._cognitive_obstacle_callback,
+            reliable,
+        )
+        self._cognitive_layer_status_subscription = self.create_subscription(
+            RiskLayerStatus,
+            "/bio_nav/cognitive_obstacle_layer/status",
+            self._cognitive_layer_status_callback,
+            reliable,
+        )
         self._appearance_state_subscription = self.create_subscription(
             String,
             "/experiment/appearance/state",
@@ -1098,8 +1316,12 @@ class ExperimentRunner(Node):
         self._leg_results: list[dict[str, Any]] = []
         self._obstacle_events: list[dict[str, Any]] = []
         self._obstacle_event_keys: set[str] = set()
+        self._completed_dynamic_obstacle_ids: set[str] = set()
         self._obstacle_state: dict[str, Any] = {"obstacles": [], "events": []}
+        self._obstacle_state_stamp_s: float | None = None
         self._obstacle_samples: list[dict[str, Any]] = []
+        self._latest_cognitive_obstacles: CognitiveObstacleArray | None = None
+        self._latest_cognitive_layer_statuses: dict[str, RiskLayerStatus] = {}
         self._dynamic_guard_aborted = False
         self._dynamic_safety_yield = False
         self._rgb_frame: dict[str, Any] | None = None
@@ -1307,6 +1529,7 @@ class ExperimentRunner(Node):
             return
         self._obstacle_state = {"obstacles": obstacles, "events": events}
         stamp_s = self._clock_seconds()
+        self._obstacle_state_stamp_s = stamp_s
         if stamp_s is not None:
             for obstacle in obstacles:
                 if isinstance(obstacle, dict):
@@ -1322,6 +1545,14 @@ class ExperimentRunner(Node):
                     self._dynamic_guard_aborted = True
                 if event.get("event") == "safety_yield":
                     self._dynamic_safety_yield = True
+
+    def _cognitive_obstacle_callback(self, message: CognitiveObstacleArray) -> None:
+        self._latest_cognitive_obstacles = message
+
+    def _cognitive_layer_status_callback(self, message: RiskLayerStatus) -> None:
+        consumer = str(message.consumer)
+        if consumer:
+            self._latest_cognitive_layer_statuses[consumer] = message
 
     def _appearance_state_callback(self, message: String) -> None:
         try:
@@ -2106,16 +2337,28 @@ class ExperimentRunner(Node):
             self._spin_once(min(0.1, max(0.0, deadline - time.monotonic())))
         raise ExternalShutdownException()
 
-    def _clear_navigation_costmaps(self) -> None:
+    def _clear_navigation_costmaps(
+        self, *, deadline_monotonic: float | None = None
+    ) -> None:
         for label, client in self._costmap_clear_clients:
-            if not client.wait_for_service(
-                timeout_sec=self._service_timeout_sec
-            ):
+            service_timeout = (
+                self._service_timeout_sec
+                if deadline_monotonic is None
+                else max(0.0, deadline_monotonic - time.monotonic())
+            )
+            if service_timeout <= 0.0:
+                raise TimeoutError(f"clearing {label} exceeded its deadline")
+            if not client.wait_for_service(timeout_sec=service_timeout):
                 self._raise_if_shutdown()
                 raise RuntimeError(f"{label} clear service is unavailable")
             future = client.call_async(ClearEntireCostmap.Request())
+            future_deadline = (
+                time.monotonic() + self._service_timeout_sec
+                if deadline_monotonic is None
+                else deadline_monotonic
+            )
             if not self._wait_future(
-                future, time.monotonic() + self._service_timeout_sec
+                future, future_deadline
             ):
                 raise TimeoutError(f"clearing {label} timed out")
             if future.result() is None:
@@ -2530,11 +2773,130 @@ class ExperimentRunner(Node):
                 detail = response.message if response is not None else "no response"
                 raise RuntimeError(f"obstacle trigger failed for {group}: {detail}")
 
-    def _complete_obstacle_group(self, goal_id: str | None) -> None:
+    def _dynamic_retirement_clearance_observed(
+        self,
+        retired_ids: set[str],
+        barrier_ros_s: float,
+        source_sequence_before: int,
+        expected_source_identity: tuple[int, str, str],
+        status_sequences_before: Mapping[str, int],
+    ) -> bool:
+        if (
+            self._obstacle_state_stamp_s is None
+            or self._obstacle_state_stamp_s <= barrier_ros_s
+        ):
+            return False
+        states = {
+            str(item.get("id")): str(item.get("state"))
+            for item in self._obstacle_state.get("obstacles", [])
+            if isinstance(item, Mapping) and item.get("id")
+        }
+        if any(states.get(identifier) != "retired" for identifier in retired_ids):
+            return False
+
+        source = self._latest_cognitive_obstacles
+        if source is None:
+            return False
+        source_identity = (
+            int(source.reset_epoch),
+            str(source.recurrent_session_id),
+            str(source.map_version),
+        )
+        if (
+            source_identity != expected_source_identity
+            or int(source.sequence) <= source_sequence_before
+            or source.header.stamp.sec
+            + source.header.stamp.nanosec * 1.0e-9
+            <= barrier_ros_s
+            or source.validation_stamp.sec
+            + source.validation_stamp.nanosec * 1.0e-9
+            <= barrier_ros_s
+            or bool(source.obstacles)
+        ):
+            return False
+
+        consumers: dict[str, RiskLayerStatus] = {}
+        for consumer, status in self._latest_cognitive_layer_statuses.items():
+            status_stamp_s = status.stamp.sec + status.stamp.nanosec * 1.0e-9
+            if status_stamp_s <= barrier_ros_s:
+                continue
+            if "global_costmap" in consumer:
+                consumers["global"] = status
+            elif "local_costmap" in consumer:
+                consumers["local"] = status
+        if set(consumers) != {"global", "local"}:
+            return False
+        return all(
+            str(status.mode) == "active"
+            and not bool(status.applied)
+            and int(status.active_cell_count) == 0
+            and (
+                not bool(status.rejected)
+                or "rejection_reason=no_costmap_cells"
+                in str(status.fallback_reason)
+            )
+            and int(status.maximum_cost) == 0
+            and int(status.raised_cell_count) == 0
+            and int(status.maximum_cost_increase) == 0
+            and int(status.source_sequence) == int(source.sequence)
+            and int(status.source_sequence) > status_sequences_before.get(role, -1)
+            and int(status.reset_epoch) == source_identity[0]
+            and str(status.recurrent_session_id) == source_identity[1]
+            and str(status.map_version) == source_identity[2]
+            for role, status in consumers.items()
+        )
+
+    def _requires_dynamic_retirement_clearance(
+        self, goal_id: str, retired_ids: set[str]
+    ) -> bool:
+        expected_ids = {
+            str(item["id"])
+            for item in self._selected_dynamic_trajectories()
+            if item.get("trigger_group") == goal_id
+            and isinstance(item.get("id"), str)
+            and item["id"]
+        }
+        return bool(
+            self._scenario.scenario_id == "v6_final_kujiale_dynamic"
+            and goal_id == "G2"
+            and expected_ids
+            and retired_ids == expected_ids
+        )
+
+    def _complete_obstacle_group(self, goal_id: str | None) -> tuple[str, ...]:
         """Retire only the actors tied to a successfully completed route goal."""
         if self._scenario.scenario_type != "dynamic" or not goal_id:
-            return
+            return ()
+        source_before = self._latest_cognitive_obstacles
+        source_sequence_before = (
+            int(source_before.sequence) if source_before is not None else -1
+        )
+        expected_source_identity = (
+            int(source_before.reset_epoch),
+            str(source_before.recurrent_session_id),
+            str(source_before.map_version),
+        ) if source_before is not None else (-1, "", "")
+        status_sequences_before: dict[str, int] = {}
+        for consumer, status in self._latest_cognitive_layer_statuses.items():
+            if "global_costmap" in consumer:
+                status_sequences_before["global"] = int(status.source_sequence)
+            elif "local_costmap" in consumer:
+                status_sequences_before["local"] = int(status.source_sequence)
+
+        retired_ids: list[str] = []
+        selected = self._selected_dynamic_trajectories()
         for group in self._selected_dynamic_groups_for_goal(goal_id):
+            expected_ids = {
+                str(item["id"])
+                for item in selected
+                if item.get("trigger_group") == group
+                and isinstance(item.get("id"), str)
+                and item["id"]
+            }
+            if not expected_ids:
+                raise ConfigurationError(
+                    f"dynamic completion group {group!r} has no selected actor IDs"
+                )
             client = self._obstacle_complete_clients.get(group)
             if client is None:
                 client = self.create_client(
@@ -2552,6 +2914,56 @@ class ExperimentRunner(Node):
             if response is None or not response.success:
                 detail = response.message if response is not None else "no response"
                 raise RuntimeError(f"obstacle completion failed for {group}: {detail}")
+            retired_ids.extend(
+                _parse_obstacle_completion(
+                    str(response.message),
+                    expected_group=group,
+                    expected_ids=expected_ids,
+                )
+            )
+
+        retired_set = set(retired_ids)
+        if self._requires_dynamic_retirement_clearance(goal_id, retired_set):
+            if source_before is None:
+                raise RuntimeError(
+                    "dynamic obstacle retirement clearance has no current cognitive source"
+                )
+            reset_generation = int((self._reset_receipt or {}).get("generation", -1))
+            if (
+                expected_source_identity[0] != reset_generation
+                or not expected_source_identity[1]
+                or expected_source_identity[2] != self._scenario.map_version
+            ):
+                raise RuntimeError(
+                    "dynamic obstacle retirement clearance source identity is not current"
+                )
+            barrier_ros_s = self._clock_seconds()
+            if barrier_ros_s is None:
+                raise RuntimeError(
+                    "dynamic obstacle retirement clearance requires ROS time"
+                )
+            clearance_deadline = (
+                time.monotonic() + DYNAMIC_RETIREMENT_CLEAR_TIMEOUT_SEC
+            )
+            self._clear_navigation_costmaps(
+                deadline_monotonic=clearance_deadline
+            )
+            remaining = max(0.0, clearance_deadline - time.monotonic())
+            if not self._wait_until(
+                lambda: self._dynamic_retirement_clearance_observed(
+                    retired_set,
+                    barrier_ros_s,
+                    source_sequence_before,
+                    expected_source_identity,
+                    status_sequences_before,
+                ),
+                remaining,
+            ):
+                raise RuntimeError(
+                    "dynamic obstacle retirement did not clear the current Module2 "
+                    "source and both cognitive costmap consumers before the next leg"
+                )
+        return tuple(retired_ids)
 
     def _navigate(self) -> tuple[bool, bool, int]:
         if self._navigation_execution_backend == "route_guided":
@@ -2671,7 +3083,8 @@ class ExperimentRunner(Node):
                 if wrapped_result.status != GoalStatus.STATUS_SUCCEEDED:
                     self._leg_results.append({"id": specification.goal_id or f"G{index + 1}", "nav2_status": int(wrapped_result.status), "accepted": True})
                     return False, False, int(wrapped_result.status)
-                self._complete_obstacle_group(specification.goal_id)
+                retired_ids = self._complete_obstacle_group(specification.goal_id)
+                self._completed_dynamic_obstacle_ids.update(retired_ids)
                 leg_gt = self._ground_truth_samples[leg_gt_start:]
                 self._leg_results.append({
                     "id": specification.goal_id or f"G{index + 1}",
@@ -2831,7 +3244,8 @@ class ExperimentRunner(Node):
                 self._leg_results.append(leg_result)
                 if not succeeded:
                     return False, False, status
-                self._complete_obstacle_group(specification.goal_id)
+                retired_ids = self._complete_obstacle_group(specification.goal_id)
+                self._completed_dynamic_obstacle_ids.update(retired_ids)
                 self._minimum_poses_remaining = len(specifications) - index - 1
             return True, False, GoalStatus.STATUS_SUCCEEDED
         finally:
@@ -3514,6 +3928,10 @@ class ExperimentRunner(Node):
         ground_truth_path_length = path_length(
             [(sample.x, sample.y) for sample in self._ground_truth_samples]
         )
+        ground_truth_path_metric_available = bool(self._ground_truth_samples) and all(
+            math.isfinite(sample.x) and math.isfinite(sample.y)
+            for sample in self._ground_truth_samples
+        )
         reasons = list(evaluation.failure_reasons)
         reference_length = None
         path_deviation_percent = None
@@ -3538,17 +3956,29 @@ class ExperimentRunner(Node):
             if reference_length <= 0.0 or len(reference_legs) != len(self._leg_results):
                 reasons.append("optimal_reference_incomplete")
             else:
-                path_deviation_percent = abs(
-                    ground_truth_path_length - reference_length
-                ) / reference_length * 100.0
+                if (
+                    ground_truth_path_metric_available
+                    and math.isfinite(ground_truth_path_length)
+                ):
+                    path_deviation_percent = path_length_deviation_percent(
+                        ground_truth_path_length, reference_length
+                    )
                 if (
                     planned_path_length is not None
                     and len(planned_leg_lengths) == len(self._leg_results)
                 ):
-                    planned_path_deviation_percent = abs(
-                        planned_path_length - reference_length
-                    ) / reference_length * 100.0
-                if path_deviation_percent > 20.0:
+                    planned_path_deviation_percent = path_length_deviation_percent(
+                        planned_path_length, reference_length
+                    )
+                metric_failure = _static_reference_metric_failure(
+                    self._scenario, path_deviation_percent
+                )
+                if metric_failure is not None:
+                    reasons.append(metric_failure)
+                elif (
+                    path_deviation_percent is not None
+                    and path_deviation_percent > 20.0
+                ):
                     reasons.append("ground_truth_path_deviation_exceeds_20_percent")
                 for leg in self._leg_results:
                     identifier = leg.get("id")
@@ -3569,17 +3999,8 @@ class ExperimentRunner(Node):
             for item in self._obstacle_events
             if item.get("event") in {"trigger", "armed"} and isinstance(item.get("obstacle_id"), str)
         }
-        retired_ids = {
-            str(item.get("obstacle_id"))
-            for item in self._obstacle_events
-            if item.get("event") in {"retire", "park", "goal_reached_retire"} and isinstance(item.get("obstacle_id"), str)
-        }
-        completed_ids = {
-            str(item.get("obstacle_id"))
-            for item in self._obstacle_events
-            if item.get("event") in {"motion_complete", "retire", "park", "goal_reached_retire"}
-            and isinstance(item.get("obstacle_id"), str)
-        }
+        completed_ids = set(self._completed_dynamic_obstacle_ids)
+        retired_ids = set(self._completed_dynamic_obstacle_ids)
         clearance_by_actor: dict[str, float] = {}
         for sample in self._obstacle_samples:
             identifier = sample.get("id")

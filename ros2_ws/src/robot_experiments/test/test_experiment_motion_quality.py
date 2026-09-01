@@ -1,5 +1,6 @@
 import hashlib
 import json
+import math
 from types import SimpleNamespace
 
 import pytest
@@ -7,8 +8,11 @@ import pytest
 import robot_experiments.experiment_runner as experiment_runner_module
 from robot_experiments.experiment_runner import (
     _edge_prior_statistics,
+    _parse_obstacle_completion,
     _record_tracked_route_length,
+    _requires_v6_static_reference,
     _result_with_terminal_zero,
+    _static_reference_metric_failure,
     _strict_success_from_leg_count,
     CommandSample,
     ExperimentRunner,
@@ -45,6 +49,294 @@ def test_edge_prior_statistics_preserve_nonzero_learned_cost_evidence():
         "maximum_cost_delta_m": pytest.approx(0.55),
         "maximum_learned_risk": pytest.approx(1.0),
     }
+
+
+def test_obstacle_completion_requires_exact_trajectory_actor_ids():
+    payload = json.dumps({"group": "G2", "retired": ["dynamic_box"]})
+    assert _parse_obstacle_completion(
+        payload, expected_group="G2", expected_ids={"dynamic_box"}
+    ) == ("dynamic_box",)
+
+    with pytest.raises(RuntimeError, match="retired IDs mismatch"):
+        _parse_obstacle_completion(
+            json.dumps({"group": "G2", "retired": []}),
+            expected_group="G2",
+            expected_ids={"dynamic_box"},
+        )
+
+
+def _retirement_stamp(value):
+    seconds = int(value)
+    return SimpleNamespace(
+        sec=seconds,
+        nanosec=int(round((value - seconds) * 1.0e9)),
+    )
+
+
+def _retirement_source(*, sequence=9, session="session-2", obstacles=()):
+    return SimpleNamespace(
+        sequence=sequence,
+        reset_epoch=2,
+        recurrent_session_id=session,
+        map_version="v6_kujiale_isaacgen_v1",
+        header=SimpleNamespace(stamp=_retirement_stamp(11.0)),
+        validation_stamp=_retirement_stamp(11.0),
+        obstacles=list(obstacles),
+    )
+
+
+def _retirement_status(
+    scope, *, sequence=9, active_cells=0, maximum_cost=0, rejected=False,
+    reason="rejection_reason=offered",
+):
+    return SimpleNamespace(
+        consumer=f"/{scope}_costmap/{scope}_costmap:cognitive_obstacle_layer",
+        mode="active",
+        applied=False,
+        rejected=rejected,
+        active_cell_count=active_cells,
+        fallback_reason=reason,
+        maximum_cost=maximum_cost,
+        raised_cell_count=0,
+        maximum_cost_increase=0,
+        source_sequence=sequence,
+        reset_epoch=2,
+        recurrent_session_id="session-2",
+        map_version="v6_kujiale_isaacgen_v1",
+        stamp=_retirement_stamp(11.0),
+    )
+
+
+def _retirement_runner():
+    runner = object.__new__(ExperimentRunner)
+    runner._obstacle_state_stamp_s = 11.0
+    runner._obstacle_state = {
+        "obstacles": [{"id": "dynamic_box", "state": "retired"}],
+        "events": [],
+    }
+    runner._latest_cognitive_obstacles = _retirement_source()
+    runner._latest_cognitive_layer_statuses = {
+        status.consumer: status
+        for status in (
+            _retirement_status("global"),
+            _retirement_status(
+                "local",
+                rejected=True,
+                reason="rejection_reason=no_costmap_cells",
+            ),
+        )
+    }
+    return runner
+
+
+def _retirement_observed(runner):
+    return runner._dynamic_retirement_clearance_observed(
+        {"dynamic_box"},
+        10.0,
+        8,
+        (2, "session-2", "v6_kujiale_isaacgen_v1"),
+        {"global": 8, "local": 8},
+    )
+
+
+def test_retirement_barrier_accepts_fresh_empty_source_and_two_zero_receipts():
+    assert _retirement_observed(_retirement_runner())
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("stale", "wrong-identity", "nonempty", "nonzero"),
+)
+def test_retirement_barrier_rejects_stale_wrong_identity_nonempty_and_nonzero(
+    mutation,
+):
+    runner = _retirement_runner()
+    if mutation == "stale":
+        runner._latest_cognitive_obstacles.sequence = 8
+    elif mutation == "wrong-identity":
+        runner._latest_cognitive_obstacles.recurrent_session_id = "other-session"
+    elif mutation == "nonempty":
+        runner._latest_cognitive_obstacles.obstacles = [object()]
+    else:
+        next(iter(runner._latest_cognitive_layer_statuses.values())).maximum_cost = 1
+
+    assert not _retirement_observed(runner)
+
+
+class _CompletionFuture:
+    def __init__(self, result=None, error=None):
+        self._result = result
+        self._error = error
+
+    def result(self):
+        if self._error is not None:
+            raise self._error
+        return self._result
+
+
+class _CompletionClient:
+    def __init__(self, future):
+        self.future = future
+
+    def wait_for_service(self, *, timeout_sec):
+        return timeout_sec > 0.0
+
+    def call_async(self, _request):
+        return self.future
+
+
+def _completion_runner(future):
+    runner = _retirement_runner()
+    runner._latest_cognitive_obstacles = _retirement_source(sequence=8)
+    runner._latest_cognitive_layer_statuses = {
+        status.consumer: status
+        for status in (
+            _retirement_status("global", sequence=8),
+            _retirement_status("local", sequence=8),
+        )
+    }
+    runner._scenario = SimpleNamespace(
+        scenario_id="v6_final_kujiale_dynamic",
+        scenario_type="dynamic",
+        map_version="v6_kujiale_isaacgen_v1",
+        obstacle_trajectories=(
+            {
+                "id": "dynamic_box",
+                "motion": "crossing",
+                "trigger_group": "G2",
+            },
+        ),
+    )
+    runner._active_selection = SimpleNamespace(case_id="single_dynamic_low_box")
+    runner._service_timeout_sec = 1.0
+    runner._obstacle_complete_clients = {"G2": _CompletionClient(future)}
+    runner._wait_future = lambda _future, _deadline: True
+    runner._reset_receipt = {"generation": 2}
+    runner._clock_seconds = lambda: 10.0
+    runner._clear_navigation_costmaps = lambda **_kwargs: None
+    return runner
+
+
+def test_completion_shares_two_second_budget_between_clear_and_receipt_wait(
+    monkeypatch,
+):
+    response = SimpleNamespace(
+        success=True,
+        message=json.dumps({"group": "G2", "retired": ["dynamic_box"]}),
+    )
+    runner = _completion_runner(_CompletionFuture(response))
+    clock = SimpleNamespace(now=100.0)
+    monkeypatch.setattr(
+        experiment_runner_module.time, "monotonic", lambda: clock.now
+    )
+    calls = []
+
+    def clear_costmaps(*, deadline_monotonic):
+        calls.append(("clear", deadline_monotonic))
+        clock.now += 1.25
+
+    runner._clear_navigation_costmaps = clear_costmaps
+
+    def wait_until(predicate, timeout):
+        calls.append(("wait", timeout))
+        runner._obstacle_state_stamp_s = 11.0
+        runner._latest_cognitive_obstacles = _retirement_source()
+        runner._latest_cognitive_layer_statuses = {
+            status.consumer: status
+            for status in (
+                _retirement_status("global"),
+                _retirement_status(
+                    "local",
+                    rejected=True,
+                    reason="rejection_reason=no_costmap_cells",
+                ),
+            )
+        }
+        return predicate()
+
+    runner._wait_until = wait_until
+
+    assert runner._complete_obstacle_group("G2") == ("dynamic_box",)
+    assert calls == [("clear", 102.0), ("wait", 0.75)]
+
+
+def test_missing_costmap_clear_service_consumes_no_more_than_barrier_budget(
+    monkeypatch,
+):
+    clock = SimpleNamespace(now=200.0)
+    monkeypatch.setattr(
+        experiment_runner_module.time, "monotonic", lambda: clock.now
+    )
+    waits = []
+
+    class MissingClient:
+        def wait_for_service(self, *, timeout_sec):
+            waits.append(timeout_sec)
+            clock.now += timeout_sec
+            return False
+
+    runner = object.__new__(ExperimentRunner)
+    runner._service_timeout_sec = 30.0
+    runner._costmap_clear_clients = (
+        ("global costmap", MissingClient()),
+        ("local costmap", pytest.fail),
+    )
+    runner._raise_if_shutdown = lambda: None
+
+    with pytest.raises(RuntimeError, match="global costmap clear service"):
+        runner._clear_navigation_costmaps(deadline_monotonic=202.0)
+
+    assert waits == [2.0]
+    assert clock.now == 202.0
+
+
+def test_completion_timeout_propagates_after_physical_retirement():
+    response = SimpleNamespace(
+        success=True,
+        message=json.dumps({"group": "G2", "retired": ["dynamic_box"]}),
+    )
+    runner = _completion_runner(_CompletionFuture(response))
+    runner._wait_until = lambda _predicate, _timeout: False
+
+    with pytest.raises(RuntimeError, match="did not clear"):
+        runner._complete_obstacle_group("G2")
+
+
+def test_completion_service_exception_preserves_original_cause():
+    runner = _completion_runner(
+        _CompletionFuture(error=RuntimeError("service transport broke"))
+    )
+
+    with pytest.raises(RuntimeError, match="service transport broke"):
+        runner._complete_obstacle_group("G2")
+
+
+@pytest.mark.parametrize(
+    ("deviation", "failure"),
+    (
+        (19.999, None),
+        (20.0, "ground_truth_path_deviation_at_or_above_20_percent"),
+        (None, "ground_truth_path_deviation_missing_or_nonfinite"),
+        (math.nan, "ground_truth_path_deviation_missing_or_nonfinite"),
+    ),
+)
+def test_v6_static_metric_uses_strict_20_percent_boundary(deviation, failure):
+    scenario = SimpleNamespace(
+        scenario_id="v6_final_kujiale_static",
+        scenario_type="static",
+        appearance_config_file=None,
+    )
+    assert _static_reference_metric_failure(scenario, deviation) == failure
+
+
+def test_static_reference_gate_excludes_appearance_scenario_identity():
+    appearance = SimpleNamespace(
+        scenario_id="v6_final_kujiale_appearance",
+        scenario_type="static",
+        appearance_config_file="appearance.yaml",
+    )
+    assert not _requires_v6_static_reference(appearance)
+    assert _static_reference_metric_failure(appearance, None) is None
 
 
 def test_strict_success_counts_single_goal_when_route_is_omitted():

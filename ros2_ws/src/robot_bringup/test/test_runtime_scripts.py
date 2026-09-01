@@ -424,6 +424,57 @@ def test_v6_wrapper_separates_local_c_arms_from_explicit_d_graph_modes():
     assert 'cognitive_graph_mode:="${graph_mode}"' in source
 
 
+def test_v6_runner_argv_passes_effective_base_overlay_profile_identity(tmp_path):
+    scripts = tmp_path / 'scripts'
+    (scripts / 'lib').mkdir(parents=True)
+    shutil.copy2(RUN_V6_LOW_OBSTACLES, scripts / RUN_V6_LOW_OBSTACLES.name)
+    (scripts / 'lib' / 'common.sh').write_text(
+        f'''PROJECT_ROOT="{tmp_path}"
+require_file() {{ [[ -f "$1" ]]; }}
+die() {{ printf '%s\n' "$*" >&2; return 1; }}
+source_ros() {{ :; }}
+''',
+        encoding='utf-8',
+    )
+    scenario = (tmp_path / 'ros2_ws/src/robot_experiments/config'
+                / 'v6_final_kujiale_static.yaml')
+    overlay = (tmp_path / 'ros2_ws/src/robot_navigation/config'
+               / 'nav2_v6_low_obstacle_isolation.yaml')
+    spawn = (tmp_path / 'isaac_sim/configs/environments'
+             / 'kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml')
+    for path in (scenario, overlay, spawn):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    fake_ros2 = tmp_path / 'ros2'
+    fake_ros2.write_text(
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n',
+        encoding='utf-8',
+    )
+    fake_ros2.chmod(0o755)
+    output = tmp_path / 'runs'
+
+    result = subprocess.run(
+        [str(scripts / RUN_V6_LOW_OBSTACLES.name), 'runner', str(output)],
+        cwd=tmp_path,
+        env=_environment(PATH=f'{tmp_path}:{os.environ["PATH"]}'),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        'launch',
+        'robot_experiments',
+        'experiment.launch.py',
+        f'scenario_file:={scenario}',
+        f'spawn_poses_file:={spawn}',
+        f'output_directory:={output}',
+        'nav2_profile:=v6_low_obstacle_isolation',
+        f'nav2_config_file:={overlay}',
+    ]
+
+
 def _v6_wrapper_argv(tmp_path: Path, *arguments: str) -> list[str]:
     scripts = tmp_path / 'scripts'
     (scripts / 'lib').mkdir(parents=True)

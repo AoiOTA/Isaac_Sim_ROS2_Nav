@@ -41,6 +41,7 @@ PACKAGED_CONFIGS = (
     "v6_imu_lidar_readiness.yaml",
     "v6_imu_regime_diagnostic.yaml",
     "v6_imu_regime_resources.json",
+    "v6_kujiale_isaacgen_v1_low_box_solo_optimal_reference.json",
     "v6_kujiale_low_obstacle_causal.yaml",
     "v6_kujiale_low_obstacles_static.yaml",
     "v6_localization_causal.yaml",

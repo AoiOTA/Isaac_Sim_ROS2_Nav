@@ -1,4 +1,5 @@
 import math
+import json
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -6,6 +7,9 @@ import pytest
 import yaml
 
 from robot_experiments.configuration import ConfigurationError
+from robot_experiments.experiment_runner import (
+    _validate_v6_static_reference_identity,
+)
 from robot_experiments.scenario import (
     load_scenario,
     project_usd_xy_to_map,
@@ -18,6 +22,7 @@ from robot_experiments.spawn_poses import (
     SpawnPose,
     load_spawn_pose,
 )
+from robot_experiments.static_contact import load_robot_footprint
 
 
 PACKAGE_ROOT = Path(__file__).parents[1]
@@ -152,6 +157,12 @@ def test_v6_final_kujiale_scenarios_are_canonical_single_obstacle_routes(filenam
         assert not scenario.success.static_geometric_overlap_is_diagnostic_only
     else:
         assert scenario.success.static_geometric_overlap_is_diagnostic_only
+    if category == "static":
+        assert scenario.optimal_reference_file == (
+            "v6_kujiale_isaacgen_v1_low_box_solo_optimal_reference.json"
+        )
+    else:
+        assert scenario.optimal_reference_file is None
     assert scenario.dynamic_config_file is not None
     assert scenario.resolve_path(scenario.dynamic_config_file).is_file()
     for configured in (
@@ -159,9 +170,78 @@ def test_v6_final_kujiale_scenarios_are_canonical_single_obstacle_routes(filenam
         scenario.nav2_config_file,
         scenario.dynamic_config_file,
         scenario.appearance_config_file,
+        scenario.optimal_reference_file,
     ):
         if configured is not None:
             assert not Path(configured).is_absolute()
+
+
+def _v6_static_reference_inputs():
+    scenario = load_scenario(CONFIG / "v6_final_kujiale_static.yaml")
+    reference = json.loads(
+        scenario.resolve_path(scenario.optimal_reference_file).read_text(
+            encoding="utf-8"
+        )
+    )
+    robot = scenario.resolve_path(scenario.robot_config_file)
+    nav2_base = scenario.resolve_path(scenario.nav2_config_file)
+    nav2_overlay = (
+        REPOSITORY_ROOT
+        / "ros2_ws/src/robot_navigation/config/"
+        "nav2_v6_low_obstacle_isolation.yaml"
+    )
+    return scenario, reference, robot, nav2_base, nav2_overlay
+
+
+def test_v6_static_reference_binds_active_map_route_footprint_and_goal_acceptance():
+    scenario, reference, robot, nav2_base, nav2_overlay = (
+        _v6_static_reference_inputs()
+    )
+
+    _validate_v6_static_reference_identity(
+        reference,
+        scenario=scenario,
+        robot_footprint=load_robot_footprint(robot),
+        nav2_base_config=nav2_base,
+        nav2_overlay_config=nav2_overlay,
+        nav2_profile="v6_low_obstacle_isolation",
+        workspace_root=REPOSITORY_ROOT,
+    )
+
+    assert reference["total_length_m_0_05"] == pytest.approx(
+        35.493142677080414
+    )
+    assert "generator" not in reference["algorithm"]
+    assert "generator_sha256" not in reference["algorithm"]
+    assert "optimal_path" not in reference["algorithm"]
+    assert "optimal_path_sha256" not in reference["algorithm"]
+
+
+@pytest.mark.parametrize("corruption", ("map-hash", "duplicate-leg", "nonfinite-leg"))
+def test_v6_static_reference_rejects_wrong_identity_or_invalid_legs(corruption):
+    scenario, reference, robot, nav2_base, nav2_overlay = (
+        _v6_static_reference_inputs()
+    )
+    if corruption == "map-hash":
+        reference["map"]["yaml_sha256"] = "0" * 64
+        expected = "map asset identity mismatch"
+    elif corruption == "duplicate-leg":
+        reference["legs"][1]["id"] = reference["legs"][0]["id"]
+        expected = "route leg identity mismatch"
+    else:
+        reference["legs"][0]["length_m_0_05"] = math.nan
+        expected = "path lengths are invalid"
+
+    with pytest.raises(ConfigurationError, match=expected):
+        _validate_v6_static_reference_identity(
+            reference,
+            scenario=scenario,
+            robot_footprint=load_robot_footprint(robot),
+            nav2_base_config=nav2_base,
+            nav2_overlay_config=nav2_overlay,
+            nav2_profile="v6_low_obstacle_isolation",
+            workspace_root=REPOSITORY_ROOT,
+        )
 
 
 @pytest.mark.parametrize("filename", FINAL_RIVERMARK_SCENARIOS)

@@ -9,6 +9,7 @@ scenario:
     robot: ../../../../isaac_sim/configs/robots/jackal.yaml
     nav2: ../../robot_navigation/config/nav2_params.yaml
     dynamic_obstacles: ../../../../isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen.yaml
+    optimal_reference: v6_kujiale_isaacgen_v1_low_box_solo_optimal_reference.json
   simulation: {physics_dt: 0.016666666666666666, rtf: 1.0}
   runs:
     matrix:
