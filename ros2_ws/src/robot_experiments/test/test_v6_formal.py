@@ -2522,6 +2522,10 @@ def _validator_promotion_repository(tmp_path: Path, *, mutation: str | None = No
         ["git", "-C", str(repository), "rev-parse", "HEAD"],
         check=True, capture_output=True, text=True,
     ).stdout.strip()
+    from_tree = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD^{tree}"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
     experiment_path.write_text(
         "def protected_writer():\n    return 'writer-v1'\n\n"
         "def validate_recorded_run_evidence():\n    return 'validator-v2'\n",
@@ -2742,8 +2746,12 @@ def _validator_promotion_repository(tmp_path: Path, *, mutation: str | None = No
         ["git", "-C", str(repository), "rev-parse", "HEAD"],
         check=True, capture_output=True, text=True,
     ).stdout.strip()
+    to_tree = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD^{tree}"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
     repositories = {
-        name: {"path": str(repository), "head": to_head}
+        name: {"path": str(repository), "head": to_head, "tree": to_tree}
         for name in ("integration", "module2", "module3")
     }
     freeze = {
@@ -2754,7 +2762,9 @@ def _validator_promotion_repository(tmp_path: Path, *, mutation: str | None = No
     pilot_runtime = {
         "repositories": {
             **repositories,
-            "module3": {"path": str(repository), "head": from_head},
+            "module3": {
+                "path": str(repository), "head": from_head, "tree": from_tree,
+            },
         },
         "driver_version": "driver",
         "kernel_release": "kernel",
@@ -2771,6 +2781,229 @@ def _promotion_loaded_identity(repository: Path, head: str):
         "git_blob_oid": "blob",
         "current_head": head,
     }
+
+
+def _promotion_entry(repository: Path, head: str) -> dict[str, str]:
+    tree = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", f"{head}^{{tree}}"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    return {"path": str(repository), "head": head, "tree": tree}
+
+
+def _integration_promotion_repository(tmp_path: Path, mutation: str = "docs"):
+    repository = tmp_path / f"integration-promotion-{mutation}"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    current_state = repository / "docs/CURRENT_STATE.md"
+    current_state.parent.mkdir(parents=True)
+    current_state.write_text("pilot\n", encoding="utf-8")
+    runtime = repository / "runtime.py"
+    runtime.write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repository), "add", "."], check=True)
+    commit_env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Codex Test",
+        "GIT_AUTHOR_EMAIL": "codex@example.invalid",
+        "GIT_COMMITTER_NAME": "Codex Test",
+        "GIT_COMMITTER_EMAIL": "codex@example.invalid",
+    }
+    subprocess.run(
+        ["git", "-C", str(repository), "commit", "-qm", "pilot"],
+        check=True, env=commit_env,
+    )
+    pilot_head = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    if mutation == "nonancestor":
+        subprocess.run(
+            ["git", "-C", str(repository), "checkout", "--orphan", "final"],
+            check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repository), "rm", "-q", "-r", "-f", "."],
+            check=True,
+        )
+        current_state.parent.mkdir(parents=True, exist_ok=True)
+        current_state.write_text("final\n", encoding="utf-8")
+    elif mutation == "runtime":
+        runtime.write_text("VALUE = 2\n", encoding="utf-8")
+    elif mutation == "add":
+        (repository / "docs/EXTRA.md").write_text("extra\n", encoding="utf-8")
+    elif mutation == "delete":
+        current_state.unlink()
+    elif mutation == "rename":
+        current_state.rename(repository / "docs/STATE.md")
+    else:
+        current_state.write_text("final\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repository), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repository), "commit", "-qm", "final"],
+        check=True, env=commit_env,
+    )
+    final_head = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    return (
+        repository,
+        _promotion_entry(repository, pilot_head),
+        _promotion_entry(repository, final_head),
+    )
+
+
+def _evaluator_promotion_repository(tmp_path: Path, mutation: str | None = None):
+    repository = tmp_path / f"evaluator-promotion-{mutation or 'valid'}"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    experiment = repository / (
+        "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py"
+    )
+    formal = repository / (
+        "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py"
+    )
+    test = repository / "ros2_ws/src/robot_experiments/test/test_v6_formal.py"
+    for path in (experiment, formal, test):
+        path.parent.mkdir(parents=True, exist_ok=True)
+    experiment.write_text(
+        "def live_runner():\n    return 'unchanged'\n\n"
+        "def _recorded_cognitive_admission_evidence():\n    return 'pilot'\n",
+        encoding="utf-8",
+    )
+    formal.write_text(
+        "POLICY = 1\n\n"
+        "def protected_formal():\n    return 'unchanged'\n\n"
+        "def _validate_historical_validator_promotion(value, *, parent_freeze):\n"
+        "    return 'pilot'\n\n"
+        "def _validate_validator_only_head_promotion(value, *, freeze):\n"
+        "    return 'pilot'\n",
+        encoding="utf-8",
+    )
+    test.write_text("def test_pilot():\n    assert True\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repository), "add", "."], check=True)
+    commit_env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Codex Test",
+        "GIT_AUTHOR_EMAIL": "codex@example.invalid",
+        "GIT_COMMITTER_NAME": "Codex Test",
+        "GIT_COMMITTER_EMAIL": "codex@example.invalid",
+    }
+    subprocess.run(
+        ["git", "-C", str(repository), "commit", "-qm", "pilot"],
+        check=True, env=commit_env,
+    )
+    pilot_head = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    experiment.write_text(
+        "def live_runner():\n    return 'changed'\n\n"
+        if mutation == "live"
+        else "def live_runner():\n    return 'unchanged'\n\n"
+        "def _recorded_cognitive_admission_evidence():\n    return 'final'\n",
+        encoding="utf-8",
+    )
+    formal.write_text(
+        "POLICY = 1\n"
+        "EVALUATOR_PROMOTION_MIGRATION = 'retire_after_aggregate'\n\n"
+        "def protected_formal():\n    return 'unchanged'\n\n"
+        "def _validate_historical_validator_promotion(value, *, parent_freeze):\n"
+        "    return 'final'\n\n"
+        "def _evaluator_only_ast_guard(repository, from_head, to_head):\n"
+        "    return None\n\n"
+        "def _validate_validator_only_head_promotion(value, *, freeze):\n"
+        "    return 'final'\n",
+        encoding="utf-8",
+    )
+    test.write_text("def test_final():\n    assert True\n", encoding="utf-8")
+    if mutation == "extra":
+        (repository / "runtime.py").write_text("changed\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repository), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repository), "commit", "-qm", "final"],
+        check=True, env=commit_env,
+    )
+    final_head = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    final_entries = {
+        name: _promotion_entry(repository, final_head)
+        for name in ("integration", "module2", "module3")
+    }
+    freeze = {
+        "repositories": final_entries,
+        "driver_version": "driver",
+        "kernel_release": "kernel",
+    }
+    pilot_runtime = {
+        "repositories": {
+            **final_entries,
+            "module3": _promotion_entry(repository, pilot_head),
+        },
+        "driver_version": "driver",
+        "kernel_release": "kernel",
+    }
+    return repository, freeze, pilot_runtime
+
+
+def _historical_path_head_only_promotion(tmp_path: Path):
+    repository, from_head, to_head, _freeze, _runtime = (
+        _validator_promotion_repository(tmp_path)
+    )
+    parent_repositories = {
+        name: {"path": str(repository), "head": to_head}
+        for name in ("integration", "module2", "module3")
+    }
+    pilot_repositories = {
+        **parent_repositories,
+        "module3": {"path": str(repository), "head": from_head},
+    }
+    rows, digest = v6_formal_module._validator_only_diff_evidence(
+        repository, from_head, to_head
+    )
+    relative = (
+        "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py"
+    )
+    source = subprocess.run(
+        ["git", "-C", str(repository), "show", f"{to_head}:{relative}"],
+        check=True, capture_output=True,
+    ).stdout
+    blob = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", f"{to_head}:{relative}"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    promotion = {
+        "schema": "bio_nav.v6_validator_only_head_promotion.v1",
+        "pilot_runtime": {
+            "repositories": pilot_repositories,
+            "driver_version": "driver",
+            "kernel_release": "kernel",
+        },
+        "final_repositories": parent_repositories,
+        "module3_diff": {
+            "from_head": from_head,
+            "to_head": to_head,
+            "from_is_ancestor": True,
+            "name_status": rows,
+            "canonical_diff_sha256": digest,
+        },
+        "loaded_validator": {
+            "module": "robot_experiments.experiment_runner",
+            "symbol": "validate_recorded_run_evidence",
+            "source_path": str((repository / relative).resolve()),
+            "source_sha256": hashlib.sha256(source).hexdigest(),
+            "git_blob_oid": blob,
+            "current_head": to_head,
+        },
+    }
+    parent_freeze = {
+        "repositories": parent_repositories,
+        "driver_version": "driver",
+        "kernel_release": "kernel",
+    }
+    return repository, promotion, parent_freeze
 
 
 def _qualification_promotion_repository(tmp_path: Path, *, extra_path=False):
@@ -2864,6 +3097,228 @@ def test_validator_only_head_promotion_accepts_exact_offline_symbol_delta(
     assert {row["status"] for row in promotion["module3_diff"]["name_status"]} == {"M"}
     assert len(promotion["module3_diff"]["name_status"]) == 4
     assert promotion["loaded_validator"]["current_head"] == to_head
+
+
+def test_validator_promotion_accepts_integration_docs_only_delta(
+    tmp_path, monkeypatch,
+):
+    module3, _from, _to, freeze, pilot_runtime = (
+        _validator_promotion_repository(tmp_path)
+    )
+    _integration, pilot_integration, final_integration = (
+        _integration_promotion_repository(tmp_path)
+    )
+    freeze["repositories"]["integration"] = final_integration
+    pilot_runtime["repositories"]["integration"] = pilot_integration
+    monkeypatch.setattr(
+        v6_formal_module, "_validator_only_loaded_identity",
+        lambda _root, head: _promotion_loaded_identity(module3, head),
+    )
+
+    promotion = v6_formal_module._build_validator_only_head_promotion(
+        freeze=freeze, pilot_runtime=pilot_runtime
+    )
+
+    assert promotion["pilot_runtime"]["repositories"]["integration"] == (
+        pilot_integration
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("runtime", "add", "delete", "rename", "nonancestor", "tree_tamper"),
+)
+def test_validator_promotion_rejects_integration_non_docs_delta(
+    tmp_path, monkeypatch, mutation,
+):
+    module3, _from, _to, freeze, pilot_runtime = (
+        _validator_promotion_repository(tmp_path)
+    )
+    source_mutation = "docs" if mutation == "tree_tamper" else mutation
+    _integration, pilot_integration, final_integration = (
+        _integration_promotion_repository(tmp_path, source_mutation)
+    )
+    if mutation == "tree_tamper":
+        pilot_integration["tree"] = "0" * 40
+    freeze["repositories"]["integration"] = final_integration
+    pilot_runtime["repositories"]["integration"] = pilot_integration
+    monkeypatch.setattr(
+        v6_formal_module, "_validator_only_loaded_identity",
+        lambda _root, head: _promotion_loaded_identity(module3, head),
+    )
+
+    with pytest.raises(
+        V6ContractError,
+        match="Integration|checkout drift",
+    ):
+        v6_formal_module._build_validator_only_head_promotion(
+            freeze=freeze, pilot_runtime=pilot_runtime
+        )
+
+
+@pytest.mark.parametrize("tamper", ("head", "tree"))
+def test_validator_promotion_rejects_module2_head_or_tree_drift(
+    tmp_path, monkeypatch, tamper,
+):
+    repository, from_head, _to, freeze, pilot_runtime = (
+        _validator_promotion_repository(tmp_path)
+    )
+    if tamper == "head":
+        pilot_runtime["repositories"]["module2"] = _promotion_entry(
+            repository, from_head
+        )
+    else:
+        pilot_runtime["repositories"]["module2"]["tree"] = "0" * 40
+    monkeypatch.setattr(
+        v6_formal_module, "_validator_only_loaded_identity",
+        lambda _root, head: _promotion_loaded_identity(repository, head),
+    )
+
+    with pytest.raises(V6ContractError, match="changed Module2|checkout drift"):
+        v6_formal_module._build_validator_only_head_promotion(
+            freeze=freeze, pilot_runtime=pilot_runtime
+        )
+
+
+@pytest.mark.parametrize("location", ("pilot", "final"))
+def test_validator_promotion_rejects_module3_recorded_tree_tamper(
+    tmp_path, monkeypatch, location,
+):
+    repository, _from, _to, freeze, pilot_runtime = (
+        _validator_promotion_repository(tmp_path)
+    )
+    if location == "pilot":
+        pilot_runtime["repositories"]["module3"]["tree"] = "0" * 40
+    else:
+        freeze["repositories"]["module3"]["tree"] = "0" * 40
+    monkeypatch.setattr(
+        v6_formal_module, "_validator_only_loaded_identity",
+        lambda _root, head: _promotion_loaded_identity(repository, head),
+    )
+
+    with pytest.raises(V6ContractError, match="checkout drift"):
+        v6_formal_module._build_validator_only_head_promotion(
+            freeze=freeze, pilot_runtime=pilot_runtime
+        )
+
+
+def test_evaluator_promotion_accepts_only_offline_validator_delta(
+    tmp_path, monkeypatch,
+):
+    repository, freeze, pilot_runtime = _evaluator_promotion_repository(tmp_path)
+    monkeypatch.setattr(
+        v6_formal_module, "_validator_only_loaded_identity",
+        lambda _root, head: _promotion_loaded_identity(repository, head),
+    )
+
+    promotion = v6_formal_module._build_validator_only_head_promotion(
+        freeze=freeze, pilot_runtime=pilot_runtime
+    )
+
+    assert {row["path"] for row in promotion["module3_diff"]["name_status"]} == {
+        "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py",
+        "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py",
+        "ros2_ws/src/robot_experiments/test/test_v6_formal.py",
+    }
+
+
+@pytest.mark.parametrize("mutation", ("live", "extra"))
+def test_evaluator_promotion_rejects_live_or_extra_path(
+    tmp_path, monkeypatch, mutation,
+):
+    repository, freeze, pilot_runtime = _evaluator_promotion_repository(
+        tmp_path, mutation
+    )
+    monkeypatch.setattr(
+        v6_formal_module, "_validator_only_loaded_identity",
+        lambda _root, head: _promotion_loaded_identity(repository, head),
+    )
+
+    with pytest.raises(V6ContractError, match="protected AST|disallowed"):
+        v6_formal_module._build_validator_only_head_promotion(
+            freeze=freeze, pilot_runtime=pilot_runtime
+        )
+
+
+def test_evaluator_promotion_rejects_loaded_validator_bytes_drift(
+    tmp_path, monkeypatch,
+):
+    repository, freeze, pilot_runtime = _evaluator_promotion_repository(tmp_path)
+    state = {"sha": "1" * 64}
+    monkeypatch.setattr(
+        v6_formal_module,
+        "_validator_only_loaded_identity",
+        lambda _root, head: {
+            **_promotion_loaded_identity(repository, head),
+            "source_sha256": state["sha"],
+        },
+    )
+    promotion = v6_formal_module._build_validator_only_head_promotion(
+        freeze=freeze, pilot_runtime=pilot_runtime
+    )
+    state["sha"] = "2" * 64
+
+    with pytest.raises(V6ContractError, match="loaded validator identity"):
+        v6_formal_module._validate_validator_only_head_promotion(
+            promotion, freeze=freeze
+        )
+
+
+def test_historical_c0c4d973_shape_without_trees_remains_readable_for_continuation(
+    tmp_path,
+):
+    _repository, promotion, parent_freeze = (
+        _historical_path_head_only_promotion(tmp_path)
+    )
+
+    parsed = v6_formal_module._validate_historical_validator_promotion(
+        promotion, parent_freeze=parent_freeze
+    )
+
+    assert parsed["pilot_runtime"]["repositories"]["module3"].keys() == {
+        "path", "head",
+    }
+
+
+@pytest.mark.parametrize("tamper", ("head", "path", "nonancestor", "tree"))
+def test_historical_path_head_only_promotion_rejects_identity_tamper(
+    tmp_path, tamper,
+):
+    repository, promotion, parent_freeze = (
+        _historical_path_head_only_promotion(tmp_path)
+    )
+    pilot_module3 = promotion["pilot_runtime"]["repositories"]["module3"]
+    if tamper == "head":
+        pilot_module3["head"] = "0" * 40
+    elif tamper == "path":
+        pilot_module3["path"] = str(tmp_path / "wrong")
+    elif tamper == "tree":
+        pilot_module3["tree"] = "0" * 40
+    else:
+        subprocess.run(
+            ["git", "-C", str(repository), "checkout", "--orphan", "unrelated"],
+            check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repository), "commit", "--allow-empty", "-qm", "unrelated"],
+            check=True,
+            env={
+                **os.environ,
+                "GIT_AUTHOR_NAME": "Codex Test",
+                "GIT_AUTHOR_EMAIL": "codex@example.invalid",
+                "GIT_COMMITTER_NAME": "Codex Test",
+                "GIT_COMMITTER_EMAIL": "codex@example.invalid",
+            },
+        )
+        pilot_module3["head"] = subprocess.run(
+            ["git", "-C", str(repository), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    with pytest.raises(V6ContractError):
+        v6_formal_module._validate_historical_validator_promotion(
+            promotion, parent_freeze=parent_freeze
+        )
 
 
 def test_qualification_tooling_promotion_accepts_only_bound_tooling_delta(
@@ -3100,10 +3555,15 @@ def test_validator_only_head_promotion_rejects_nonancestor_from_head(
         ["git", "-C", str(repository), "rev-parse", "HEAD"],
         check=True, capture_output=True, text=True,
     ).stdout.strip()
+    unrelated_tree = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD^{tree}"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
     subprocess.run(
         ["git", "-C", str(repository), "checkout", "-q", to_head], check=True
     )
     pilot_runtime["repositories"]["module3"]["head"] = unrelated
+    pilot_runtime["repositories"]["module3"]["tree"] = unrelated_tree
     monkeypatch.setattr(
         v6_formal_module, "_validator_only_loaded_identity",
         lambda _root, head: _promotion_loaded_identity(repository, head),
@@ -3211,6 +3671,28 @@ def test_indoor_pilot_aggregate_publishes_only_nine_indoor_runs(
             "path": str(experiment_launch),
             "sha256": "e11de8da7b00e75d1ad99ec09adf74aeccd8471b3e28c5a653a10c01d0a1bef5",
         }]
+
+
+def test_indoor_pilot_aggregate_keeps_docs_and_evaluator_promotion_with_nine_strict(
+    tmp_path, monkeypatch,
+):
+    pilot_root = _write_indoor_production_pilot_root(tmp_path, monkeypatch)
+
+    def promoted(*, freeze, pilot_runtime):
+        return _fake_validator_promotion(freeze, pilot_runtime)
+
+    monkeypatch.setattr(
+        v6_formal_module, "_validator_promotion_if_needed", promoted
+    )
+    result = v6_formal_module.aggregate_indoor_pilot(
+        pilot_root=pilot_root,
+        output_manifest=tmp_path / "nas/indoor-promoted-manifest.json",
+        output_aggregate=tmp_path / "nas/indoor-promoted-aggregate.json",
+    )
+
+    assert result["qualification"] == "INDOOR_PILOT_READY"
+    assert result["strict_successes"] == 9
+    assert result["validator_only_head_promotion"] is not None
 
 
 def test_same_exact_tuple_skips_validator_promotion(monkeypatch):

@@ -54,6 +54,10 @@ OUTDOOR_PILOT_MANIFEST_SCHEMA = "bio_nav_v6_outdoor_pilot_manifest_v1"
 OUTDOOR_PILOT_AGGREGATE_SCHEMA = "bio_nav_v6_outdoor_pilot_aggregate_v1"
 OUTDOOR_CAMPAIGN_SCHEMA_VERSION = "bio_nav_v6_outdoor_campaign_v1"
 COMBINED_HALVES_SCHEMA_VERSION = "bio_nav_v6_combined_qualified_halves_v1"
+# One-time, externally reviewed migration marker.  The hardening change after
+# aggregate publication must remove v6_formal self-change permission and retire
+# this marker; it is not a standing extension mechanism.
+EVALUATOR_PROMOTION_MIGRATION = "retire_after_aggregate"
 FORMAL_NAS_ROOT = Path("/mnt/nas_home")
 PILOT_SCENARIO_FILENAMES = {
     "indoor_static": "v6_final_kujiale_static.yaml",
@@ -1420,6 +1424,131 @@ def _validator_only_loaded_identity(
     }
 
 
+def _evaluator_only_ast_guard(
+    repository: Path, from_head: str, to_head: str
+) -> None:
+    import ast
+    import copy
+
+    experiment_path = (
+        "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py"
+    )
+    formal_path = "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py"
+    allowed_bodies = {
+        experiment_path: {"FunctionDef:_recorded_cognitive_admission_evidence"},
+        formal_path: {
+            "FunctionDef:_validate_validator_only_head_promotion",
+            "FunctionDef:_validate_historical_validator_promotion",
+        },
+    }
+
+    def keyed(tree: ast.Module) -> dict[str, ast.AST]:
+        rows: dict[str, ast.AST] = {}
+        anonymous: dict[str, int] = {}
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                key = f"{type(node).__name__}:{node.name}"
+            elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(
+                node.targets[0], ast.Name
+            ):
+                key = f"Assign:{node.targets[0].id}"
+            else:
+                kind = type(node).__name__
+                index = anonymous.get(kind, 0)
+                anonymous[kind] = index + 1
+                key = f"{kind}:#{index}"
+            if key in rows:
+                raise V6ContractError(
+                    f"evaluator promotion duplicated top-level symbol: {key}"
+                )
+            rows[key] = node
+        return rows
+
+    for relative_path in (experiment_path, formal_path):
+        sources = []
+        for head in (from_head, to_head):
+            source = _validator_only_git_output(
+                repository, ["show", f"{head}:{relative_path}"], binary=False
+            )
+            assert isinstance(source, str)
+            sources.append(source)
+        nodes = [
+            keyed(ast.parse(source, filename=relative_path, type_comments=True))
+            for source in sources
+        ]
+        protected = []
+        for source, keyed_nodes in zip(sources, nodes):
+            rows = []
+            for key, node in keyed_nodes.items():
+                if key in allowed_bodies[relative_path] or (
+                    relative_path == formal_path
+                    and key in {
+                        "FunctionDef:_evaluator_only_ast_guard",
+                        "Assign:EVALUATOR_PROMOTION_MIGRATION",
+                    }
+                ):
+                    continue
+                rows.append((
+                    key,
+                    ast.get_source_segment(source, node),
+                    ast.dump(node, include_attributes=False),
+                ))
+            protected.append(rows)
+        if protected[0] != protected[1]:
+            raise V6ContractError(
+                f"evaluator promotion changed protected AST: {relative_path}"
+            )
+        for key in allowed_bodies[relative_path]:
+            before = nodes[0].get(key)
+            after = nodes[1].get(key)
+            if not isinstance(before, ast.FunctionDef) or not isinstance(
+                after, ast.FunctionDef
+            ):
+                raise V6ContractError(
+                    f"evaluator promotion callable missing or changed kind: {key}"
+                )
+            headers = []
+            for node in (before, after):
+                header = copy.deepcopy(node)
+                header.body = [ast.Pass()]
+                headers.append(ast.dump(header, include_attributes=False))
+            if headers[0] != headers[1]:
+                raise V6ContractError(
+                    f"evaluator promotion callable signature changed: {key}"
+                )
+        helper = nodes[1].get("FunctionDef:_evaluator_only_ast_guard")
+        if relative_path == formal_path:
+            if "FunctionDef:_evaluator_only_ast_guard" in nodes[0] or not isinstance(
+                helper, ast.FunctionDef
+            ) or helper.decorator_list:
+                raise V6ContractError("evaluator promotion AST guard helper mismatch")
+            arguments = helper.args
+            if (
+                tuple(
+                    item.arg for item in (*arguments.posonlyargs, *arguments.args)
+                ) != ("repository", "from_head", "to_head")
+                or arguments.kwonlyargs
+                or arguments.vararg is not None
+                or arguments.kwarg is not None
+                or arguments.defaults
+            ):
+                raise V6ContractError(
+                    "evaluator promotion AST guard helper signature mismatch"
+                )
+            marker = nodes[1].get("Assign:EVALUATOR_PROMOTION_MIGRATION")
+            if "Assign:EVALUATOR_PROMOTION_MIGRATION" in nodes[0] or not (
+                isinstance(marker, ast.Assign)
+                and len(marker.targets) == 1
+                and isinstance(marker.targets[0], ast.Name)
+                and marker.targets[0].id == "EVALUATOR_PROMOTION_MIGRATION"
+                and isinstance(marker.value, ast.Constant)
+                and marker.value.value == "retire_after_aggregate"
+            ):
+                raise V6ContractError(
+                    "evaluator promotion migration marker is invalid"
+                )
+
+
 def _validate_validator_only_head_promotion(
     value: Any, *, freeze: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -1460,25 +1589,67 @@ def _validate_validator_only_head_promotion(
             pilot_repositories.get(name),
             f"validator_only_head_promotion.pilot_runtime.repositories.{name}",
         )
-        if set(pilot_entry) not in ({"path", "head"}, {"path", "head", "tree"}):
+        if set(pilot_entry) != {"path", "head", "tree"}:
             raise V6ContractError(
                 "validator-only promotion repository identity keys are invalid"
             )
         final_entry = _mapping(freeze["repositories"][name], f"freeze.repositories.{name}")
+        if set(final_entry) != {"path", "head", "tree"}:
+            raise V6ContractError(
+                "validator-only promotion final repository identity keys are invalid"
+            )
         if Path(str(pilot_entry["path"])).resolve() != Path(str(final_entry["path"])).resolve():
             raise V6ContractError("validator-only promotion repository path mismatch")
         repository = Path(str(final_entry["path"])).resolve()
         current_head = str(_validator_only_git_output(
             repository, ["rev-parse", "HEAD"], binary=False
         )).strip()
-        if current_head != final_entry["head"] or _repository_tracked_dirty(repository):
+        current_tree = str(_validator_only_git_output(
+            repository, ["rev-parse", "HEAD^{tree}"], binary=False
+        )).strip()
+        pilot_tree = str(_validator_only_git_output(
+            repository, ["rev-parse", f"{pilot_entry['head']}^{{tree}}"], binary=False
+        )).strip()
+        final_tree = str(_validator_only_git_output(
+            repository, ["rev-parse", f"{final_entry['head']}^{{tree}}"], binary=False
+        )).strip()
+        if (
+            current_head != final_entry["head"]
+            or current_tree != final_entry["tree"]
+            or pilot_tree != pilot_entry["tree"]
+            or final_tree != final_entry["tree"]
+            or _repository_tracked_dirty(repository)
+        ):
             raise V6ContractError(
                 f"validator-only promotion current checkout drift: {name}"
             )
-        if name in {"integration", "module2"} and pilot_entry["head"] != final_entry["head"]:
+        if name == "module2" and pilot_entry != final_entry:
             raise V6ContractError(
-                f"validator-only promotion changed non-Module3 repository: {name}"
+                "validator-only promotion changed Module2 repository"
             )
+        if name == "integration" and pilot_entry["head"] != final_entry["head"]:
+            try:
+                subprocess.run(
+                    [
+                        "git", "-C", str(repository), "merge-base", "--is-ancestor",
+                        str(pilot_entry["head"]), str(final_entry["head"]),
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+            except (OSError, subprocess.CalledProcessError) as exc:
+                raise V6ContractError(
+                    "validator-only promotion Integration HEAD is not ancestral"
+                ) from exc
+            integration_rows, _integration_digest = _validator_only_diff_evidence(
+                repository, str(pilot_entry["head"]), str(final_entry["head"])
+            )
+            if integration_rows != [{
+                "status": "M", "path": "docs/CURRENT_STATE.md",
+            }]:
+                raise V6ContractError(
+                    "validator-only promotion Integration diff is not docs-only"
+                )
     if (
         pilot_runtime.get("driver_version") != freeze["driver_version"]
         or pilot_runtime.get("kernel_release") != freeze["kernel_release"]
@@ -1500,22 +1671,51 @@ def _validate_validator_only_head_promotion(
     diff_rows, canonical_diff_sha256 = _validator_only_diff_evidence(
         module3_root, from_head, to_head
     )
-    allowed_paths = {
+    legacy_allowed_paths = {
         "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py",
         "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py",
         "ros2_ws/src/robot_experiments/test/test_experiment_motion_quality.py",
         "ros2_ws/src/robot_experiments/test/test_v6_formal.py",
     }
-    required_paths = {
+    legacy_required_paths = {
         "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py",
         "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py",
     }
-    if (
-        not diff_rows
-        or any(row["status"] != "M" or row["path"] not in allowed_paths for row in diff_rows)
-        or not required_paths <= {row["path"] for row in diff_rows}
-    ):
-        raise V6ContractError("validator-only promotion changed a disallowed path or status")
+    evaluator_allowed_paths = {
+        "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py",
+        "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py",
+        "ros2_ws/src/robot_experiments/test/test_v6_formal.py",
+    }
+    diff_paths = {row["path"] for row in diff_rows}
+    legacy_promotion = bool(
+        diff_rows
+        and all(
+            row["status"] == "M" and row["path"] in legacy_allowed_paths
+            for row in diff_rows
+        )
+        and legacy_required_paths <= diff_paths
+        and "ros2_ws/src/robot_experiments/test/test_experiment_motion_quality.py"
+        in diff_paths
+    )
+    # This is a one-time external-review migration check, not a claim that
+    # self-modifying policy code can defend against a malicious final tree.
+    # The post-aggregate hardening change must remove this v6_formal allowance.
+    evaluator_promotion = bool(
+        diff_rows
+        and all(
+            row["status"] == "M" and row["path"] in evaluator_allowed_paths
+            for row in diff_rows
+        )
+        and {
+            "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py",
+            "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py",
+        } <= diff_paths
+        and EVALUATOR_PROMOTION_MIGRATION == "retire_after_aggregate"
+    )
+    if not legacy_promotion and not evaluator_promotion:
+        raise V6ContractError(
+            "validator-only promotion changed a disallowed path or status"
+        )
     module3_diff = _mapping(
         promotion.get("module3_diff"), "validator_only_head_promotion.module3_diff"
     )
@@ -1535,7 +1735,10 @@ def _validate_validator_only_head_promotion(
         or module3_diff.get("canonical_diff_sha256") != canonical_diff_sha256
     ):
         raise V6ContractError("validator-only promotion diff record mismatch")
-    _validator_only_ast_guard(module3_root, from_head, to_head)
+    if legacy_promotion:
+        _validator_only_ast_guard(module3_root, from_head, to_head)
+    else:
+        _evaluator_only_ast_guard(module3_root, from_head, to_head)
     loaded_identity = _validator_only_loaded_identity(module3_root, to_head)
     if promotion.get("loaded_validator") != loaded_identity:
         raise V6ContractError("validator-only promotion loaded validator identity mismatch")
@@ -1895,15 +2098,115 @@ def _validate_historical_validator_promotion(
     runtime = _mapping(promotion.get("pilot_runtime"), "historical pilot_runtime")
     repositories = _mapping(runtime.get("repositories"), "historical repositories")
     if (
-        repositories.get("integration") != parent_freeze["repositories"]["integration"]
-        or repositories.get("module2") != parent_freeze["repositories"]["module2"]
+        repositories.get("module2") != parent_freeze["repositories"]["module2"]
         or runtime.get("driver_version") != parent_freeze["driver_version"]
         or runtime.get("kernel_release") != parent_freeze["kernel_release"]
     ):
         raise V6ContractError("historical validator promotion Pilot tuple mismatch")
+    historical_module2 = _mapping(
+        repositories.get("module2"), "historical Module2 repository"
+    )
+    if set(historical_module2) not in (
+        {"path", "head"}, {"path", "head", "tree"},
+    ):
+        raise V6ContractError("historical Module2 repository identity mismatch")
+    module2_root = Path(str(historical_module2["path"])).resolve()
+    module2_tree = str(_validator_only_git_output(
+        module2_root,
+        ["rev-parse", f"{historical_module2['head']}^{{tree}}"],
+        binary=False,
+    )).strip()
+    if "tree" in historical_module2 and module2_tree != historical_module2["tree"]:
+        raise V6ContractError("historical Module2 tree mismatch")
+    pilot_integration = _mapping(
+        repositories.get("integration"), "historical Integration repository"
+    )
+    final_integration = _mapping(
+        parent_freeze["repositories"]["integration"],
+        "historical final Integration repository",
+    )
+    if (
+        set(pilot_integration) not in (
+            {"path", "head"}, {"path", "head", "tree"},
+        )
+        or set(final_integration) not in (
+            {"path", "head"}, {"path", "head", "tree"},
+        )
+        or Path(str(pilot_integration["path"])).resolve()
+        != Path(str(final_integration["path"])).resolve()
+    ):
+        raise V6ContractError("historical Integration repository identity mismatch")
+    integration_root = Path(str(final_integration["path"])).resolve()
+    pilot_integration_tree = str(_validator_only_git_output(
+        integration_root,
+        ["rev-parse", f"{pilot_integration['head']}^{{tree}}"],
+        binary=False,
+    )).strip()
+    final_integration_tree = str(_validator_only_git_output(
+        integration_root,
+        ["rev-parse", f"{final_integration['head']}^{{tree}}"],
+        binary=False,
+    )).strip()
+    if (
+        "tree" in pilot_integration
+        and pilot_integration_tree != pilot_integration["tree"]
+    ) or (
+        "tree" in final_integration
+        and final_integration_tree != final_integration["tree"]
+    ):
+        raise V6ContractError("historical Integration tree mismatch")
+    if pilot_integration["head"] != final_integration["head"]:
+        try:
+            subprocess.run(
+                [
+                    "git", "-C", str(integration_root), "merge-base",
+                    "--is-ancestor", str(pilot_integration["head"]),
+                    str(final_integration["head"]),
+                ],
+                check=True,
+                capture_output=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise V6ContractError(
+                "historical Integration HEAD is not ancestral"
+            ) from exc
+        integration_rows, _integration_digest = _validator_only_diff_evidence(
+            integration_root,
+            str(pilot_integration["head"]),
+            str(final_integration["head"]),
+        )
+        if integration_rows != [{
+            "status": "M", "path": "docs/CURRENT_STATE.md",
+        }]:
+            raise V6ContractError("historical Integration diff is not docs-only")
     module3_root = Path(parent_freeze["repositories"]["module3"]["path"]).resolve()
-    from_head = str(repositories["module3"]["head"])
-    to_head = str(parent_freeze["repositories"]["module3"]["head"])
+    pilot_module3 = _mapping(
+        repositories.get("module3"), "historical Module3 repository"
+    )
+    final_module3 = _mapping(
+        parent_freeze["repositories"]["module3"],
+        "historical final Module3 repository",
+    )
+    if set(pilot_module3) not in (
+        {"path", "head"}, {"path", "head", "tree"},
+    ) or set(final_module3) not in (
+        {"path", "head"}, {"path", "head", "tree"},
+    ) or Path(str(pilot_module3["path"])).resolve() != module3_root:
+        raise V6ContractError("historical Module3 repository identity mismatch")
+    from_head = str(pilot_module3["head"])
+    to_head = str(final_module3["head"])
+    from_tree = str(_validator_only_git_output(
+        module3_root, ["rev-parse", f"{from_head}^{{tree}}"], binary=False
+    )).strip()
+    to_tree = str(_validator_only_git_output(
+        module3_root, ["rev-parse", f"{to_head}^{{tree}}"], binary=False
+    )).strip()
+    if (
+        "tree" in pilot_module3 and from_tree != pilot_module3["tree"]
+    ) or (
+        "tree" in final_module3 and to_tree != final_module3["tree"]
+    ):
+        raise V6ContractError("historical Module3 tree mismatch")
     try:
         subprocess.run(
             ["git", "-C", str(module3_root), "merge-base", "--is-ancestor", from_head, to_head],
