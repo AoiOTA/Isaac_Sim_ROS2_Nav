@@ -54,10 +54,9 @@ OUTDOOR_PILOT_MANIFEST_SCHEMA = "bio_nav_v6_outdoor_pilot_manifest_v1"
 OUTDOOR_PILOT_AGGREGATE_SCHEMA = "bio_nav_v6_outdoor_pilot_aggregate_v1"
 OUTDOOR_CAMPAIGN_SCHEMA_VERSION = "bio_nav_v6_outdoor_campaign_v1"
 COMBINED_HALVES_SCHEMA_VERSION = "bio_nav_v6_combined_qualified_halves_v1"
-# One-time, externally reviewed migration marker.  The hardening change after
-# aggregate publication must remove v6_formal self-change permission and retire
-# this marker; it is not a standing extension mechanism.
-EVALUATOR_PROMOTION_MIGRATION = "retire_after_aggregate"
+# The externally reviewed migration has been consumed.  False is steady state:
+# v6_formal may not change in later evaluator-only promotions.
+EVALUATOR_PROMOTION_MIGRATION = False
 FORMAL_NAS_ROOT = Path("/mnt/nas_home")
 PILOT_SCENARIO_FILENAMES = {
     "indoor_static": "v6_final_kujiale_static.yaml",
@@ -462,6 +461,10 @@ def _validate_formal_freeze(
         required_freeze_keys.add("physical_contracts")
         if isinstance(value, Mapping) and "validator_only_head_promotion" in value:
             required_freeze_keys.add("validator_only_head_promotion")
+        if isinstance(value, Mapping) and "evaluator_hardening_promotion" in value:
+            required_freeze_keys.update({
+                "validator_only_head_promotion", "evaluator_hardening_promotion",
+            })
         continuation_present = isinstance(value, Mapping) and (
             "indoor_continuation" in value
             or "qualification_tooling_promotion" in value
@@ -659,6 +662,14 @@ def _validate_formal_freeze(
                 freeze.get("validator_only_head_promotion"),
                 "freeze.validator_only_head_promotion",
             ))
+        if "evaluator_hardening_promotion" in freeze:
+            normalized["evaluator_hardening_promotion"] = dict(_mapping(
+                freeze.get("evaluator_hardening_promotion"),
+                "freeze.evaluator_hardening_promotion",
+            ))
+            _validate_evaluator_hardening_chain(
+                normalized["evaluator_hardening_promotion"], freeze=normalized
+            )
         if continuation_present:
             normalized["indoor_continuation"] = dict(_mapping(
                 freeze.get("indoor_continuation"),
@@ -1426,7 +1437,7 @@ def _validator_only_loaded_identity(
 
 def _evaluator_only_ast_guard(
     repository: Path, from_head: str, to_head: str
-) -> None:
+):
     import ast
     import copy
 
@@ -1437,6 +1448,10 @@ def _evaluator_only_ast_guard(
     allowed_bodies = {
         experiment_path: {"FunctionDef:_recorded_cognitive_admission_evidence"},
         formal_path: {
+            "FunctionDef:_validate_formal_freeze",
+            "FunctionDef:load_indoor_campaign_manifest",
+            "FunctionDef:freeze_indoor_campaign_from_pilot",
+            "FunctionDef:_revalidate_indoor_pilot_freeze_provenance",
             "FunctionDef:_validate_validator_only_head_promotion",
             "FunctionDef:_validate_historical_validator_promotion",
         },
@@ -1464,6 +1479,7 @@ def _evaluator_only_ast_guard(
             rows[key] = node
         return rows
 
+    parsed: dict[str, tuple[list[str], list[dict[str, ast.AST]]]] = {}
     for relative_path in (experiment_path, formal_path):
         sources = []
         for head in (from_head, to_head):
@@ -1476,6 +1492,41 @@ def _evaluator_only_ast_guard(
             keyed(ast.parse(source, filename=relative_path, type_comments=True))
             for source in sources
         ]
+        parsed[relative_path] = (sources, nodes)
+
+    formal_sources, formal_nodes = parsed[formal_path]
+    del formal_sources
+
+    def marker_value(nodes: dict[str, ast.AST]):
+        marker = nodes.get("Assign:EVALUATOR_PROMOTION_MIGRATION")
+        if marker is None:
+            return None
+        if not (
+            isinstance(marker, ast.Assign)
+            and len(marker.targets) == 1
+            and isinstance(marker.targets[0], ast.Name)
+            and marker.targets[0].id == "EVALUATOR_PROMOTION_MIGRATION"
+            and isinstance(marker.value, ast.Constant)
+        ):
+            raise V6ContractError("evaluator promotion migration marker is invalid")
+        return marker.value.value
+
+    before_marker = marker_value(formal_nodes[0])
+    after_marker = marker_value(formal_nodes[1])
+    active_markers = {True, "retire_after_aggregate"}
+    if before_marker is None and after_marker in active_markers:
+        transition = "migration"
+    elif before_marker in active_markers and after_marker is False:
+        transition = "hardening"
+    elif before_marker is False and after_marker is False:
+        transition = "steady"
+    else:
+        raise V6ContractError(
+            "evaluator promotion marker transition is not one-way"
+        )
+
+    for relative_path in (experiment_path, formal_path):
+        sources, nodes = parsed[relative_path]
         protected = []
         for source, keyed_nodes in zip(sources, nodes):
             rows = []
@@ -1484,6 +1535,7 @@ def _evaluator_only_ast_guard(
                     relative_path == formal_path
                     and key in {
                         "FunctionDef:_evaluator_only_ast_guard",
+                        "FunctionDef:_validate_evaluator_hardening_chain",
                         "Assign:EVALUATOR_PROMOTION_MIGRATION",
                     }
                 ):
@@ -1501,6 +1553,8 @@ def _evaluator_only_ast_guard(
         for key in allowed_bodies[relative_path]:
             before = nodes[0].get(key)
             after = nodes[1].get(key)
+            if before is None and after is None:
+                continue
             if not isinstance(before, ast.FunctionDef) or not isinstance(
                 after, ast.FunctionDef
             ):
@@ -1516,13 +1570,21 @@ def _evaluator_only_ast_guard(
                 raise V6ContractError(
                     f"evaluator promotion callable signature changed: {key}"
                 )
-        helper = nodes[1].get("FunctionDef:_evaluator_only_ast_guard")
         if relative_path == formal_path:
-            if "FunctionDef:_evaluator_only_ast_guard" in nodes[0] or not isinstance(
-                helper, ast.FunctionDef
-            ) or helper.decorator_list:
+            before_helper = nodes[0].get("FunctionDef:_evaluator_only_ast_guard")
+            after_helper = nodes[1].get("FunctionDef:_evaluator_only_ast_guard")
+            if not isinstance(after_helper, ast.FunctionDef) or after_helper.decorator_list:
                 raise V6ContractError("evaluator promotion AST guard helper mismatch")
-            arguments = helper.args
+            if transition == "migration":
+                if before_helper is not None:
+                    raise V6ContractError(
+                        "evaluator promotion AST guard existed before migration"
+                    )
+            elif not isinstance(before_helper, ast.FunctionDef):
+                raise V6ContractError(
+                    "evaluator promotion AST guard missing before hardening"
+                )
+            arguments = after_helper.args
             if (
                 tuple(
                     item.arg for item in (*arguments.posonlyargs, *arguments.args)
@@ -1535,18 +1597,62 @@ def _evaluator_only_ast_guard(
                 raise V6ContractError(
                     "evaluator promotion AST guard helper signature mismatch"
                 )
-            marker = nodes[1].get("Assign:EVALUATOR_PROMOTION_MIGRATION")
-            if "Assign:EVALUATOR_PROMOTION_MIGRATION" in nodes[0] or not (
-                isinstance(marker, ast.Assign)
-                and len(marker.targets) == 1
-                and isinstance(marker.targets[0], ast.Name)
-                and marker.targets[0].id == "EVALUATOR_PROMOTION_MIGRATION"
-                and isinstance(marker.value, ast.Constant)
-                and marker.value.value == "retire_after_aggregate"
-            ):
-                raise V6ContractError(
-                    "evaluator promotion migration marker is invalid"
+            if isinstance(before_helper, ast.FunctionDef):
+                headers = []
+                for node in (before_helper, after_helper):
+                    header = copy.deepcopy(node)
+                    header.body = [ast.Pass()]
+                    headers.append(ast.dump(header, include_attributes=False))
+                if headers[0] != headers[1]:
+                    raise V6ContractError(
+                        "evaluator promotion AST guard signature changed"
+                    )
+            chain_helper = nodes[1].get(
+                "FunctionDef:_validate_evaluator_hardening_chain"
+            )
+            before_chain_helper = nodes[0].get(
+                "FunctionDef:_validate_evaluator_hardening_chain"
+            )
+            if transition == "hardening":
+                if before_chain_helper is not None or not isinstance(
+                    chain_helper, ast.FunctionDef
+                ):
+                    raise V6ContractError(
+                        "evaluator hardening chain helper mismatch"
+                    )
+                arguments = chain_helper.args
+                if (
+                    tuple(
+                        item.arg
+                        for item in (*arguments.posonlyargs, *arguments.args)
+                    ) != ("value",)
+                    or tuple(item.arg for item in arguments.kwonlyargs)
+                    != ("freeze", "pilot_manifest_sha256", "pilot_aggregate_sha256")
+                        or arguments.vararg is not None
+                        or arguments.kwarg is not None
+                        or arguments.defaults
+                        or len(arguments.kw_defaults) != 3
+                        or arguments.kw_defaults[0] is not None
+                        or any(
+                            item is None for item in arguments.kw_defaults[1:]
+                        )
+                ):
+                    raise V6ContractError(
+                        "evaluator hardening chain helper signature mismatch"
+                    )
+            elif not (
+                (before_chain_helper is None and chain_helper is None)
+                or (
+                    isinstance(before_chain_helper, ast.FunctionDef)
+                    and isinstance(chain_helper, ast.FunctionDef)
+                    and ast.dump(before_chain_helper, include_attributes=False)
+                    == ast.dump(chain_helper, include_attributes=False)
                 )
+            ):
+                    raise V6ContractError(
+                        "evaluator hardening chain helper changed outside hardening"
+                    )
+    return transition
 
 
 def _validate_validator_only_head_promotion(
@@ -1697,22 +1803,14 @@ def _validate_validator_only_head_promotion(
         and "ros2_ws/src/robot_experiments/test/test_experiment_motion_quality.py"
         in diff_paths
     )
-    # This is a one-time external-review migration check, not a claim that
-    # self-modifying policy code can defend against a malicious final tree.
-    # The post-aggregate hardening change must remove this v6_formal allowance.
-    evaluator_promotion = bool(
+    evaluator_shape = bool(
         diff_rows
         and all(
             row["status"] == "M" and row["path"] in evaluator_allowed_paths
             for row in diff_rows
         )
-        and {
-            "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py",
-            "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py",
-        } <= diff_paths
-        and EVALUATOR_PROMOTION_MIGRATION == "retire_after_aggregate"
     )
-    if not legacy_promotion and not evaluator_promotion:
+    if not legacy_promotion and not evaluator_shape:
         raise V6ContractError(
             "validator-only promotion changed a disallowed path or status"
         )
@@ -1738,7 +1836,35 @@ def _validate_validator_only_head_promotion(
     if legacy_promotion:
         _validator_only_ast_guard(module3_root, from_head, to_head)
     else:
-        _evaluator_only_ast_guard(module3_root, from_head, to_head)
+        transition = _evaluator_only_ast_guard(module3_root, from_head, to_head)
+        migration_paths = {
+            "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py",
+            "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py",
+            "ros2_ws/src/robot_experiments/test/test_v6_formal.py",
+        }
+        hardening_paths = {
+            "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py",
+            "ros2_ws/src/robot_experiments/test/test_v6_formal.py",
+        }
+        steady_allowed_paths = {
+            "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py",
+            "ros2_ws/src/robot_experiments/test/test_v6_formal.py",
+        }
+        if (
+            (transition == "migration" and diff_paths != migration_paths)
+            or (transition == "hardening" and diff_paths != hardening_paths)
+            or (
+                transition == "steady"
+                and (
+                    not diff_paths <= steady_allowed_paths
+                    or "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py"
+                    not in diff_paths
+                )
+            )
+        ):
+            raise V6ContractError(
+                "validator-only evaluator promotion path transition mismatch"
+            )
     loaded_identity = _validator_only_loaded_identity(module3_root, to_head)
     if promotion.get("loaded_validator") != loaded_identity:
         raise V6ContractError("validator-only promotion loaded validator identity mismatch")
@@ -2225,7 +2351,42 @@ def _validate_historical_validator_promotion(
         and module3_diff.get("canonical_diff_sha256") == digest
     ):
         raise V6ContractError("historical validator promotion diff mismatch")
-    _validator_only_ast_guard(module3_root, from_head, to_head)
+    historical_paths = {row["path"] for row in rows}
+    if (
+        "ros2_ws/src/robot_experiments/test/test_experiment_motion_quality.py"
+        in historical_paths
+    ):
+        _validator_only_ast_guard(module3_root, from_head, to_head)
+    else:
+        transition = _evaluator_only_ast_guard(module3_root, from_head, to_head)
+        migration_paths = {
+            "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py",
+            "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py",
+            "ros2_ws/src/robot_experiments/test/test_v6_formal.py",
+        }
+        hardening_paths = {
+            "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py",
+            "ros2_ws/src/robot_experiments/test/test_v6_formal.py",
+        }
+        steady_paths = {
+            "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py",
+            "ros2_ws/src/robot_experiments/test/test_v6_formal.py",
+        }
+        if (
+            (transition == "migration" and historical_paths != migration_paths)
+            or (transition == "hardening" and historical_paths != hardening_paths)
+            or (
+                transition == "steady"
+                and (
+                    not historical_paths <= steady_paths
+                    or "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py"
+                    not in historical_paths
+                )
+            )
+        ):
+            raise V6ContractError(
+                "historical evaluator promotion path transition mismatch"
+            )
     loaded = _mapping(promotion.get("loaded_validator"), "historical loaded_validator")
     relative = "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py"
     source = _validator_only_git_output(
@@ -2246,6 +2407,128 @@ def _validate_historical_validator_promotion(
     ):
         raise V6ContractError("historical validator identity mismatch")
     return promotion
+
+
+def _validate_evaluator_hardening_chain(
+    value: Any,
+    *,
+    freeze: Mapping[str, Any],
+    pilot_manifest_sha256: str | None = None,
+    pilot_aggregate_sha256: str | None = None,
+) -> dict[str, Any]:
+    chain = dict(_mapping(value, "evaluator_hardening_promotion"))
+    _require_exact_keys(chain, {
+        "first_stage_sha256", "aggregate_final_repositories",
+        "hardened_repositories", "pilot_manifest_sha256",
+        "pilot_aggregate_sha256", "integration_diff", "module3_diff",
+        "loaded_validator",
+    }, "evaluator_hardening_promotion")
+    first_stage = freeze["validator_only_head_promotion"]
+    first_stage_sha = hashlib.sha256(
+        json.dumps(first_stage, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    if (
+        chain.get("first_stage_sha256") != first_stage_sha
+        or chain.get("aggregate_final_repositories")
+        != first_stage["final_repositories"]
+        or chain.get("hardened_repositories") != freeze["repositories"]
+        or (
+            pilot_manifest_sha256 is not None
+            and chain.get("pilot_manifest_sha256") != pilot_manifest_sha256
+        )
+        or (
+            pilot_aggregate_sha256 is not None
+            and chain.get("pilot_aggregate_sha256") != pilot_aggregate_sha256
+        )
+    ):
+        raise V6ContractError("evaluator hardening promotion binding mismatch")
+    aggregate_repositories = first_stage["final_repositories"]
+    historical_freeze = {
+        **freeze,
+        "repositories": aggregate_repositories,
+    }
+    _validate_historical_validator_promotion(
+        first_stage, parent_freeze=historical_freeze
+    )
+
+    def repository_identity(name: str, entry_value: Any) -> tuple[Path, str, str]:
+        entry = _mapping(entry_value, f"evaluator_hardening.{name}_repository")
+        if set(entry) not in ({"path", "head"}, {"path", "head", "tree"}):
+            raise V6ContractError(
+                f"evaluator hardening {name} repository identity is invalid"
+            )
+        repository = Path(str(entry["path"])).expanduser()
+        if not repository.is_absolute():
+            raise V6ContractError(
+                f"evaluator hardening {name} repository path is not absolute"
+            )
+        repository = repository.resolve()
+        head = str(entry["head"])
+        tree = str(_validator_only_git_output(
+            repository, ["rev-parse", f"{head}^{{tree}}"], binary=False
+        )).strip()
+        if "tree" in entry and entry["tree"] != tree:
+            raise V6ContractError(
+                f"evaluator hardening {name} repository tree mismatch"
+            )
+        return repository, head, tree
+
+    aggregate_identities = {
+        name: repository_identity(name, aggregate_repositories[name])
+        for name in ("integration", "module2", "module3")
+    }
+    hardened_identities = {
+        name: repository_identity(name, freeze["repositories"][name])
+        for name in ("integration", "module2", "module3")
+    }
+    if aggregate_identities["module2"] != hardened_identities["module2"]:
+        raise V6ContractError("evaluator hardening changed Module2")
+    for name, path, expected in (
+        ("integration", "docs/CURRENT_STATE.md", {"M"}),
+        ("module3", None, {"M"}),
+    ):
+        repository, from_head, _from_tree = aggregate_identities[name]
+        hardened_repository, to_head, _to_tree = hardened_identities[name]
+        if repository != hardened_repository:
+            raise V6ContractError(
+                f"evaluator hardening {name} repository path mismatch"
+            )
+        try:
+            subprocess.run(
+                [
+                    "git", "-C", str(repository), "merge-base", "--is-ancestor",
+                    from_head, to_head,
+                ],
+                check=True,
+                capture_output=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise V6ContractError(
+                f"evaluator hardening {name} HEAD is not ancestral"
+            ) from exc
+        rows, digest = _validator_only_diff_evidence(repository, from_head, to_head)
+        record = _mapping(chain[f"{name}_diff"], f"evaluator_hardening.{name}_diff")
+        if record != {"from_head": from_head, "to_head": to_head,
+                      "name_status": rows, "canonical_diff_sha256": digest}:
+            raise V6ContractError(f"evaluator hardening {name} diff record mismatch")
+        if name == "integration":
+            if rows != [{"status": "M", "path": path}]:
+                raise V6ContractError("evaluator hardening Integration diff mismatch")
+        else:
+            if {row["path"] for row in rows} != {
+                "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py",
+                "ros2_ws/src/robot_experiments/test/test_v6_formal.py",
+            } or {row["status"] for row in rows} != expected:
+                raise V6ContractError("evaluator hardening Module3 diff mismatch")
+            if _evaluator_only_ast_guard(repository, from_head, to_head) != "hardening":
+                raise V6ContractError("evaluator hardening AST transition mismatch")
+    loaded = _validator_only_loaded_identity(
+        Path(freeze["repositories"]["module3"]["path"]),
+        freeze["repositories"]["module3"]["head"],
+    )
+    if chain.get("loaded_validator") != loaded:
+        raise V6ContractError("evaluator hardening loaded validator mismatch")
+    return chain
 
 
 def _validate_qualification_tooling_promotion(
@@ -3331,9 +3614,10 @@ def load_indoor_campaign_manifest(
     )
     _validate_indoor_static_reference_contract(condition_tuple[0], freeze)
     promotion_value = freeze.get("validator_only_head_promotion")
+    hardening_value = freeze.get("evaluator_hardening_promotion")
     promotion = (
         promotion_value
-        if continuation
+        if continuation or hardening_value is not None
         else (
             _validate_validator_only_head_promotion(
                 promotion_value, freeze=freeze
@@ -3367,6 +3651,19 @@ def load_indoor_campaign_manifest(
     episodes = provenance.get("episodes")
     if not isinstance(episodes, list) or len(episodes) != 9:
         raise V6ContractError("indoor Pilot freeze provenance must index 9 episodes")
+    if hardening_value is not None:
+        _validate_evaluator_hardening_chain(
+            hardening_value,
+            freeze=freeze,
+            pilot_manifest_sha256=_mapping(
+                provenance.get("pilot_manifest"),
+                "indoor_pilot_freeze_provenance.pilot_manifest",
+            ).get("sha256"),
+            pilot_aggregate_sha256=_mapping(
+                provenance.get("pilot_aggregate"),
+                "indoor_pilot_freeze_provenance.pilot_aggregate",
+            ).get("sha256"),
+        )
     _revalidate_indoor_pilot_freeze_provenance(
         provenance,
         conditions=condition_tuple,
@@ -4019,12 +4316,71 @@ def freeze_indoor_campaign_from_pilot(
     rows = pilot.get("conditions")
     if not isinstance(rows, list) or len(rows) != 3:
         raise V6ContractError("indoor Pilot manifest must contain three conditions")
+    hardened_freeze = json.loads(json.dumps(pilot["freeze"]))
+    first_stage = hardened_freeze.get("validator_only_head_promotion")
+    if first_stage is not None:
+        current_repositories = {
+            name: _repository_freeze_entry_with_tree(
+                Path(hardened_freeze["repositories"][name]["path"])
+            )
+            for name in ("integration", "module2", "module3")
+        }
+        aggregate_repositories = first_stage["final_repositories"]
+        identity_changed = any(
+            Path(str(aggregate_repositories[name]["path"])).resolve()
+            != Path(str(current_repositories[name]["path"])).resolve()
+            or aggregate_repositories[name]["head"]
+            != current_repositories[name]["head"]
+            for name in ("integration", "module2", "module3")
+        )
+        if identity_changed:
+            records = {}
+            for name in ("integration", "module3"):
+                repository = Path(current_repositories[name]["path"])
+                from_head = aggregate_repositories[name]["head"]
+                to_head = current_repositories[name]["head"]
+                rows_value, digest = _validator_only_diff_evidence(
+                    repository, from_head, to_head
+                )
+                records[f"{name}_diff"] = {
+                    "from_head": from_head,
+                    "to_head": to_head,
+                    "name_status": rows_value,
+                    "canonical_diff_sha256": digest,
+                }
+            hardened_freeze["repositories"] = current_repositories
+            hardened_freeze["v6_formal"] = _frozen_file_entry(Path(__file__).resolve())
+            hardened_freeze["experiment_runner"] = _frozen_file_entry(
+                Path(__file__).with_name("experiment_runner.py")
+            )
+            hardened_freeze["evaluator_hardening_promotion"] = {
+                "first_stage_sha256": hashlib.sha256(
+                    json.dumps(
+                        first_stage, sort_keys=True, separators=(",", ":")
+                    ).encode()
+                ).hexdigest(),
+                "aggregate_final_repositories": first_stage["final_repositories"],
+                "hardened_repositories": current_repositories,
+                "pilot_manifest_sha256": _file_sha256(pilot_path),
+                "pilot_aggregate_sha256": _file_sha256(aggregate_path),
+                **records,
+                "loaded_validator": _validator_only_loaded_identity(
+                    Path(current_repositories["module3"]["path"]),
+                    current_repositories["module3"]["head"],
+                ),
+            }
+            _validate_evaluator_hardening_chain(
+                hardened_freeze["evaluator_hardening_promotion"],
+                freeze=hardened_freeze,
+                pilot_manifest_sha256=_file_sha256(pilot_path),
+                pilot_aggregate_sha256=_file_sha256(aggregate_path),
+            )
     candidate = {
         "schema_version": INDOOR_CAMPAIGN_SCHEMA_VERSION,
         "intended_use": "indoor_qualification",
         "runs_per_condition": FORMAL_RUNS_PER_CONDITION,
         "runner_entrypoint": pilot["runner_entrypoint"],
-        "freeze": pilot["freeze"],
+        "freeze": hardened_freeze,
         "conditions": [],
     }
     for row_value in rows:

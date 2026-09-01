@@ -1687,6 +1687,61 @@ def _write_indoor_pilot_inputs(tmp_path: Path, monkeypatch):
     return indoor_manifest, indoor_aggregate
 
 
+def _write_hardening_freeze_inputs(tmp_path: Path, monkeypatch):
+    pilot_manifest, aggregate_path = _write_indoor_pilot_inputs(
+        tmp_path, monkeypatch
+    )
+    integration, aggregate_integration, hardened_integration = (
+        _integration_promotion_repository(tmp_path)
+    )
+    module3, hardened_module3_freeze, aggregate_module3_runtime = (
+        _hardening_promotion_repository(tmp_path, "hardening")
+    )
+    aggregate_repositories = {
+        "integration": aggregate_integration,
+        "module2": hardened_integration,
+        "module3": aggregate_module3_runtime["repositories"]["module3"],
+    }
+    pilot = json.loads(pilot_manifest.read_text())
+    first_stage = pilot["freeze"]["validator_only_head_promotion"]
+    first_stage["final_repositories"] = json.loads(
+        json.dumps(aggregate_repositories)
+    )
+    pilot["freeze"]["repositories"] = json.loads(
+        json.dumps(aggregate_repositories)
+    )
+    pilot_manifest.write_text(json.dumps(pilot), encoding="utf-8")
+    aggregate = json.loads(aggregate_path.read_text())
+    aggregate["validator_only_head_promotion"] = first_stage
+    aggregate_path.write_text(json.dumps(aggregate), encoding="utf-8")
+    current_repositories = {
+        "integration": hardened_integration,
+        "module2": hardened_integration,
+        "module3": hardened_module3_freeze["repositories"]["module3"],
+    }
+    historical_calls = []
+    monkeypatch.setattr(
+        v6_formal_module,
+        "_validate_historical_validator_promotion",
+        lambda value, *, parent_freeze: (
+            historical_calls.append(json.loads(json.dumps(parent_freeze)))
+            or dict(value)
+        ),
+    )
+    monkeypatch.setattr(
+        v6_formal_module,
+        "_validator_only_loaded_identity",
+        lambda root, head: _promotion_loaded_identity(Path(root), head),
+    )
+    return (
+        pilot_manifest,
+        aggregate_path,
+        aggregate_repositories,
+        current_repositories,
+        historical_calls,
+    )
+
+
 def _write_indoor_continuation_inputs(tmp_path: Path, monkeypatch):
     _mock_qualification_tooling_promotion(monkeypatch)
     pilot_manifest, aggregate = _write_indoor_pilot_inputs(tmp_path, monkeypatch)
@@ -3006,6 +3061,111 @@ def _historical_path_head_only_promotion(tmp_path: Path):
     return repository, promotion, parent_freeze
 
 
+def _hardening_promotion_repository(tmp_path: Path, mode: str):
+    repository = tmp_path / f"hardening-promotion-{mode}"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    experiment = repository / (
+        "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py"
+    )
+    formal = repository / (
+        "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py"
+    )
+    test = repository / "ros2_ws/src/robot_experiments/test/test_v6_formal.py"
+    for path in (experiment, formal, test):
+        path.parent.mkdir(parents=True, exist_ok=True)
+    experiment.write_text(
+        "def live_runner():\n    return 'unchanged'\n\n"
+        "def _recorded_cognitive_admission_evidence():\n    return 'pilot'\n",
+        encoding="utf-8",
+    )
+
+    def formal_source(marker, suffix):
+        protected = "changed" if mode == "policy_extra" and suffix == "final" else "unchanged"
+        chain_helper = (
+            ""
+            if marker is True
+            else
+            "def _validate_evaluator_hardening_chain("
+            "value, *, freeze, pilot_manifest_sha256=None, "
+            "pilot_aggregate_sha256=None):\n    return None\n\n"
+        )
+        return (
+            f"EVALUATOR_PROMOTION_MIGRATION = {marker!r}\n\n"
+            f"def protected_formal():\n    return {protected!r}\n\n"
+            "def _validate_historical_validator_promotion(value, *, parent_freeze):\n"
+            f"    return {suffix!r}\n\n"
+            "def _evaluator_only_ast_guard(repository, from_head, to_head):\n"
+            f"    return {suffix!r}\n\n"
+            f"{chain_helper}"
+            "def _validate_validator_only_head_promotion(value, *, freeze):\n"
+            f"    return {suffix!r}\n"
+        )
+
+    pilot_marker = False if mode in {"steady", "steady_policy", "reenable"} else True
+    formal.write_text(formal_source(pilot_marker, "pilot"), encoding="utf-8")
+    test.write_text("def test_pilot():\n    assert True\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repository), "add", "."], check=True)
+    commit_env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Codex Test",
+        "GIT_AUTHOR_EMAIL": "codex@example.invalid",
+        "GIT_COMMITTER_NAME": "Codex Test",
+        "GIT_COMMITTER_EMAIL": "codex@example.invalid",
+    }
+    subprocess.run(
+        ["git", "-C", str(repository), "commit", "-qm", "pilot"],
+        check=True, env=commit_env,
+    )
+    pilot_head = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    if mode == "steady":
+        experiment.write_text(
+            "def live_runner():\n    return 'unchanged'\n\n"
+            "def _recorded_cognitive_admission_evidence():\n    return 'final'\n",
+            encoding="utf-8",
+        )
+    elif mode == "live":
+        experiment.write_text(
+            "def live_runner():\n    return 'changed'\n\n"
+            "def _recorded_cognitive_admission_evidence():\n    return 'pilot'\n",
+            encoding="utf-8",
+        )
+    final_marker = True if mode == "reenable" else False
+    if mode != "steady":
+        formal.write_text(formal_source(final_marker, "final"), encoding="utf-8")
+    test.write_text("def test_final():\n    assert True\n", encoding="utf-8")
+    if mode == "extra_path":
+        (repository / "extra.py").write_text("changed\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repository), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repository), "commit", "-qm", "final"],
+        check=True, env=commit_env,
+    )
+    final_head = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    final_entries = {
+        name: _promotion_entry(repository, final_head)
+        for name in ("integration", "module2", "module3")
+    }
+    return repository, {
+        "repositories": final_entries,
+        "driver_version": "driver",
+        "kernel_release": "kernel",
+    }, {
+        "repositories": {
+            **final_entries,
+            "module3": _promotion_entry(repository, pilot_head),
+        },
+        "driver_version": "driver",
+        "kernel_release": "kernel",
+    }
+
+
 def _qualification_promotion_repository(tmp_path: Path, *, extra_path=False):
     repository = tmp_path / ("qualification-extra" if extra_path else "qualification")
     repository.mkdir()
@@ -3261,6 +3421,117 @@ def test_evaluator_promotion_rejects_loaded_validator_bytes_drift(
     with pytest.raises(V6ContractError, match="loaded validator identity"):
         v6_formal_module._validate_validator_only_head_promotion(
             promotion, freeze=freeze
+        )
+
+
+def test_evaluator_hardening_accepts_one_way_active_to_false_policy_transition(
+    tmp_path, monkeypatch,
+):
+    repository, freeze, pilot_runtime = _hardening_promotion_repository(
+        tmp_path, "hardening"
+    )
+    monkeypatch.setattr(
+        v6_formal_module, "_validator_only_loaded_identity",
+        lambda _root, head: _promotion_loaded_identity(repository, head),
+    )
+
+    promotion = v6_formal_module._build_validator_only_head_promotion(
+        freeze=freeze, pilot_runtime=pilot_runtime
+    )
+
+    assert {row["path"] for row in promotion["module3_diff"]["name_status"]} == {
+        "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py",
+        "ros2_ws/src/robot_experiments/test/test_v6_formal.py",
+    }
+
+
+def test_evaluator_steady_state_allows_only_offline_runner_and_test(
+    tmp_path, monkeypatch,
+):
+    repository, freeze, pilot_runtime = _hardening_promotion_repository(
+        tmp_path, "steady"
+    )
+    monkeypatch.setattr(
+        v6_formal_module, "_validator_only_loaded_identity",
+        lambda _root, head: _promotion_loaded_identity(repository, head),
+    )
+
+    promotion = v6_formal_module._build_validator_only_head_promotion(
+        freeze=freeze, pilot_runtime=pilot_runtime
+    )
+
+    assert "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py" not in {
+        row["path"] for row in promotion["module3_diff"]["name_status"]
+    }
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ("reenable", "policy_extra", "live", "extra_path"),
+)
+def test_evaluator_hardening_rejects_reenable_or_extra_change(
+    tmp_path, monkeypatch, mode,
+):
+    repository, freeze, pilot_runtime = _hardening_promotion_repository(
+        tmp_path, mode
+    )
+    monkeypatch.setattr(
+        v6_formal_module, "_validator_only_loaded_identity",
+        lambda _root, head: _promotion_loaded_identity(repository, head),
+    )
+
+    with pytest.raises(
+        V6ContractError,
+        match="one-way|protected AST|disallowed|path transition",
+    ):
+        v6_formal_module._build_validator_only_head_promotion(
+            freeze=freeze, pilot_runtime=pilot_runtime
+        )
+
+
+def test_historical_steady_evaluator_rejects_any_v6_formal_change(tmp_path):
+    repository, freeze, pilot_runtime = _hardening_promotion_repository(
+        tmp_path, "steady_policy"
+    )
+    from_head = pilot_runtime["repositories"]["module3"]["head"]
+    to_head = freeze["repositories"]["module3"]["head"]
+    rows, digest = v6_formal_module._validator_only_diff_evidence(
+        repository, from_head, to_head
+    )
+    relative = (
+        "ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py"
+    )
+    source = subprocess.run(
+        ["git", "-C", str(repository), "show", f"{to_head}:{relative}"],
+        check=True,
+        capture_output=True,
+    ).stdout
+    blob = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", f"{to_head}:{relative}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    promotion = _fake_validator_promotion(freeze, pilot_runtime)
+    promotion["module3_diff"] = {
+        "from_head": from_head,
+        "to_head": to_head,
+        "from_is_ancestor": True,
+        "name_status": rows,
+        "canonical_diff_sha256": digest,
+    }
+    promotion["loaded_validator"] = {
+        "module": "robot_experiments.experiment_runner",
+        "symbol": "validate_recorded_run_evidence",
+        "source_path": str((repository / relative).resolve()),
+        "source_sha256": hashlib.sha256(source).hexdigest(),
+        "git_blob_oid": blob,
+        "current_head": to_head,
+    }
+
+    with pytest.raises(V6ContractError, match="path transition"):
+        v6_formal_module._validate_historical_validator_promotion(
+            promotion, parent_freeze=freeze
         )
 
 
@@ -4274,6 +4545,109 @@ def test_indoor_freezer_and_dry_run_are_scope_separated(tmp_path, monkeypatch, c
     assert payload["dispatch"] is False
     assert len(payload["dispatch_plan"]) == 1
     assert payload["dispatch_plan"][0]["condition_id"] == "indoor_static"
+
+
+def test_indoor_freezer_embeds_and_reloads_exact_evaluator_hardening_chain(
+    tmp_path, monkeypatch,
+):
+    (
+        pilot_manifest,
+        aggregate,
+        aggregate_repositories,
+        current_repositories,
+        historical_calls,
+    ) = _write_hardening_freeze_inputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+    output = tmp_path / "hardened-indoor.json"
+
+    campaign = freeze_indoor_campaign_from_pilot(
+        pilot_manifest_path=pilot_manifest,
+        pilot_aggregate_path=aggregate,
+        output_manifest_path=output,
+        indoor_output_root=tmp_path / "nas" / "hardened-indoor-runs",
+    )
+    reloaded = load_indoor_campaign_manifest(output)
+
+    chain = campaign.freeze["evaluator_hardening_promotion"]
+    assert campaign.freeze["repositories"] == current_repositories
+    assert chain["aggregate_final_repositories"] == aggregate_repositories
+    assert chain["hardened_repositories"] == current_repositories
+    assert chain["integration_diff"]["name_status"] == [
+        {"status": "M", "path": "docs/CURRENT_STATE.md"}
+    ]
+    assert {row["path"] for row in chain["module3_diff"]["name_status"]} == {
+        "ros2_ws/src/robot_experiments/robot_experiments/v6_formal.py",
+        "ros2_ws/src/robot_experiments/test/test_v6_formal.py",
+    }
+    assert reloaded.freeze["evaluator_hardening_promotion"] == chain
+    assert len(reloaded.pilot_freeze_provenance["episodes"]) == 9
+    assert historical_calls
+    assert historical_calls[-1]["repositories"] == aggregate_repositories
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    (
+        "aggregate_hash", "first_stage", "second_stage", "integration_runtime",
+        "module2", "module3_extra", "marker",
+    ),
+)
+def test_indoor_hardening_chain_rejects_each_stage_or_repository_tamper(
+    tmp_path, monkeypatch, tamper,
+):
+    pilot_manifest, aggregate, *_rest = _write_hardening_freeze_inputs(
+        tmp_path, monkeypatch
+    )
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+    output = tmp_path / "hardened-indoor.json"
+    freeze_indoor_campaign_from_pilot(
+        pilot_manifest_path=pilot_manifest,
+        pilot_aggregate_path=aggregate,
+        output_manifest_path=output,
+        indoor_output_root=tmp_path / "nas" / "hardened-indoor-runs",
+    )
+    raw = json.loads(output.read_text())
+    freeze = raw["freeze"]
+    chain = freeze["evaluator_hardening_promotion"]
+    if tamper == "aggregate_hash":
+        chain["pilot_aggregate_sha256"] = "0" * 64
+    elif tamper == "first_stage":
+        freeze["validator_only_head_promotion"]["loaded_validator"][
+            "source_sha256"
+        ] = "9" * 64
+    elif tamper == "second_stage":
+        chain["module3_diff"]["canonical_diff_sha256"] = "0" * 64
+    elif tamper == "integration_runtime":
+        chain["integration_diff"]["name_status"] = [
+            {"status": "M", "path": "runtime.py"}
+        ]
+    elif tamper == "module2":
+        changed = json.loads(json.dumps(
+            chain["aggregate_final_repositories"]["integration"]
+        ))
+        freeze["validator_only_head_promotion"]["final_repositories"][
+            "module2"
+        ] = changed
+        chain["aggregate_final_repositories"]["module2"] = changed
+        chain["first_stage_sha256"] = hashlib.sha256(json.dumps(
+            freeze["validator_only_head_promotion"],
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()).hexdigest()
+    elif tamper == "module3_extra":
+        chain["module3_diff"]["name_status"].append(
+            {"status": "M", "path": "runtime.py"}
+        )
+    else:
+        monkeypatch.setattr(
+            v6_formal_module,
+            "_evaluator_only_ast_guard",
+            lambda _repository, _from, _to: "steady",
+        )
+    output.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(V6ContractError):
+        load_indoor_campaign_manifest(output)
 
 
 def test_indoor_continuation_creator_preserves_external_static_run1(
