@@ -6,6 +6,7 @@ import pytest
 from robot_experiments import experiment_runner as experiment_runner_module
 from robot_experiments.configuration import ConfigurationError
 from robot_experiments.experiment_runner import (
+    _DynamicRetirementClearanceTimeout,
     ExperimentRunner,
     OdometrySample,
     _positive_finite_float,
@@ -320,19 +321,11 @@ def test_route_guided_arms_only_after_four_legs_and_before_final_goal():
     assert arm_publication_counts == [4]
 
 
-def test_g2_retirement_identity_failure_stops_before_g3_dispatch():
+def _three_leg_route_runner(complete):
     specifications = tuple(
         SimpleNamespace(goal_id=identifier) for identifier in ("G1", "G2", "G3")
     )
-
-    def complete(goal_id):
-        if goal_id == "G2":
-            raise RuntimeError(
-                "dynamic obstacle retirement clearance source/PlanningPrior "
-                "identity mismatch"
-            )
-        return (f"actor-{goal_id}",)
-
+    barriers = []
     runner = SimpleNamespace(
         _navigation_graph=object(),
         _service_timeout_sec=1.0,
@@ -353,6 +346,7 @@ def test_g2_retirement_identity_failure_stops_before_g3_dispatch():
         _ground_truth_samples=[],
         _leg_results=[],
         _completed_dynamic_obstacle_ids=set(),
+        _navigation_failure_reason=None,
         _goal_dispatch_recorded=True,
         _dynamic_guard_aborted=False,
         _wait_until=lambda predicate, _timeout: predicate(),
@@ -363,8 +357,24 @@ def test_g2_retirement_identity_failure_stops_before_g3_dispatch():
         _spin_once=lambda _timeout: None,
         _wait_for_reset_stop_gate_release=lambda: None,
         _arm_next_terminal_fence=lambda: None,
+        _mark_terminal_zero_barrier=lambda source, **kwargs: barriers.append(
+            (source, kwargs.get("leg_id"))
+        ),
     )
     runner._route_goal_publisher = _RouteGoalPublisher(runner)
+    return runner, barriers
+
+
+def test_g2_retirement_identity_failure_stops_before_g3_dispatch():
+    def complete(goal_id):
+        if goal_id == "G2":
+            raise RuntimeError(
+                "dynamic obstacle retirement clearance source/PlanningPrior "
+                "identity mismatch"
+            )
+        return (f"actor-{goal_id}",)
+
+    runner, _barriers = _three_leg_route_runner(complete)
 
     with pytest.raises(RuntimeError, match="source/PlanningPrior identity mismatch"):
         ExperimentRunner._navigate_route_guided(runner)
@@ -374,6 +384,123 @@ def test_g2_retirement_identity_failure_stops_before_g3_dispatch():
         "G2",
     ]
     assert runner._completed_dynamic_obstacle_ids == {"actor-G1"}
+
+
+def _raise_retirement_clearance_timeout(_goal_id):
+    raise _DynamicRetirementClearanceTimeout()
+
+
+def test_route_guided_retirement_timeout_is_normal_failure_before_g3():
+    def complete(goal_id):
+        if goal_id == "G2":
+            _raise_retirement_clearance_timeout(goal_id)
+        return (f"actor-{goal_id}",)
+
+    runner, barriers = _three_leg_route_runner(complete)
+
+    result = ExperimentRunner._navigate_route_guided(runner)
+
+    assert result == (
+        False,
+        False,
+        experiment_runner_module.GoalStatus.STATUS_SUCCEEDED,
+    )
+    assert [item.goal_id for item in runner._route_goal_publisher.messages] == [
+        "G1", "G2",
+    ]
+    assert runner._leg_results[1]["nav2_status"] == (
+        experiment_runner_module.GoalStatus.STATUS_SUCCEEDED
+    )
+    assert runner._leg_results[1]["failure_reason"] == (
+        "dynamic_retirement_clearance_timeout"
+    )
+    assert runner._navigation_failure_reason == "dynamic_retirement_clearance_timeout"
+    assert barriers == [("dynamic_retirement_clearance_timeout", "G2")]
+    assert runner._minimum_poses_remaining == 1
+    assert runner._completed_dynamic_obstacle_ids == {"actor-G1"}
+
+
+def test_direct_retirement_timeout_preserves_succeeded_g2_and_stops_before_g3():
+    specifications = tuple(
+        SimpleNamespace(goal_id=identifier) for identifier in ("G2", "G3")
+    )
+    sent = []
+
+    class ImmediateFuture:
+        def __init__(self, value):
+            self.value = value
+
+        def result(self):
+            return self.value
+
+    class GoalHandle:
+        accepted = True
+
+        def get_result_async(self):
+            return ImmediateFuture(SimpleNamespace(
+                status=experiment_runner_module.GoalStatus.STATUS_SUCCEEDED
+            ))
+
+    class Client:
+        def wait_for_server(self, *, timeout_sec):
+            return timeout_sec > 0.0
+
+        def send_goal_async(self, goal, *, feedback_callback):
+            sent.append(goal)
+            assert callable(feedback_callback)
+            return ImmediateFuture(GoalHandle())
+
+    barriers = []
+    runner = SimpleNamespace(
+        _navigate_client=Client(),
+        _service_timeout_sec=1.0,
+        _action_name="/navigate_to_pose",
+        _scenario=SimpleNamespace(
+            route=specifications,
+            goal=specifications[-1],
+            timeout_sec=30.0,
+            leg_timeout_sec=5.0,
+        ),
+        _navigation_active=False,
+        _navigation_start_stamp_s=None,
+        _navigation_end_stamp_s=None,
+        _ground_truth_samples=[],
+        _minimum_poses_remaining=None,
+        _goal_dispatch_recorded=True,
+        _goal_message=lambda specification: specification,
+        _navigation_feedback_callback=lambda _feedback: None,
+        _wait_future=lambda _future, _deadline, **_kwargs: True,
+        _trigger_obstacle_group=lambda _goal_id: None,
+        _complete_obstacle_group=_raise_retirement_clearance_timeout,
+        _completed_dynamic_obstacle_ids=set(),
+        _navigation_failure_reason=None,
+        _leg_results=[],
+        _dynamic_guard_aborted=False,
+        _clock_seconds=lambda: 1.0,
+        _mark_terminal_zero_barrier=lambda source, **kwargs: barriers.append(
+            (source, kwargs.get("leg_id"))
+        ),
+    )
+
+    result = ExperimentRunner._navigate_direct(runner)
+
+    assert result == (
+        False,
+        False,
+        experiment_runner_module.GoalStatus.STATUS_SUCCEEDED,
+    )
+    assert [goal.goal_id for goal in sent] == ["G2"]
+    assert runner._leg_results == [{
+        "id": "G2",
+        "nav2_status": experiment_runner_module.GoalStatus.STATUS_SUCCEEDED,
+        "accepted": True,
+        "timed_out": False,
+        "duration_sec": 0.0,
+        "ground_truth_length_m": 0.0,
+        "failure_reason": "dynamic_retirement_clearance_timeout",
+    }]
+    assert runner._navigation_failure_reason == "dynamic_retirement_clearance_timeout"
+    assert barriers == [("dynamic_retirement_clearance_timeout", "G2")]
 
 
 def test_route_goal_complete_bool_does_not_arm_terminal_fence():

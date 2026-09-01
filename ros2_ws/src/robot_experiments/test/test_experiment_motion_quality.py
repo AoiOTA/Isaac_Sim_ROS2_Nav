@@ -8,6 +8,7 @@ import pytest
 
 import robot_experiments.experiment_runner as experiment_runner_module
 from robot_experiments.experiment_runner import (
+    _DynamicRetirementClearanceTimeout,
     _edge_prior_statistics,
     _parse_obstacle_completion,
     _record_tracked_route_length,
@@ -298,9 +299,10 @@ def test_completion_rejects_invalid_or_mismatched_content_map_identity(mutation)
     clears = []
     runner._clear_navigation_costmaps = lambda **_kwargs: clears.append(True)
 
-    with pytest.raises(RuntimeError, match=expected):
+    with pytest.raises(RuntimeError, match=expected) as raised:
         runner._complete_obstacle_group("G2")
 
+    assert not isinstance(raised.value, _DynamicRetirementClearanceTimeout)
     assert clears == []
 
 
@@ -334,7 +336,7 @@ def test_missing_costmap_clear_service_consumes_no_more_than_barrier_budget(
     assert clock.now == 202.0
 
 
-def test_completion_timeout_propagates_after_physical_retirement():
+def test_completion_receipt_budget_raises_specific_product_timeout():
     response = SimpleNamespace(
         success=True,
         message=json.dumps({"group": "G2", "retired": ["dynamic_box"]}),
@@ -342,8 +344,10 @@ def test_completion_timeout_propagates_after_physical_retirement():
     runner = _completion_runner(_CompletionFuture(response))
     runner._wait_until = lambda _predicate, _timeout: False
 
-    with pytest.raises(RuntimeError, match="did not clear"):
+    with pytest.raises(_DynamicRetirementClearanceTimeout) as raised:
         runner._complete_obstacle_group("G2")
+
+    assert raised.value.reason == "dynamic_retirement_clearance_timeout"
 
 
 def test_completion_service_exception_preserves_original_cause():
@@ -351,8 +355,10 @@ def test_completion_service_exception_preserves_original_cause():
         _CompletionFuture(error=RuntimeError("service transport broke"))
     )
 
-    with pytest.raises(RuntimeError, match="service transport broke"):
+    with pytest.raises(RuntimeError, match="service transport broke") as raised:
         runner._complete_obstacle_group("G2")
+
+    assert not isinstance(raised.value, _DynamicRetirementClearanceTimeout)
 
 
 @pytest.mark.parametrize(
@@ -400,6 +406,240 @@ def test_static_and_appearance_keep_fixed_obstacle_selector_outside_retirement_b
         assert scenario.obstacles["static"] == [{"id": "v6_low_box_solo"}]
         assert scenario.obstacle_trajectories == ()
         assert not runner._requires_dynamic_retirement_clearance("G2", set())
+
+
+def test_retirement_timeout_manifest_is_normal_failure_without_runner_error():
+    scenario = load_scenario(
+        Path(__file__).parents[1] / "config/v6_final_kujiale_dynamic.yaml"
+    )
+    runner = object.__new__(ExperimentRunner)
+    runner._clear_run_state()
+    runner._scenario = scenario
+    runner._active_selection = scenario.run_matrix[0]
+    runner._navigation_failure_reason = "dynamic_retirement_clearance_timeout"
+    runner._terminal_zero_confirmed = False
+    runner._terminal_zero_reason = "terminal_zero_not_observed"
+    runner._collision_seen = True
+    runner._localization_seen = True
+    runner._lock_status_seen = True
+    runner._collision_monitor_active = True
+    runner._tf_ever_available = True
+    goal_x, goal_y = scenario.goal.position
+    runner._ground_truth_samples = [
+        OdometrySample(goal_x, goal_y, 0.0, 0.0, 0.0, 1.0, 1.0)
+    ]
+    runner._odom_samples = list(runner._ground_truth_samples)
+    runner._navigation_start_stamp_s = 1.0
+    runner._navigation_end_stamp_s = 1.0
+    runner._leg_results = [{
+        "id": "G2",
+        "nav2_status": experiment_runner_module.GoalStatus.STATUS_SUCCEEDED,
+        "accepted": True,
+        "failure_reason": "dynamic_retirement_clearance_timeout",
+    }]
+    runner._provenance = {}
+    runner._robot_footprint = (
+        (0.255, 0.210), (0.255, -0.210), (-0.230, -0.210), (-0.230, 0.210)
+    )
+    runner._robot_config_hash = "a" * 64
+    runner._nav2_config_hash = "b" * 64
+    runner._nav2_profile = "v6_low_obstacle_isolation"
+    runner._clear_slam_localization_buffer = True
+    runner._reset_map_base_translation_tolerance_m = 0.05
+    runner._experiment_arm = ""
+    runner._navigation_execution_backend = "route_guided"
+    runner._optimal_reference = None
+    runner._optimal_reference_hash = None
+    runner._dynamic_runtime_contract = {"verified": True}
+    runner._appearance_runtime_contract = {"verified": True}
+    runner._appearance_config_hash = None
+    runner._appearance_state = None
+    runner._reset_receipt = {"generation": 2}
+    runner._navigation_graph = None
+    pose = SimpleNamespace(as_dict=lambda: {"position": [0.0, 0.0]})
+    runner._spawn_pose = SimpleNamespace(name="long_route_start_g1", usd=pose, map=pose)
+
+    def wait_for_final_stillness():
+        runner._terminal_zero_confirmed = True
+        runner._terminal_zero_reason = "terminal_zero_confirmed"
+        return True
+
+    runner._wait_for_final_stillness = wait_for_final_stillness
+    final_still = runner._wait_for_final_stillness()
+
+    manifest = runner._build_manifest(
+        run_index=1,
+        seed=8601,
+        nav2_succeeded=False,
+        timed_out=False,
+        nav2_status=experiment_runner_module.GoalStatus.STATUS_SUCCEEDED,
+        final_still=final_still,
+        runner_error=None,
+    )
+
+    assert manifest["result"] == "failure"
+    assert "dynamic_retirement_clearance_timeout" in manifest["failure_reason"]
+    assert "runner_error:" not in manifest["failure_reason"]
+    assert not _strict_success_from_leg_count(
+        manifest["result"],
+        len(manifest["legs"]),
+        len(scenario.route),
+        terminal_zero_confirmed=manifest["terminal_zero_confirmed"],
+    )
+
+
+def _run_all_terminal_safety_runner(
+    tmp_path, *, final_still, terminal_zero, failure_reason, run_count=1
+):
+    runner = object.__new__(ExperimentRunner)
+    runner._clock_ready = True
+    runner._clock_timeout_sec = 1.0
+    runner._wait_until = lambda predicate, _timeout: predicate()
+    runner._verify_dynamic_runtime_contract = lambda: None
+    runner._verify_appearance_runtime_contract = lambda: None
+    runner._verify_collision_monitor_active = lambda: None
+    runner._authorization_only = False
+    runner._scenario = SimpleNamespace(
+        scenario_id="dynamic_retirement_test",
+        scenario_type="dynamic",
+        obstacle_trajectories=({
+            "id": "dynamic_box", "trigger_group": "G2", "motion": "crossing",
+        },),
+        run_matrix=tuple(
+            RunSelection(8601 + index, "single_dynamic_low_box", "v1")
+            for index in range(run_count)
+        ),
+        seeds=(),
+    )
+    runner._run_indices = None
+    runner._require_pregoal_authorization = False
+    runner._record_evidence = True
+    runner._resume = False
+    runner._require_module2_planning_ready = False
+    runner._navigation_execution_backend = "route_guided"
+    runner._fail_stop = False
+    runner._output_directory = tmp_path
+    resets = []
+    manifests = []
+    summaries = []
+    runner._reset_simulation = lambda seed, *_args: resets.append(seed)
+    runner._evidence_root_for = lambda run_index, seed: (
+        tmp_path / f"run-{run_index}-{seed}"
+    )
+
+    def begin(run_index, seed):
+        root = runner._evidence_root_for(run_index, seed)
+        root.mkdir()
+        return root
+
+    runner._begin_run_evidence = begin
+    runner._lifecycle_event = lambda _event: None
+    runner._start_terminal_zero_observation = lambda: None
+
+    def navigate():
+        runner._navigation_failure_reason = failure_reason
+        runner._terminal_zero_barrier_monotonic = 1.0
+        return False, False, experiment_runner_module.GoalStatus.STATUS_SUCCEEDED
+
+    runner._navigate = navigate
+
+    def wait_for_final_stillness():
+        runner._terminal_zero_confirmed = terminal_zero
+        return final_still
+
+    runner._wait_for_final_stillness = wait_for_final_stillness
+    runner._stop_run_bag = lambda: True
+
+    def build_manifest(**kwargs):
+        manifest = {
+            "result": "failure",
+            "runner_error": kwargs["runner_error"],
+        }
+        manifests.append(manifest)
+        return manifest
+
+    runner._build_manifest = build_manifest
+
+    def write_evidence(manifest, _seed, _run_index, _root, _bag_complete):
+        summary = {
+            "strict_success": False,
+            "physical_collision_free": True,
+            "data_complete": True,
+            "checksums_verified": True,
+            "final_trial_metric_gate": {"passed": True},
+            "runner_error": manifest["runner_error"],
+        }
+        summaries.append(summary)
+        return summary
+
+    runner._write_run_evidence = write_evidence
+    runner._logger = SimpleNamespace(info=lambda _message: None, error=lambda _message: None)
+    runner.get_logger = lambda: runner._logger
+    return runner, resets, manifests, summaries
+
+
+def test_run_all_keeps_safe_retirement_timeout_as_normal_product_failure(
+    tmp_path, monkeypatch,
+):
+    runner, resets, manifests, summaries = _run_all_terminal_safety_runner(
+        tmp_path,
+        final_still=True,
+        terminal_zero=True,
+        failure_reason="dynamic_retirement_clearance_timeout",
+    )
+    monkeypatch.setattr(experiment_runner_module, "write_run_report", lambda *_args: None)
+
+    result = runner.run_all()
+
+    assert result == manifests
+    assert resets == [8601]
+    assert manifests[0]["runner_error"] is None
+    assert summaries[0]["runner_error"] is None
+
+
+@pytest.mark.parametrize(
+    ("final_still", "terminal_zero"),
+    ((False, True), (True, False)),
+)
+def test_run_all_terminal_safety_failure_is_invalid_and_stops_hot_reset(
+    tmp_path, monkeypatch, final_still, terminal_zero,
+):
+    runner, resets, manifests, summaries = _run_all_terminal_safety_runner(
+        tmp_path,
+        final_still=final_still,
+        terminal_zero=terminal_zero,
+        failure_reason="dynamic_retirement_clearance_timeout",
+        run_count=2,
+    )
+    monkeypatch.setattr(experiment_runner_module, "write_run_report", lambda *_args: None)
+
+    with pytest.raises(
+        experiment_runner_module.ExperimentIsolationError,
+        match="terminal safety not confirmed",
+    ):
+        runner.run_all()
+
+    assert resets == [8601]
+    assert len(manifests) == len(summaries) == 1
+    assert manifests[0]["runner_error"].startswith("RuntimeError:")
+    assert summaries[0]["runner_error"] == manifests[0]["runner_error"]
+
+
+def test_run_all_ordinary_nav2_failure_does_not_gain_terminal_safety_error(
+    tmp_path, monkeypatch,
+):
+    runner, resets, manifests, _summaries = _run_all_terminal_safety_runner(
+        tmp_path,
+        final_still=False,
+        terminal_zero=False,
+        failure_reason=None,
+    )
+    monkeypatch.setattr(experiment_runner_module, "write_run_report", lambda *_args: None)
+
+    runner.run_all()
+
+    assert resets == [8601]
+    assert manifests[0]["runner_error"] is None
 
 
 def test_strict_success_counts_single_goal_when_route_is_omitted():
@@ -705,6 +945,7 @@ def test_clear_run_state_resets_terminal_zero_observation_fields():
     runner._terminal_zero_confirming_sample_count = 4
     runner._terminal_zero_confirmed = True
     runner._terminal_zero_reason = "terminal_zero_confirmed"
+    runner._navigation_failure_reason = "dynamic_retirement_clearance_timeout"
     runner._cmd_vel_sim_last_receive_monotonic = 2.0
     runner._cmd_vel_sim_last_nonzero_monotonic = 1.2
     runner._cmd_vel_sim_zero_stamps = [1.3, 1.9]
@@ -724,6 +965,7 @@ def test_clear_run_state_resets_terminal_zero_observation_fields():
     assert runner._terminal_zero_confirming_sample_count == 0
     assert not runner._terminal_zero_confirmed
     assert runner._terminal_zero_reason == "not_checked"
+    assert runner._navigation_failure_reason is None
     assert runner._cmd_vel_sim_last_receive_monotonic is None
     assert runner._cmd_vel_sim_last_nonzero_monotonic is None
     assert runner._cmd_vel_sim_zero_stamps == []

@@ -138,6 +138,13 @@ DYNAMIC_RETIREMENT_CLEAR_TIMEOUT_SEC = 2.0
 V6_STATIC_REFERENCE_SCENARIO_ID = "v6_final_kujiale_static"
 
 
+class _DynamicRetirementClearanceTimeout(RuntimeError):
+    reason = "dynamic_retirement_clearance_timeout"
+
+    def __init__(self) -> None:
+        super().__init__(self.reason)
+
+
 def _valid_sha256(value: object) -> bool:
     return bool(
         isinstance(value, str)
@@ -1325,6 +1332,7 @@ class ExperimentRunner(Node):
         self._obstacle_events: list[dict[str, Any]] = []
         self._obstacle_event_keys: set[str] = set()
         self._completed_dynamic_obstacle_ids: set[str] = set()
+        self._navigation_failure_reason: str | None = None
         self._obstacle_state: dict[str, Any] = {"obstacles": [], "events": []}
         self._obstacle_state_stamp_s: float | None = None
         self._obstacle_samples: list[dict[str, Any]] = []
@@ -2993,10 +3001,7 @@ class ExperimentRunner(Node):
                 ),
                 remaining,
             ):
-                raise RuntimeError(
-                    "dynamic obstacle retirement did not clear the current Module2 "
-                    "source and both cognitive costmap consumers before the next leg"
-                )
+                raise _DynamicRetirementClearanceTimeout()
         return tuple(retired_ids)
 
     def _navigate(self) -> tuple[bool, bool, int]:
@@ -3117,7 +3122,31 @@ class ExperimentRunner(Node):
                 if wrapped_result.status != GoalStatus.STATUS_SUCCEEDED:
                     self._leg_results.append({"id": specification.goal_id or f"G{index + 1}", "nav2_status": int(wrapped_result.status), "accepted": True})
                     return False, False, int(wrapped_result.status)
-                retired_ids = self._complete_obstacle_group(specification.goal_id)
+                try:
+                    retired_ids = self._complete_obstacle_group(
+                        specification.goal_id
+                    )
+                except _DynamicRetirementClearanceTimeout as exc:
+                    self._navigation_failure_reason = exc.reason
+                    self._mark_terminal_zero_barrier(
+                        exc.reason, leg_id=specification.goal_id
+                    )
+                    leg_gt = self._ground_truth_samples[leg_gt_start:]
+                    self._leg_results.append({
+                        "id": specification.goal_id or f"G{index + 1}",
+                        "nav2_status": int(wrapped_result.status),
+                        "accepted": True,
+                        "timed_out": False,
+                        "duration_sec": max(
+                            0.0, self._clock_seconds() - leg_start_stamp
+                        ),
+                        "ground_truth_length_m": path_length(
+                            [(sample.x, sample.y) for sample in leg_gt]
+                        ),
+                        "failure_reason": exc.reason,
+                    })
+                    self._minimum_poses_remaining = len(specifications) - index - 1
+                    return False, False, int(wrapped_result.status)
                 self._completed_dynamic_obstacle_ids.update(retired_ids)
                 leg_gt = self._ground_truth_samples[leg_gt_start:]
                 self._leg_results.append({
@@ -3278,7 +3307,18 @@ class ExperimentRunner(Node):
                 self._leg_results.append(leg_result)
                 if not succeeded:
                     return False, False, status
-                retired_ids = self._complete_obstacle_group(specification.goal_id)
+                try:
+                    retired_ids = self._complete_obstacle_group(
+                        specification.goal_id
+                    )
+                except _DynamicRetirementClearanceTimeout as exc:
+                    self._navigation_failure_reason = exc.reason
+                    leg_result["failure_reason"] = exc.reason
+                    self._mark_terminal_zero_barrier(
+                        exc.reason, leg_id=identifier
+                    )
+                    self._minimum_poses_remaining = len(specifications) - index - 1
+                    return False, False, status
                 self._completed_dynamic_obstacle_ids.update(retired_ids)
                 self._minimum_poses_remaining = len(specifications) - index - 1
             return True, False, GoalStatus.STATUS_SUCCEEDED
@@ -4220,6 +4260,8 @@ class ExperimentRunner(Node):
             > quality_thresholds.maximum_stopped_time_fraction
         ):
             reasons.append("excessive_stopped_time")
+        if self._navigation_failure_reason:
+            reasons.append(self._navigation_failure_reason)
         if runner_error:
             reasons.append(f"runner_error:{runner_error}")
         result, reasons = _result_with_terminal_zero(
@@ -5116,6 +5158,23 @@ class ExperimentRunner(Node):
                 ):
                     self._mark_terminal_zero_barrier("navigate_action_return")
                 final_still = self._wait_for_final_stillness()
+                if (
+                    self._navigation_failure_reason
+                    == _DynamicRetirementClearanceTimeout.reason
+                    and (
+                        not final_still
+                        or not self._terminal_zero_confirmed
+                    )
+                ):
+                    detail = (
+                        "dynamic_retirement_clearance_timeout terminal safety "
+                        f"not confirmed: final_still={final_still}, "
+                        "terminal_zero_confirmed="
+                        f"{self._terminal_zero_confirmed}"
+                    )
+                    runner_error = f"RuntimeError:{detail}"
+                    isolation_error = ExperimentIsolationError(detail)
+                    self.get_logger().error(runner_error)
             except Exception as exc:  # Preserve a manifest for every attempted run.
                 if not rclpy.ok():
                     raise KeyboardInterrupt from exc
@@ -5126,6 +5185,12 @@ class ExperimentRunner(Node):
                 if isinstance(exc, ExperimentIsolationError):
                     isolation_error = exc
                 runner_error = f"{type(exc).__name__}:{exc}"
+                if (
+                    self._navigation_failure_reason
+                    == _DynamicRetirementClearanceTimeout.reason
+                    and isolation_error is None
+                ):
+                    isolation_error = ExperimentIsolationError(str(exc))
                 self.get_logger().error(runner_error)
             finally:
                 bag_complete = self._stop_run_bag()
