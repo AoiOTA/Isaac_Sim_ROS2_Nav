@@ -2008,8 +2008,9 @@ def test_completion_clears_both_costmaps_before_returning():
             retired == {"v6_dynamic_g2_crossing_box"} and source_cursor == 8
         )
     )
-    def wait_until(predicate, _timeout):
+    def wait_until(predicate, timeout):
         calls.append("wait")
+        assert timeout == 5.0
         return predicate()
 
     runner._wait_until = wait_until

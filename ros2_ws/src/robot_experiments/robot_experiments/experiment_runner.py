@@ -135,10 +135,9 @@ DYNAMIC_CASE_SET_MOTIONS = {
 EXPERIMENT_ARMS = frozenset({"off", "sr_medium", "dr_medium", "medium"})
 COMMAND_ZERO_TOLERANCE = 1.0e-3
 TERMINAL_ZERO_CADENCE_TOLERANCE_SEC = 0.10
-# Module2 is 5 Hz and the global costmap can publish at 1--2 Hz.  Two seconds
-# covers one post-retirement source plus a processed status from both consumers
-# without relaxing any source-stamp, sequence, identity, or zero-cell gate.
-DYNAMIC_RETIREMENT_CLEAR_TIMEOUT_SEC = 2.0
+# Allow one maximum inference-latency window for the post-retirement source and
+# both processed consumer statuses without relaxing any clearance gate.
+DYNAMIC_RETIREMENT_CLEAR_TIMEOUT_SEC = 5.0
 COGNITIVE_ADMISSION_MIN_CONSECUTIVE = 3
 CRITIC_COMMAND_SAME_CYCLE_TOLERANCE_NS = 1_000_000
 COGNITIVE_COMPONENT_CONSUMERS = {
