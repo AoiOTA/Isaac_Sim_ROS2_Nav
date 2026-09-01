@@ -337,6 +337,13 @@ def _write_formal_run(
     receipt_topology_revision = (
         17 if cognitive_mutation == "topology_progression" else topology_revision
     )
+    receipt_planning_stamp_s = (
+        13.000000998000003
+        if cognitive_mutation == "planning_stamp_float_equivalent"
+        else 13.000000999
+        if cognitive_mutation == "planning_stamp_one_ns_tamper"
+        else 13.000000998
+    )
     component_consumers = {
         "global_layer": "/global_costmap/global_costmap:cognitive_obstacle_layer",
         "local_layer": "/local_costmap/local_costmap:cognitive_obstacle_layer",
@@ -362,7 +369,7 @@ def _write_formal_run(
         "reset_generation": generation,
         "ready_ros_s": 13.2,
         "periodic_planning_health": {
-            "stamp_s": 13.000000998,
+            "stamp_s": receipt_planning_stamp_s,
             "sequence": 3,
             **cognitive_identity,
             "module2_healthy": True,
@@ -763,6 +770,42 @@ def _write_formal_run(
                 + semantic_nanosec + 25_000_000,
             )
             stamp += 1
+    if cognitive_mutation in {
+        "post_ready_same_sequence_status",
+        "postdispatch_record_with_old_status_stamp",
+    }:
+        record_timestamp_ns = (
+            13_250_000_000
+            if cognitive_mutation == "post_ready_same_sequence_status"
+            else 13_400_000_000
+        )
+        for role in ("global_layer", "local_layer"):
+            late_status = RiskLayerStatus()
+            late_status.stamp.sec = 13
+            late_status.stamp.nanosec = 100000000
+            late_status.consumer = component_consumers[role]
+            late_status.mode = "active"
+            late_status.offered = True
+            late_status.applied = False
+            late_status.rejected = False
+            late_status.source_sequence = 3
+            late_status.reset_epoch = generation
+            late_status.recurrent_session_id = cognitive_identity[
+                "recurrent_session_id"
+            ]
+            late_status.map_version = cognitive_identity["map_version"]
+            late_status.message_age_ms = 99.999002
+            late_status.fallback_reason = (
+                "validation_mode=2;source_age_ms=0.000998;"
+                "rejection_reason=offered;confirmed_count=0"
+            )
+            late_status.risk_model_sha256 = "risk-sha256"
+            late_status.qualification_receipt_sha256 = "qualification-sha256"
+            writer.write(
+                "/bio_nav/cognitive_obstacle_layer/status",
+                serialize_message(late_status),
+                record_timestamp_ns,
+            )
     if cognitive_mutation in {
         "navigation_graph_change_after_latch",
         "navigation_graph_change_then_restore",
@@ -6041,6 +6084,39 @@ def test_formal_binary_mcap_freezes_critic_admission_at_first_motion(
         )
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "post_ready_same_sequence_status",
+        "postdispatch_record_with_old_status_stamp",
+        "planning_stamp_float_equivalent",
+    ),
+)
+def test_formal_binary_mcap_normalizes_predispatch_status_and_planning_time(
+    tmp_path, mutation,
+):
+    campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
+    root = _write_formal_run(
+        campaign.conditions[0],
+        1,
+        strict_success=True,
+        formal_freeze_digest=campaign.freeze_digest,
+        cognitive_mutation=mutation,
+    )
+    evidence = experiment_runner_module.validate_recorded_run_evidence(
+        root,
+        json.loads((root / "run_summary.json").read_text()),
+        json.loads((root / "run_manifest.json").read_text()),
+        scene="indoor",
+        route_guided=True,
+        route_prior_required=True,
+        expected_leg_count=5,
+        cognitive_admission_required=True,
+    )
+
+    assert evidence["cognitive_admission_replay"]["passed"] is True
+
+
 @pytest.mark.parametrize("terminals", ((False,), (True, False)))
 def test_product_failure_terminal_false_starts_zero_tail(tmp_path, terminals):
     campaign = load_formal_campaign_manifest(_write_formal_manifest(tmp_path))
@@ -6091,6 +6167,7 @@ def test_product_failure_terminal_false_starts_zero_tail(tmp_path, terminals):
         "post_latch_bad_status_then_healthy",
         "postdispatch_critic_missing", "postdispatch_critic_late",
         "critic_same_timestamp_after_motion",
+        "planning_stamp_one_ns_tamper",
         "navigation_graph_change_after_latch",
         "navigation_graph_change_then_restore",
         "semantic_map_mismatch", "content_map_mismatch",

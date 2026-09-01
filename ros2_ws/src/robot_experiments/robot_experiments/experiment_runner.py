@@ -1637,6 +1637,20 @@ def _recorded_cognitive_admission_evidence(
             candidates, key=lambda row: int(row["record_order"]), default=None
         )
 
+    def predispatch_layer_status(row: Mapping[str, Any]) -> bool:
+        return bool(
+            role_of(row) in COGNITIVE_PREDISPATCH_COMPONENTS
+            and isinstance(row.get("record_order"), int)
+            and not isinstance(row.get("record_order"), bool)
+            and isinstance(row.get("record_timestamp_ns"), int)
+            and not isinstance(row.get("record_timestamp_ns"), bool)
+            and row["record_timestamp_ns"] <= ready_ns
+            and row["record_timestamp_ns"] <= dispatch_ns
+            and isinstance(row.get("status_stamp_ns"), int)
+            and not isinstance(row.get("status_stamp_ns"), bool)
+            and barrier_ns < row["status_stamp_ns"] <= ready_ns
+        )
+
     replay_components: dict[str, Any] = {}
     latest_required_fields = {
         "consumer", "role", "mode", "offered", "applied", "rejected",
@@ -1687,15 +1701,17 @@ def _recorded_cognitive_admission_evidence(
             return {"passed": False, "error": f"cognitive_component_invalid:{role}"}
         candidates: list[Mapping[str, Any]] = []
         for row in statuses:
-            if not isinstance(row, Mapping) or role_of(row) != role:
+            if (
+                not isinstance(row, Mapping)
+                or not predispatch_layer_status(row)
+                or role_of(row) != role
+            ):
                 continue
             record_order = row.get("record_order")
             sequence = row.get("source_sequence")
             if not (
                 isinstance(record_order, int)
                 and isinstance(sequence, int)
-                and isinstance(row.get("status_stamp_ns"), int)
-                and barrier_ns < row["status_stamp_ns"] <= ready_ns
                 and all(
                     expected_latest.get(field) == row.get(field)
                     for field in raw_status_receipt_fields
@@ -1836,7 +1852,11 @@ def _recorded_cognitive_admission_evidence(
             key=lambda item: int(item.get("record_order", 0))
             if isinstance(item, Mapping) else 0,
         ):
-            if not isinstance(candidate, Mapping) or role_of(candidate) != role:
+            if (
+                not isinstance(candidate, Mapping)
+                or not predispatch_layer_status(candidate)
+                or role_of(candidate) != role
+            ):
                 continue
             candidate_sequence = candidate.get("source_sequence")
             if isinstance(candidate_sequence, int):
@@ -1845,11 +1865,6 @@ def _recorded_cognitive_admission_evidence(
             latest_status_by_sequence.values(),
             key=lambda item: int(item.get("record_order", 0)),
         ):
-            if not (
-                isinstance(row.get("status_stamp_ns"), int)
-                and barrier_ns < row["status_stamp_ns"] <= dispatch_ns
-            ):
-                continue
             sequence = row.get("source_sequence")
             if not isinstance(sequence, int) or sequence <= last_sequence:
                 continue
@@ -2045,7 +2060,21 @@ def _recorded_cognitive_admission_evidence(
                 "passed": False,
                 "error": f"cognitive_source_receipt_mismatch:{role}",
             }
-        if expected_planning != planning_receipt:
+        expected_stamp_s = expected_planning.get("stamp_s")
+        expected_stamp_ns = (
+            round(float(expected_stamp_s) * 1_000_000_000)
+            if isinstance(expected_stamp_s, (int, float))
+            and not isinstance(expected_stamp_s, bool)
+            and math.isfinite(float(expected_stamp_s))
+            else None
+        )
+        if (
+            expected_stamp_ns != planning_for_source["stamp_ns"]
+            or any(
+                expected_planning.get(key) != planning_receipt.get(key)
+                for key in planning_receipt_fields - {"stamp_s"}
+            )
+        ):
             return {
                 "passed": False,
                 "error": f"cognitive_planning_receipt_mismatch:{role}",
