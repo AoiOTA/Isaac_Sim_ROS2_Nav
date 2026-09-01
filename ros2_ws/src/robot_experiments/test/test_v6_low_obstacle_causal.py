@@ -3198,11 +3198,11 @@ wait "$!"
         arm, "--domain", "150", "--run-dir", str(run_dir),
         "--socket", str(socket_path),
         "--module2-asset-root", str(module2_asset_root),
-        "--scene", scene,
-        "--condition", condition,
     ]
     if scene == "rivermark":
         command.extend([
+            "--scene", scene,
+            "--condition", condition,
             "--route-prior-catalog-root", str(route_prior_catalog),
         ])
     if localization_supervisor_mode is not None:
@@ -3271,7 +3271,7 @@ def test_phase_f_stack_explicitly_disables_route_prior_for_module2_arms(
     fake = _start_fake_phase_f_stack(tmp_path, arm=arm)
     try:
         assert fake.module3_argv.read_text(encoding="utf-8").splitlines() == [
-            "--condition", "static", "ros", arm, "route_prior_enabled:=false"
+            "ros", arm, "route_prior_enabled:=false"
         ]
         module2 = fake.module2_argv.read_text(encoding="utf-8").splitlines()
         assert module2[module2.index("--shadow-config") + 1] == (
@@ -3493,8 +3493,6 @@ def test_final_route_prior_pilot_forwards_gvg_prior_to_m3_and_bridge(tmp_path):
     )
     try:
         assert fake.module3_argv.read_text(encoding="utf-8").splitlines() == [
-            "--condition",
-            "static",
             "ros",
             "M3",
             "route_prior_enabled:=true",
@@ -3622,8 +3620,6 @@ def test_phase_f_stack_localization_extension_forwards_exact_onebox_m3_argv(
     )
     try:
         assert fake.module3_argv.read_text(encoding="utf-8").splitlines() == [
-            "--condition",
-            "static",
             "ros",
             "M3",
             "route_prior_enabled:=false",
@@ -3645,20 +3641,6 @@ def test_phase_f_stack_localization_extension_forwards_exact_onebox_m3_argv(
         assert "startup_profile:=module2_causal_obstacle_active" in bridge
         assert f"localization_supervisor_mode:={expected_mode}" in bridge
         assert f"localization_candidate_manifest:={fake.candidate_manifest}" in bridge
-    finally:
-        _stop_fake_phase_f_stack(fake)
-
-
-@pytest.mark.parametrize("condition", ("static", "dynamic", "appearance"))
-def test_phase_f_stack_forwards_kujiale_condition_to_module3_child(
-    tmp_path, condition
-):
-    fake = _start_fake_phase_f_stack(
-        tmp_path, arm="M3", scene="kujiale", condition=condition
-    )
-    try:
-        argv = fake.module3_argv.read_text(encoding="utf-8").splitlines()
-        assert argv[:4] == ["--condition", condition, "ros", "M3"]
     finally:
         _stop_fake_phase_f_stack(fake)
 
@@ -4073,9 +4055,8 @@ def test_exact_stack_adapter_maps_profiles_and_keeps_phase_f_isolation():
     assert 'export BIO_NAV_MODULE2_V310_ROOT="${module2_root}"' in stack
     assert "canonical_constraints_file" in stack
     assert stack.index('require_file "${canonical_constraints_file}"') < stack.index(
-        'setsid --wait -- "${module3_entry[@]}"'
+        'module3_entry=("${script_dir}/run_v6_kujiale_low_obstacles.sh"'
     )
-    assert '--condition "${condition}" ros "${arm}"' in stack
     assert 'setsid --wait -- "${module3_entry[@]}"' in stack
     assert (
         "/home/lyb/Workspace/Bio_Nav/worktrees/"

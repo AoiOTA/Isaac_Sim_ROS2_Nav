@@ -177,26 +177,20 @@ def resolve_ekf_profile(
     return 'module1_wheel_imu'
 
 
-def cognitive_nav2_parameters(
-        profile, *, obstacle_layer_mode=None, risk_critic_mode=None):
+def cognitive_nav2_parameters(profile, *, obstacle_layer_mode=None):
     """Return the last-precedence exact-node parameters for M0--M3."""
     layer_mode = profile.obstacle_layer_mode
-    critic_mode = profile.risk_critic_mode
     if obstacle_layer_mode is not None:
         layer_mode = str(obstacle_layer_mode).strip().lower()
         _require_choice(
             'obstacle_layer_mode', layer_mode, {'off', 'shadow', 'active'})
-    if risk_critic_mode is not None:
-        critic_mode = str(risk_critic_mode).strip().lower()
-        _require_choice(
-            'risk_critic_mode', critic_mode, {'off', 'shadow', 'active'})
     return {
         'controller_server': {
             'ros__parameters': {
                 'FollowPath': {
                     'critics': list(_A21_COGNITIVE_CRITICS),
                     'CognitiveRiskCritic': {
-                        'mode': critic_mode,
+                        'mode': profile.risk_critic_mode,
                     },
                 },
             },
