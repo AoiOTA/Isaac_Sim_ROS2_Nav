@@ -7054,11 +7054,21 @@ def execute_indoor_campaign(
     ):
         _validate_indoor_continuation_contract(manifest)
     else:
-        promotion = manifest.freeze.get("validator_only_head_promotion")
-        if promotion is not None:
-            _validate_validator_only_head_promotion(
-                promotion, freeze=manifest.freeze
+        hardening = manifest.freeze.get("evaluator_hardening_promotion")
+        if hardening is not None:
+            provenance = manifest.pilot_freeze_provenance
+            _validate_evaluator_hardening_chain(
+                hardening,
+                freeze=manifest.freeze,
+                pilot_manifest_sha256=provenance["pilot_manifest"]["sha256"],
+                pilot_aggregate_sha256=provenance["pilot_aggregate"]["sha256"],
             )
+        else:
+            promotion = manifest.freeze.get("validator_only_head_promotion")
+            if promotion is not None:
+                _validate_validator_only_head_promotion(
+                    promotion, freeze=manifest.freeze
+                )
     if condition_stack_id not in INDOOR_CONDITION_IDS:
         raise V6ContractError(f"unknown indoor condition stack: {condition_stack_id}")
     aggregate = evaluate_indoor_campaign(manifest)

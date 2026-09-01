@@ -2884,7 +2884,11 @@ def _real_hardening_repository(tmp_path: Path):
         text=True,
     ).stdout.strip()
     for relative in paths[1:]:
-        (repository / relative).write_bytes((REPO / relative).read_bytes())
+        (repository / relative).write_bytes(subprocess.run(
+            ["git", "-C", str(REPO), "show", f"HEAD:{relative}"],
+            check=True,
+            capture_output=True,
+        ).stdout)
     subprocess.run(
         ["git", "-C", str(repository), "add", "--", *paths[1:]],
         check=True,
@@ -5979,6 +5983,163 @@ def test_indoor_execute_revalidates_promotion_before_evaluate_plan_or_subprocess
         )
 
     assert calls == {"validator": 1, "evaluate": 0, "plan": 0, "subprocess": 0}
+
+
+def test_indoor_execute_validates_hardening_chain_before_evaluate_and_dispatch(
+    tmp_path, monkeypatch,
+):
+    pilot_manifest, aggregate, *_rest = _write_hardening_freeze_inputs(
+        tmp_path, monkeypatch
+    )
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+    campaign = freeze_indoor_campaign_from_pilot(
+        pilot_manifest_path=pilot_manifest,
+        pilot_aggregate_path=aggregate,
+        output_manifest_path=tmp_path / "hardened-indoor.json",
+        indoor_output_root=tmp_path / "nas" / "hardened-indoor-runs",
+    )
+    provenance = campaign.pilot_freeze_provenance
+    calls = []
+
+    def validate_chain(
+        value,
+        *,
+        freeze,
+        pilot_manifest_sha256=None,
+        pilot_aggregate_sha256=None,
+    ):
+        calls.append("chain")
+        assert value is campaign.freeze["evaluator_hardening_promotion"]
+        assert freeze is campaign.freeze
+        assert pilot_manifest_sha256 == provenance["pilot_manifest"]["sha256"]
+        assert pilot_aggregate_sha256 == provenance["pilot_aggregate"]["sha256"]
+        return dict(value)
+
+    pending = {
+        "blockers": [],
+        "conditions": [{
+            "id": "indoor_static",
+            "stack_session_id": None,
+            "runs": [{"run_index": 1, "status": "pending"}],
+        }],
+    }
+    complete = {
+        "blockers": [],
+        "conditions": [{
+            "id": "indoor_static",
+            "stack_session_id": "session",
+            "runs": [{"run_index": 1, "status": "strict_success"}],
+        }],
+    }
+    evaluations = iter((pending, complete))
+
+    def evaluate(_manifest):
+        calls.append("evaluate")
+        return next(evaluations)
+
+    def plan(_manifest, value):
+        calls.append("plan")
+        assert value is pending
+        return [{
+            "condition_id": "indoor_static",
+            "run_index": 1,
+            "command": ["runner"],
+        }]
+
+    repositories = campaign.freeze["repositories"]
+    contract = {
+        "integration_head": repositories["integration"]["head"],
+        "module2_head": repositories["module2"]["head"],
+        "module3_head": repositories["module3"]["head"],
+        "driver_version": campaign.freeze["driver_version"],
+        "kernel_release": campaign.freeze["kernel_release"],
+        "arm": "M3",
+        "startup_profile": "module2_causal_obstacle_active",
+        "domain": 150,
+        "stack_session_id": "session",
+    }
+    monkeypatch.setattr(
+        v6_formal_module, "_validate_evaluator_hardening_chain", validate_chain
+    )
+    monkeypatch.setattr(
+        v6_formal_module,
+        "_validate_validator_only_head_promotion",
+        lambda *_args, **_kwargs: pytest.fail("first-stage validator was selected"),
+    )
+    monkeypatch.setattr(v6_formal_module, "evaluate_indoor_campaign", evaluate)
+    monkeypatch.setattr(v6_formal_module, "indoor_dispatch_plan", plan)
+    monkeypatch.setattr(
+        v6_formal_module, "validate_condition_stack_contract", lambda *_a, **_k: {}
+    )
+    monkeypatch.setattr(
+        v6_formal_module,
+        "_load_stack_contract_snapshot",
+        lambda *_a, **_k: (contract, "digest"),
+    )
+    monkeypatch.setattr(
+        v6_formal_module.subprocess,
+        "run",
+        lambda _command, *, check: calls.append("subprocess"),
+    )
+    monkeypatch.setenv("ROS_DOMAIN_ID", "150")
+
+    result = execute_indoor_campaign(
+        campaign,
+        condition_stack_id="indoor_static",
+        condition_stack_contract=tmp_path / "contract.json",
+    )
+
+    assert result is complete
+    assert calls == ["chain", "evaluate", "plan", "subprocess", "evaluate"]
+
+
+def test_indoor_execute_rejects_invalid_hardening_before_evaluate_or_subprocess(
+    tmp_path, monkeypatch,
+):
+    pilot_manifest, aggregate, *_rest = _write_hardening_freeze_inputs(
+        tmp_path, monkeypatch
+    )
+    monkeypatch.setattr(v6_formal_module, "FORMAL_NAS_ROOT", tmp_path / "nas")
+    campaign = freeze_indoor_campaign_from_pilot(
+        pilot_manifest_path=pilot_manifest,
+        pilot_aggregate_path=aggregate,
+        output_manifest_path=tmp_path / "hardened-indoor.json",
+        indoor_output_root=tmp_path / "nas" / "hardened-indoor-runs",
+    )
+    campaign.freeze["evaluator_hardening_promotion"]["module3_diff"][
+        "canonical_diff_sha256"
+    ] = "0" * 64
+    calls = {"evaluate": 0, "plan": 0, "subprocess": 0}
+    real_run = subprocess.run
+
+    def forbidden(name):
+        def fail(*_args, **_kwargs):
+            calls[name] += 1
+            raise AssertionError(f"{name} ran before hardening validation")
+        return fail
+
+    monkeypatch.setattr(
+        v6_formal_module, "evaluate_indoor_campaign", forbidden("evaluate")
+    )
+    monkeypatch.setattr(v6_formal_module, "indoor_dispatch_plan", forbidden("plan"))
+
+    def allow_git_only(command, *args, **kwargs):
+        if command and command[0] == "git":
+            return real_run(command, *args, **kwargs)
+        return forbidden("subprocess")(command, *args, **kwargs)
+
+    monkeypatch.setattr(
+        v6_formal_module.subprocess, "run", allow_git_only
+    )
+
+    with pytest.raises(V6ContractError, match="module3 diff record mismatch"):
+        execute_indoor_campaign(
+            campaign,
+            condition_stack_id="indoor_static",
+            condition_stack_contract=tmp_path / "never-read.json",
+        )
+
+    assert calls == {"evaluate": 0, "plan": 0, "subprocess": 0}
 
 
 def test_indoor_execution_dispatches_exactly_one_episode(tmp_path, monkeypatch):
