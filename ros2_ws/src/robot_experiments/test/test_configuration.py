@@ -188,7 +188,7 @@ def _v6_static_reference_inputs():
     nav2_overlay = (
         REPOSITORY_ROOT
         / "ros2_ws/src/robot_navigation/config/"
-        "nav2_v6_low_obstacle_isolation.yaml"
+        "nav2_v6_low_obstacle_static_appearance.yaml"
     )
     return scenario, reference, robot, nav2_base, nav2_overlay
 
@@ -204,7 +204,7 @@ def test_v6_static_reference_binds_active_map_route_footprint_and_goal_acceptanc
         robot_footprint=load_robot_footprint(robot),
         nav2_base_config=nav2_base,
         nav2_overlay_config=nav2_overlay,
-        nav2_profile="v6_low_obstacle_isolation",
+        nav2_profile="v6_low_obstacle_static_appearance",
         workspace_root=REPOSITORY_ROOT,
     )
 
@@ -239,7 +239,7 @@ def test_v6_static_reference_rejects_wrong_identity_or_invalid_legs(corruption):
             robot_footprint=load_robot_footprint(robot),
             nav2_base_config=nav2_base,
             nav2_overlay_config=nav2_overlay,
-            nav2_profile="v6_low_obstacle_isolation",
+            nav2_profile="v6_low_obstacle_static_appearance",
             workspace_root=REPOSITORY_ROOT,
         )
 

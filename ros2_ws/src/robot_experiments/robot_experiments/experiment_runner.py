@@ -114,6 +114,7 @@ APPEARANCE_NAV2_PROFILES = frozenset({
     "bio_nav_rgbd_risk_shadow",
     "bio_nav_rgbd_risk_ab",
     "v6_low_obstacle_isolation",
+    "v6_low_obstacle_static_appearance",
     # Attempt-23: stock-critics global-prior profile; no camera, rendering,
     # or costmap-visual behavior changes, so appearance capture stays valid.
     "attempt23_global_prior",
@@ -243,14 +244,14 @@ def _validate_v6_static_reference_identity(
     """Bind the path gate to the wrapper's effective base+profile inputs."""
 
     if (
-        nav2_profile != "v6_low_obstacle_isolation"
+        nav2_profile != "v6_low_obstacle_static_appearance"
         or nav2_base_config.resolve()
         != scenario.resolve_path(scenario.nav2_config_file)
         or nav2_overlay_config.resolve()
         != (
             workspace_root
             / "ros2_ws/src/robot_navigation/config/"
-            "nav2_v6_low_obstacle_isolation.yaml"
+            "nav2_v6_low_obstacle_static_appearance.yaml"
         ).resolve()
     ):
         raise ConfigurationError("optimal reference Nav2 profile identity mismatch")

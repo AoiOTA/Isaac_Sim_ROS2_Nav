@@ -35,7 +35,12 @@ case "${condition}" in
     scenario_file="${PROJECT_ROOT}/ros2_ws/src/robot_experiments/config/v6_final_kujiale_appearance.yaml"
     ;;
 esac
-nav2_config_file="${PROJECT_ROOT}/ros2_ws/src/robot_navigation/config/nav2_v6_low_obstacle_isolation.yaml"
+nav2_profile_name="v6_low_obstacle_static_appearance"
+nav2_config_file="${PROJECT_ROOT}/ros2_ws/src/robot_navigation/config/nav2_v6_low_obstacle_static_appearance.yaml"
+if [[ "${condition}" == "dynamic" ]]; then
+  nav2_profile_name="v6_low_obstacle_isolation"
+  nav2_config_file="${PROJECT_ROOT}/ros2_ws/src/robot_navigation/config/nav2_v6_low_obstacle_isolation.yaml"
+fi
 
 reject_graph_override() {
   local argument
@@ -184,7 +189,7 @@ run_ros_profile() {
   exec "${SCRIPT_DIR}/run_ros.sh" navigation \
     "odometry_mode:=${substrate_odometry_mode}" \
     localization_profile:=kujiale \
-    nav2_profile:=v6_low_obstacle_isolation \
+    "nav2_profile:=${nav2_profile_name}" \
     cognitive_profile:="${cognitive_profile}" \
     cognitive_graph_mode:="${graph_mode}" \
     initial_pose_source:="${initial_pose_source}" \
@@ -252,7 +257,7 @@ case "${profile}" in
       scenario_file:="${scenario_file}" \
       spawn_poses_file:="${PROJECT_ROOT}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml" \
       output_directory:="${output_directory}" \
-      nav2_profile:=v6_low_obstacle_isolation \
+      "nav2_profile:=${nav2_profile_name}" \
       nav2_config_file:="${nav2_config_file}" \
       "$@"
     ;;
