@@ -11,6 +11,7 @@ import pytest
 from isaac_sim.apps.navigation_sim import (
     _clock_message_from_simulation_time,
     _prime_isaac_ros_clock,
+    _wait_for_startup_reset_transaction,
 )
 from isaac_sim.src.bridge.reset_service import (
     InitialPoseRepublisher,
@@ -129,6 +130,103 @@ def test_bootstrap_publisher_is_destroyed_when_publish_raises():
         )
 
     assert destroyed == [True]
+
+
+def test_bootstrap_clock_keeps_publisher_until_required_service_is_visible():
+    state = {"simulation": 0.0, "ros": 0.0, "checks": 0}
+    events = []
+
+    def update():
+        state["simulation"] += 0.01
+        events.append("update")
+
+    def spin_once():
+        state["ros"] = state["simulation"]
+        events.append("spin")
+
+    def required_service_ready():
+        state["checks"] += 1
+        assert "destroy" not in events
+        return state["checks"] == 3
+
+    result = _prime_isaac_ros_clock(
+        play_first_update=update,
+        app_update=update,
+        spin_once=spin_once,
+        simulation_time=lambda: state["simulation"],
+        ros_time=lambda: state["ros"],
+        publish_clock=lambda _stamp: events.append("publish"),
+        destroy_clock=lambda: events.append("destroy") or True,
+        max_frame_lag_seconds=0.01,
+        required_service_ready=required_service_ready,
+        max_updates=4,
+    )
+
+    assert result == pytest.approx((0.0, 0.0, 0.03, 0.03))
+    assert events[-1] == "destroy"
+    assert state["checks"] == 3
+
+
+def test_bootstrap_clock_fails_bounded_when_required_service_never_appears():
+    state = {"simulation": 0.0, "ros": 0.0}
+    destroyed = []
+
+    def update():
+        state["simulation"] += 0.01
+
+    def spin_once():
+        state["ros"] = state["simulation"]
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"required startup reset service was not discovered.*updates=3",
+    ):
+        _prime_isaac_ros_clock(
+            play_first_update=update,
+            app_update=update,
+            spin_once=spin_once,
+            simulation_time=lambda: state["simulation"],
+            ros_time=lambda: state["ros"],
+            publish_clock=lambda _stamp: None,
+            destroy_clock=lambda: destroyed.append(True) or True,
+            max_frame_lag_seconds=0.01,
+            required_service_ready=lambda: False,
+            max_updates=3,
+        )
+
+    assert destroyed == [True]
+
+
+def test_startup_reset_is_pumped_to_success_before_ready_boundary():
+    transaction = SimpleNamespace(finished=False, errors=[])
+    events = []
+
+    def update():
+        events.append("update")
+        if events.count("update") == 2:
+            transaction.finished = True
+
+    _wait_for_startup_reset_transaction(
+        transaction=transaction,
+        app_update=update,
+        spin_once=lambda: events.append("spin"),
+    )
+
+    assert events == ["update", "spin", "update", "spin"]
+
+
+def test_startup_reset_error_fails_before_ready_boundary():
+    transaction = SimpleNamespace(
+        finished=True,
+        errors=["EKF: required reset service is unavailable"],
+    )
+
+    with pytest.raises(RuntimeError, match="startup reset transaction failed"):
+        _wait_for_startup_reset_transaction(
+            transaction=transaction,
+            app_update=lambda: None,
+            spin_once=lambda: None,
+        )
 
 
 def test_bootstrap_publisher_destroy_failure_is_fail_stop():
@@ -1147,6 +1245,27 @@ def test_mixed_startup_discovery_timeout_keeps_generation_held(missing):
     assert events == [("hold", 1)]
 
 
+def test_required_service_discovery_false_result_is_not_success():
+    events = []
+    wheel = FakeResetClient(ready=False, discovered_on_wait=False)
+    bridge, transaction, _ = _odometry_transaction_bridge(
+        events,
+        wheel,
+        FakeResetClient(),
+    )
+
+    discovered = bridge._wait_for_required_service_discovery(
+        wheel,
+        "wheel odometry",
+    )
+
+    assert not discovered
+    assert wheel.wait_calls == [1.5]
+    assert transaction.errors == [
+        "wheel odometry: required reset service is unavailable"
+    ]
+
+
 def test_mixed_startup_discovery_wait_exception_keeps_generation_held():
     events = []
     wheel = FakeResetClient(
@@ -1541,6 +1660,64 @@ def test_startup_mapping_reset_is_allowed_and_returns_pending_transaction():
     assert not transaction.completion.done()
     pending.complete()
     assert transaction.finished
+
+
+def test_reset_response_timer_starts_after_sync_discovery_and_call_queueing():
+    events = []
+    pending = FakeFuture()
+    holder = {}
+
+    class FakeManager:
+        def reset(self, request):
+            del request
+            events.append("discovery_and_queue")
+            transaction = holder["bridge"]._active_transaction
+            assert transaction.timeout_timer is None
+            transaction.add_call("wheel odometry", pending)
+
+    def create_timer(*args, **kwargs):
+        del args, kwargs
+        events.append("response_timer")
+        return FakeTimer()
+
+    bridge = SimpleNamespace(
+        _manager=FakeManager(),
+        _active_transaction=None,
+        _pending_futures=set(),
+        _initial_pose_republisher=SimpleNamespace(cancel=lambda: None),
+        _deferred_initial_pose_name=None,
+        _transaction_generation=0,
+        _Future=FakeCompletion,
+        node=SimpleNamespace(executor=None, create_timer=create_timer),
+        _transaction_timeout_sec=1.0,
+        _callback_group=object(),
+        _steady_clock=object(),
+        _finish_transaction=lambda tx: None,
+    )
+    holder["bridge"] = bridge
+
+    transaction = ResetServiceBridge.start_reset(
+        bridge,
+        ResetRequest("mapping_start", "mapping", "ideal", 0),
+    )
+
+    assert events == ["discovery_and_queue", "response_timer"]
+    assert not transaction.finished
+    pending.complete()
+    assert transaction.finished
+
+
+def test_ready_log_is_after_successful_startup_reset_gate():
+    source = (ROOT / "isaac_sim/apps/navigation_sim.py").read_text(
+        encoding="utf-8"
+    )
+    startup = source.index("startup_reset = reset_bridge.start_reset(")
+    completion = source.index(
+        "_wait_for_startup_reset_transaction(", startup
+    )
+    ready = source.index('"Isaac navigation simulation ready: "', completion)
+
+    assert startup < completion < ready
 
 
 def test_reset_stop_hold_is_synchronous_before_reset_manager_pause_path():

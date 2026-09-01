@@ -492,12 +492,6 @@ class ResetServiceBridge:
             on_finished=self._finish_transaction,
         )
         self._active_transaction = transaction
-        transaction.timeout_timer = self.node.create_timer(
-            self._transaction_timeout_sec,
-            lambda: transaction.timeout(self._transaction_timeout_sec),
-            callback_group=self._callback_group,
-            clock=self._steady_clock,
-        )
         try:
             reset_stop_gate = getattr(self, "_reset_stop_gate", None)
             if reset_stop_gate is not None:
@@ -505,9 +499,13 @@ class ResetServiceBridge:
             self._manager.reset(reset_request)
         except Exception as exc:
             transaction.record_error("simulation reset", exc)
-            transaction.seal()
-        else:
-            transaction.seal()
+        transaction.timeout_timer = self.node.create_timer(
+            self._transaction_timeout_sec,
+            lambda: transaction.timeout(self._transaction_timeout_sec),
+            callback_group=self._callback_group,
+            clock=self._steady_clock,
+        )
+        transaction.seal()
         return transaction
 
     def start_external_reset(
@@ -712,14 +710,28 @@ class ResetServiceBridge:
         try:
             if client.service_is_ready():
                 return True
-            client.wait_for_service(timeout_sec=self._transaction_timeout_sec)
+            discovered = client.wait_for_service(
+                timeout_sec=self._transaction_timeout_sec
+            )
         except Exception as exc:
             self.node.get_logger().error(
                 f"failed while waiting for {label} reset service discovery: {exc}"
             )
             transaction.record_error(f"{label} service discovery", exc)
             return False
+        if not discovered:
+            message = "required reset service is unavailable"
+            self.node.get_logger().error(f"{label}: {message}")
+            transaction.record_error(label, message)
+            return False
         return True
+
+    @property
+    def required_service_discovery_timeout_sec(self) -> float:
+        return self._transaction_timeout_sec
+
+    def required_ekf_reset_service_ready(self) -> bool:
+        return bool(self._ekf_set_pose_client.service_is_ready())
 
     def reset_ros_odometry(self, odometry_mode: str) -> None:
         """Notify local estimators and reset their filter state."""

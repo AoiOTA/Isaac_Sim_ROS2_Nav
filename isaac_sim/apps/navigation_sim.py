@@ -121,6 +121,7 @@ def _prime_isaac_ros_clock(
     publish_clock: Callable[[float], None],
     destroy_clock: Callable[[], bool],
     max_frame_lag_seconds: float,
+    required_service_ready: Callable[[], bool] | None = None,
     max_updates: int = 5,
 ) -> tuple[float, float, float, float]:
     """Bootstrap ROS time from Isaac, then retire the temporary publisher."""
@@ -134,6 +135,7 @@ def _prime_isaac_ros_clock(
             ros_time=ros_time,
             publish_clock=publish_clock,
             max_frame_lag_seconds=max_frame_lag_seconds,
+            required_service_ready=required_service_ready,
             max_updates=max_updates,
         )
     finally:
@@ -153,6 +155,7 @@ def _prime_isaac_ros_clock_until_aligned(
     ros_time: Callable[[], float],
     publish_clock: Callable[[float], None],
     max_frame_lag_seconds: float,
+    required_service_ready: Callable[[], bool] | None,
     max_updates: int,
 ) -> tuple[float, float, float, float]:
     """Advance Isaac and publish its current epoch until ROS time aligns."""
@@ -184,6 +187,7 @@ def _prime_isaac_ros_clock_until_aligned(
         raise failure("initial ROS clock is outside the Isaac epoch", 0)
 
     previous_ros_time = initial_ros_time
+    clock_aligned = False
     for update_index in range(max_updates):
         if update_index == 0:
             # IsaacSimulationRuntime.play() resumes the timeline and performs
@@ -200,10 +204,13 @@ def _prime_isaac_ros_clock_until_aligned(
             raise failure("ROS clock moved backwards", update_index + 1)
         previous_ros_time = latest_ros_time
         current_lag = latest_sim_time - latest_ros_time
-        if (
+        clock_aligned = bool(
             latest_sim_time > initial_sim_time
             and latest_ros_time > initial_ros_time
             and -CLOCK_FLOAT_EPSILON_SECONDS <= current_lag <= lag_limit
+        )
+        if clock_aligned and (
+            required_service_ready is None or required_service_ready()
         ):
             return (
                 initial_sim_time,
@@ -211,7 +218,28 @@ def _prime_isaac_ros_clock_until_aligned(
                 latest_sim_time,
                 latest_ros_time,
             )
-    raise failure("clock did not advance within one publish frame", max_updates)
+    raise failure(
+        "required startup reset service was not discovered"
+        if clock_aligned and required_service_ready is not None
+        else "clock did not advance within one publish frame",
+        max_updates,
+    )
+
+
+def _wait_for_startup_reset_transaction(
+    *,
+    transaction: object,
+    app_update: Callable[[], None],
+    spin_once: Callable[[], None],
+) -> None:
+    """Pump the already-bounded reset transaction before READY can publish."""
+
+    while not bool(getattr(transaction, "finished")):
+        app_update()
+        spin_once()
+    errors = list(getattr(transaction, "errors"))
+    if errors:
+        raise RuntimeError(f"startup reset transaction failed: {errors}")
 
 
 def imu_regime_trace_provenance(
@@ -2307,6 +2335,20 @@ def run(
                 1.0 / config.simulation.physics_hz,
                 1.0 / config.simulation.rendering_hz,
             ),
+            required_service_ready=(
+                reset_bridge.required_ekf_reset_service_ready
+                if config.simulation.odometry_mode == "mixed" else None
+            ),
+            max_updates=max(
+                5,
+                math.ceil(
+                    reset_bridge.required_service_discovery_timeout_sec
+                    * max(
+                        config.simulation.physics_hz,
+                        config.simulation.rendering_hz,
+                    )
+                ),
+            ),
         )
         startup_reset = reset_bridge.start_reset(
             ResetRequest(
@@ -2320,11 +2362,11 @@ def run(
                 dynamic_variant_id=dynamic_variant_id,
             )
         )
-        if startup_reset.finished and startup_reset.errors:
-            raise RuntimeError(
-                "startup reset transaction failed: "
-                f"{startup_reset.errors}"
-            )
+        _wait_for_startup_reset_transaction(
+            transaction=startup_reset,
+            app_update=app.update,
+            spin_once=lambda: rclpy.spin_once(node, timeout_sec=0.0),
+        )
         actual_spawn_position, _ = robot.get_world_pose()
         spawn_position_error_m = math.dist(
             actual_spawn_position,
