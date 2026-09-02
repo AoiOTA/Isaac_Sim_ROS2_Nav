@@ -389,15 +389,15 @@ def test_static_reference_gate_excludes_appearance_scenario_identity():
     assert _static_reference_metric_failure(appearance, None) is None
 
 
-def test_static_and_appearance_keep_fixed_obstacle_selector_outside_retirement_barrier():
+def test_retirement_barrier_is_reachable_only_from_dynamic_product_configuration():
     config_root = Path(__file__).parents[1] / "config"
-    scenarios = [
+    stable_scenarios = [
         load_scenario(config_root / f"v6_final_kujiale_{condition}.yaml")
         for condition in ("static", "appearance")
     ]
     runner = object.__new__(ExperimentRunner)
 
-    for scenario in scenarios:
+    for scenario in stable_scenarios:
         runner._scenario = scenario
         runner._active_selection = scenario.run_matrix[0]
         assert scenario.dynamic_config_file.endswith(
@@ -406,6 +406,18 @@ def test_static_and_appearance_keep_fixed_obstacle_selector_outside_retirement_b
         assert scenario.obstacles["static"] == [{"id": "v6_low_box_solo"}]
         assert scenario.obstacle_trajectories == ()
         assert not runner._requires_dynamic_retirement_clearance("G2", set())
+
+    dynamic = load_scenario(
+        config_root / "v6_final_kujiale_dynamic.yaml"
+    )
+    runner._scenario = dynamic
+    runner._active_selection = dynamic.run_matrix[0]
+    assert dynamic.dynamic_config_file.endswith(
+        "v6_single_dynamic_low_obstacle.yaml"
+    )
+    actor_ids = {item["id"] for item in runner._selected_dynamic_trajectories()}
+    assert actor_ids == {"v6_dynamic_low_box_solo"}
+    assert runner._requires_dynamic_retirement_clearance("G2", actor_ids)
 
 
 def test_retirement_timeout_manifest_is_normal_failure_without_runner_error():

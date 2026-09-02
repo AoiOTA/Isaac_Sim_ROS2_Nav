@@ -26,13 +26,26 @@ shift
 
 case "${condition}" in
   static)
+    product_configuration="stable"
     scenario_file="${PROJECT_ROOT}/ros2_ws/src/robot_experiments/config/v6_final_kujiale_static.yaml"
+    physical_config_file="${PROJECT_ROOT}/isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen.yaml"
+    appearance_args=(--appearance-profile baseline)
     ;;
   dynamic)
+    product_configuration="dynamic"
     scenario_file="${PROJECT_ROOT}/ros2_ws/src/robot_experiments/config/v6_final_kujiale_dynamic.yaml"
+    physical_config_file="${PROJECT_ROOT}/isaac_sim/configs/experiments/v6_single_dynamic_low_obstacle.yaml"
+    appearance_args=()
     ;;
   appearance)
+    product_configuration="stable"
     scenario_file="${PROJECT_ROOT}/ros2_ws/src/robot_experiments/config/v6_final_kujiale_appearance.yaml"
+    physical_config_file="${PROJECT_ROOT}/isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen.yaml"
+    appearance_args=(
+      --appearance-config
+      "${PROJECT_ROOT}/isaac_sim/configs/experiments/kujiale_appearance_profiles.yaml"
+      --appearance-profile baseline
+    )
     ;;
 esac
 nav2_config_file="${PROJECT_ROOT}/ros2_ws/src/robot_navigation/config/nav2_v6_low_obstacle_isolation.yaml"
@@ -86,7 +99,7 @@ reject_isaac_condition_override() {
       --environment-root|--environment-root=*|\
       --spawn-poses-file|--spawn-poses-file=*|\
       --spawn-pose|--spawn-pose=*)
-        die "V6 condition fixes Isaac scene/obstacle/appearance identity; rejected override: ${argument}"
+        die "V6 condition (${product_configuration}) fixes Isaac scene/obstacle/appearance identity; rejected override: ${argument}"
         ;;
     esac
   done
@@ -98,7 +111,7 @@ reject_runner_condition_override() {
     case "${argument}" in
       scenario_file:=*|spawn_poses_file:=*|nav2_profile:=*|nav2_config_file:=*|\
       dynamic_case_id:=*|dynamic_variant_id:=*|dynamic_seed:=*|robot_config_file:=*)
-        die "V6 condition fixes runner scenario/spawn/Nav2 identity; rejected override: ${argument}"
+        die "V6 condition (${product_configuration}) fixes runner scenario/spawn/Nav2 identity; rejected override: ${argument}"
         ;;
     esac
   done
@@ -197,26 +210,17 @@ run_ros_profile() {
 case "${profile}" in
   isaac)
     # Reuse the Phase-B mixed Compute-Odom + AMCL launcher, then explicitly
-    # enable the selected physical condition.  Both physical YAMLs are
-    # default-off; --dynamic-obstacles is the explicit activation switch.
+    # enable one of two product configurations.  Static and appearance share
+    # the stable physical configuration; appearance only adds its visual
+    # profile.  Dynamic owns the moving 0.40 m actor configuration.  Both
+    # physical YAMLs are default-off, so --dynamic-obstacles remains the
+    # explicit activation switch.
     reject_isaac_condition_override "$@"
-    dynamic_obstacle_config="${PROJECT_ROOT}/isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen.yaml"
-    condition_args=(--appearance-profile baseline)
-    if [[ "${condition}" == "dynamic" ]]; then
-      dynamic_obstacle_config="${PROJECT_ROOT}/isaac_sim/configs/experiments/v6_single_dynamic_low_obstacle.yaml"
-      condition_args=()
-    elif [[ "${condition}" == "appearance" ]]; then
-      condition_args=(
-        --appearance-config
-        "${PROJECT_ROOT}/isaac_sim/configs/experiments/kujiale_appearance_profiles.yaml"
-        --appearance-profile baseline
-      )
-    fi
     exec "${SCRIPT_DIR}/run_v6_r5_phase_b_kujiale.sh" isaac \
       --dynamic-obstacle-config \
-      "${dynamic_obstacle_config}" \
+      "${physical_config_file}" \
       --dynamic-obstacles \
-      "${condition_args[@]}" \
+      "${appearance_args[@]}" \
       "$@"
     ;;
   ros)

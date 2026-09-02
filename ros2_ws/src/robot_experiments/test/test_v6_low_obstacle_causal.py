@@ -3198,11 +3198,11 @@ wait "$!"
         arm, "--domain", "150", "--run-dir", str(run_dir),
         "--socket", str(socket_path),
         "--module2-asset-root", str(module2_asset_root),
+        "--condition", condition,
     ]
     if scene == "rivermark":
         command.extend([
             "--scene", scene,
-            "--condition", condition,
             "--route-prior-catalog-root", str(route_prior_catalog),
         ])
     if localization_supervisor_mode is not None:
@@ -3271,7 +3271,8 @@ def test_phase_f_stack_explicitly_disables_route_prior_for_module2_arms(
     fake = _start_fake_phase_f_stack(tmp_path, arm=arm)
     try:
         assert fake.module3_argv.read_text(encoding="utf-8").splitlines() == [
-            "ros", arm, "route_prior_enabled:=false"
+            "--condition", "static", "ros", arm,
+            "route_prior_enabled:=false",
         ]
         module2 = fake.module2_argv.read_text(encoding="utf-8").splitlines()
         assert module2[module2.index("--shadow-config") + 1] == (
@@ -3281,6 +3282,18 @@ def test_phase_f_stack_explicitly_disables_route_prior_for_module2_arms(
         bridge = fake.bridge_argv.read_text(encoding="utf-8").splitlines()
         asset_arg = f"module2_asset_root:={tmp_path / 'module2-assets'}"
         assert bridge.count(asset_arg) == 1
+    finally:
+        _stop_fake_phase_f_stack(fake)
+
+
+@pytest.mark.parametrize("condition", ("static", "dynamic", "appearance"))
+def test_phase_f_stack_forwards_kujiale_condition_to_module3(tmp_path, condition):
+    fake = _start_fake_phase_f_stack(tmp_path, condition=condition)
+    try:
+        assert fake.module3_argv.read_text(encoding="utf-8").splitlines() == [
+            "--condition", condition, "ros", "M3",
+            "route_prior_enabled:=false",
+        ]
     finally:
         _stop_fake_phase_f_stack(fake)
 
@@ -3368,6 +3381,11 @@ def test_final_route_prior_pilot_dry_run_defaults_off(tmp_path):
     assert "--candidate-manifest" not in result.stdout
     assert "module2_response_timeout_s" not in result.stdout
     assert "goal_prior_retry_window_s" not in result.stdout
+    module3 = next(
+        line for line in result.stdout.splitlines()
+        if line.startswith("module3:")
+    )
+    assert "--condition static ros M3" in module3
 
 
 @pytest.mark.parametrize("condition", ("static", "dynamic", "appearance"))
@@ -3493,6 +3511,8 @@ def test_final_route_prior_pilot_forwards_gvg_prior_to_m3_and_bridge(tmp_path):
     )
     try:
         assert fake.module3_argv.read_text(encoding="utf-8").splitlines() == [
+            "--condition",
+            "static",
             "ros",
             "M3",
             "route_prior_enabled:=true",
@@ -3620,6 +3640,8 @@ def test_phase_f_stack_localization_extension_forwards_exact_onebox_m3_argv(
     )
     try:
         assert fake.module3_argv.read_text(encoding="utf-8").splitlines() == [
+            "--condition",
+            "static",
             "ros",
             "M3",
             "route_prior_enabled:=false",
@@ -4055,8 +4077,9 @@ def test_exact_stack_adapter_maps_profiles_and_keeps_phase_f_isolation():
     assert 'export BIO_NAV_MODULE2_V310_ROOT="${module2_root}"' in stack
     assert "canonical_constraints_file" in stack
     assert stack.index('require_file "${canonical_constraints_file}"') < stack.index(
-        'module3_entry=("${script_dir}/run_v6_kujiale_low_obstacles.sh"'
+        "module3_entry=("
     )
+    assert '--condition "${condition}" ros "${arm}"' in stack
     assert 'setsid --wait -- "${module3_entry[@]}"' in stack
     assert (
         "/home/lyb/Workspace/Bio_Nav/worktrees/"
@@ -4208,7 +4231,7 @@ def test_v6_low_obstacle_default_condition_is_explicit_static(tmp_path):
         ("appearance", "v6_final_kujiale_appearance.yaml"),
     ],
 )
-def test_v6_runner_condition_selects_scenario_and_fixed_nav2_config(
+def test_v6_runner_condition_selects_product_scenario_and_shared_nav2_config(
     tmp_path, condition, scenario_name
 ):
     project, _constraints, result = _run_low_obstacle_wrapper(

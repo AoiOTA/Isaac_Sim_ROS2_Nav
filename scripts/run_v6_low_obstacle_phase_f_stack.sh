@@ -512,8 +512,9 @@ if [[ "${dry_run}" == true ]]; then
     printf 'module3: %q ros %q' \
       "${script_dir}/run_v6_rivermark.sh" "${condition}"
   else
-    printf 'module3: %q ros %q route_prior_enabled:=%s' \
-      "${script_dir}/run_v6_kujiale_low_obstacles.sh" "${arm}" "${route_prior_enabled}"
+    printf 'module3: %q --condition %q ros %q route_prior_enabled:=%s' \
+      "${script_dir}/run_v6_kujiale_low_obstacles.sh" "${condition}" \
+      "${arm}" "${route_prior_enabled}"
   fi
   if [[ "${scene}" == "kujiale" && "${route_prior_enabled}" == true ]]; then
     printf ' route_prior_snapshot_path:=%q' "${route_prior_snapshot}"
@@ -779,7 +780,10 @@ if [[ -n "${localization_supervisor_mode}" ]]; then
   )
 fi
 
-module3_entry=("${script_dir}/run_v6_kujiale_low_obstacles.sh" ros "${arm}")
+module3_entry=(
+  "${script_dir}/run_v6_kujiale_low_obstacles.sh"
+  --condition "${condition}" ros "${arm}"
+)
 if [[ "${scene}" == "rivermark" ]]; then
   module3_entry=("${script_dir}/run_v6_rivermark.sh" ros "${condition}")
 fi
