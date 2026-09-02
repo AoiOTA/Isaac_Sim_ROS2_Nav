@@ -233,7 +233,7 @@ def _completion_runner(future):
     return runner
 
 
-def test_completion_shares_two_second_budget_between_clear_and_receipt_wait(
+def test_completion_accepts_fresh_clearance_evidence_within_five_second_budget(
     monkeypatch,
 ):
     response = SimpleNamespace(
@@ -249,12 +249,13 @@ def test_completion_shares_two_second_budget_between_clear_and_receipt_wait(
 
     def clear_costmaps(*, deadline_monotonic):
         calls.append(("clear", deadline_monotonic))
-        clock.now += 1.25
+        clock.now += 1.0
 
     runner._clear_navigation_costmaps = clear_costmaps
 
     def wait_until(predicate, timeout):
         calls.append(("wait", timeout))
+        clock.now += 3.0
         runner._obstacle_state_stamp_s = 11.0
         runner._latest_cognitive_obstacles = _retirement_source()
         runner._latest_cognitive_layer_statuses = {
@@ -274,7 +275,8 @@ def test_completion_shares_two_second_budget_between_clear_and_receipt_wait(
 
     assert runner._complete_obstacle_group("G2") == ("dynamic_box",)
     assert runner._scenario.map_version != COGNITIVE_CONTENT_MAP_ID
-    assert calls == [("clear", 102.0), ("wait", 0.75)]
+    assert calls == [("clear", 105.0), ("wait", 4.0)]
+    assert clock.now == 104.0
 
 
 @pytest.mark.parametrize(
@@ -348,6 +350,39 @@ def test_completion_receipt_budget_raises_specific_product_timeout():
         runner._complete_obstacle_group("G2")
 
     assert raised.value.reason == "dynamic_retirement_clearance_timeout"
+
+
+def test_completion_times_out_after_five_seconds_when_one_receipt_is_missing(
+    monkeypatch,
+):
+    response = SimpleNamespace(
+        success=True,
+        message=json.dumps({"group": "G2", "retired": ["dynamic_box"]}),
+    )
+    runner = _completion_runner(_CompletionFuture(response))
+    runner._latest_cognitive_layer_statuses = {
+        "global": _retirement_status("global", sequence=8),
+    }
+    clock = SimpleNamespace(now=200.0)
+    monkeypatch.setattr(
+        experiment_runner_module.time, "monotonic", lambda: clock.now
+    )
+    waits = []
+
+    def wait_until(predicate, timeout):
+        waits.append(timeout)
+        assert not predicate()
+        clock.now += timeout
+        return False
+
+    runner._wait_until = wait_until
+
+    with pytest.raises(_DynamicRetirementClearanceTimeout) as raised:
+        runner._complete_obstacle_group("G2")
+
+    assert raised.value.reason == "dynamic_retirement_clearance_timeout"
+    assert waits == [5.0]
+    assert clock.now == 205.0
 
 
 def test_completion_service_exception_preserves_original_cause():
