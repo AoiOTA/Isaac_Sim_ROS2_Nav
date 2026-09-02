@@ -43,9 +43,11 @@ _TELEOP_SPEED_ARGUMENTS = (
 )
 
 
-def _write_cognitive_nav2_overlay(profile):
+def _write_cognitive_nav2_overlay(
+        profile, static_track_coalescing_enabled):
     """Write the exact-node overlay that must follow the A21 overlay."""
-    document = cognitive_nav2_parameters(profile)
+    document = cognitive_nav2_parameters(
+        profile, static_track_coalescing_enabled)
     with tempfile.NamedTemporaryFile(
             mode='w', prefix=f'v6_cognitive_{profile.name.lower()}_',
             suffix='.yaml', delete=False, encoding='utf-8') as stream:
@@ -251,10 +253,17 @@ def _launch_setup(context):
             LaunchConfiguration('cognitive_graph_mode').perform(context))
     except ValueError as exc:
         raise RuntimeError(f'invalid cognitive_graph_mode: {exc}') from exc
+    static_track_coalescing_value = LaunchConfiguration(
+        'static_track_coalescing_enabled').perform(context).strip().lower()
+    if static_track_coalescing_value not in {'true', 'false'}:
+        raise RuntimeError(
+            'static_track_coalescing_enabled must be true or false')
+    static_track_coalescing_enabled = (
+        static_track_coalescing_value == 'true')
     cognitive_overlay_file = None
     if nav2_profile == 'v6_low_obstacle_isolation':
         cognitive_overlay_file = _write_cognitive_nav2_overlay(
-            cognitive_profile)
+            cognitive_profile, static_track_coalescing_enabled)
     module2_enabled = (
         'true' if cognitive_profile.module2_enabled else 'false'
     ) if nav2_profile == 'v6_low_obstacle_isolation' else (
@@ -713,6 +722,8 @@ def generate_launch_description():
             description=(
                 'M0, M1, M2, or M3 Module2 local-planning contract; '
                 'independent from cognitive_graph_mode')),
+        DeclareLaunchArgument(
+            'static_track_coalescing_enabled', default_value='false'),
         DeclareLaunchArgument('module2_enabled', default_value='true'),
         DeclareLaunchArgument('route_graph_file', default_value=''),
         DeclareLaunchArgument('region_config_file', default_value=''),

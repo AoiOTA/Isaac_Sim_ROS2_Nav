@@ -4281,6 +4281,8 @@ def test_v6_runner_condition_selects_product_scenario_and_shared_nav2_config(
         ("dynamic", "spawn_poses_file:=/tmp/not-kujiale.yaml"),
         ("appearance", "nav2_profile:=caller-profile"),
         ("static", "nav2_config_file:=/tmp/not-isolation.yaml"),
+        ("dynamic", "nav2_profile_params_file:=/tmp/not-shared.yaml"),
+        ("appearance", "nav2_params_file:=/tmp/not-shared-base.yaml"),
         ("appearance", "dynamic_case_id:=other"),
         ("static", "dynamic_variant_id:=v5"),
         ("dynamic", "dynamic_seed:=9001"),
@@ -4407,24 +4409,22 @@ def test_v6_physical_configs_stay_default_off_and_wrapper_activates_them():
 
 
 @pytest.mark.parametrize(
-    ("profile_arguments", "condition"),
+    ("profile_arguments", "condition", "enabled"),
     [
-        (("ros", "M2"), "dynamic"),
-        (("shadow",), "appearance"),
-        (("ros-d", "hybrid"), "dynamic"),
+        (("ros", "M2"), "static", "true"),
+        (("shadow",), "appearance", "true"),
+        (("ros-d", "hybrid"), "dynamic", "false"),
     ],
 )
-def test_v6_ros_profiles_do_not_fork_by_condition(
-    tmp_path, profile_arguments, condition
+def test_v6_ros_profiles_derive_only_static_coalescing_from_condition(
+    tmp_path, profile_arguments, condition, enabled
 ):
-    _project, _constraints, baseline = _run_low_obstacle_wrapper(
-        tmp_path, *profile_arguments
-    )
-    _project, _constraints, selected = _run_low_obstacle_wrapper(
+    _project, _constraints, result = _run_low_obstacle_wrapper(
         tmp_path, "--condition", condition, *profile_arguments
     )
-
-    assert selected.stdout == baseline.stdout
+    argv = result.stdout.splitlines()
+    assert f"static_track_coalescing_enabled:={enabled}" in argv
+    assert "nav2_profile:=v6_low_obstacle_isolation" in argv
 
 
 @pytest.mark.parametrize(
@@ -4441,6 +4441,33 @@ def test_v6_wrapper_rejects_invalid_condition(tmp_path, arguments):
 
     assert result.returncode == 1
     assert result.stdout == ""
+
+
+@pytest.mark.parametrize(
+    ("profile", "override"),
+    [
+        ("ros", "static_track_coalescing_enabled:=true"),
+        ("runner", "static_track_coalescing_enabled:=true"),
+        ("ros", "nav2_profile:=dynamic_avoidance"),
+        ("ros", "nav2_profile_params_file:=/tmp/bypass.yaml"),
+        ("ros", "nav2_params_file:=/tmp/bypass-base.yaml"),
+        ("runner", "nav2_profile_params_file:=/tmp/bypass.yaml"),
+        ("runner", "nav2_params_file:=/tmp/bypass-base.yaml"),
+    ],
+)
+def test_v6_wrapper_rejects_condition_derived_nav2_overrides(
+    tmp_path, profile, override
+):
+    arguments = [
+        "--condition", "dynamic", profile, override,
+    ]
+    if profile == "runner":
+        arguments.insert(3, str(tmp_path / "runs"))
+    _project, _constraints, result = _run_low_obstacle_wrapper(
+        tmp_path, *arguments, check=False
+    )
+    assert result.returncode == 1
+    assert "rejected override" in result.stderr
 
 
 def test_v6_low_obstacle_profile_is_registered_as_appearance_safe():

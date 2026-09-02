@@ -113,6 +113,7 @@ private:
     std::string track_id;
 
     bool operator<(const StaticTrackKey & other) const;
+    bool operator==(const StaticTrackKey & other) const;
   };
 
   struct StaticTrackState
@@ -136,6 +137,14 @@ private:
     uint64_t effective_count{0};
   };
 
+  struct StaticObservation
+  {
+    StaticTrackKey key;
+    bio_nav_interfaces::msg::CognitiveObstacle obstacle;
+    double map_x{0.0};
+    double map_y{0.0};
+  };
+
   void synchronizeCostmapGeometry(
     const nav2_costmap_2d::Costmap2D & master_grid);
   static StaticTrackKey staticTrackKey(
@@ -145,6 +154,15 @@ private:
     const bio_nav_interfaces::msg::CognitiveObstacleArray & message,
     const bio_nav_interfaces::msg::CognitiveObstacle & obstacle,
     double map_x, double map_y);
+  std::vector<AppliedObstacle> observeStaticBatch(
+    const bio_nav_interfaces::msg::CognitiveObstacleArray & message,
+    const std::vector<StaticObservation> & observations);
+  static bool sameStaticIdentity(
+    const StaticTrackKey & lhs, const StaticTrackKey & rhs);
+  static bool coalescingMatch(
+    const StaticTrackState & canonical,
+    const StaticObservation & incoming,
+    int64_t incoming_validation_ns, int64_t validation_ttl_ns);
   std::vector<AppliedObstacle> promotedStaticObstacles();
   bool hasPromotedStaticObstacle();
   void clearStaticTracks();
@@ -165,8 +183,10 @@ private:
   Identity expected_;
   AcceptanceCursor accepted_;
   std::map<StaticTrackKey, StaticTrackState> static_tracks_;
+  std::map<StaticTrackKey, StaticTrackKey> static_track_aliases_;
   bool identity_bound_{false};
   bool identity_parameters_configured_{false};
+  bool static_track_coalescing_enabled_{false};
   std::string mode_{"off"};
   std::string consumer_id_;
   std::string obstacle_topic_{"/bio_nav/module2/cognitive_obstacles"};

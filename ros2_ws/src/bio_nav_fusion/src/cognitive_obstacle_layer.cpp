@@ -105,6 +105,7 @@ void CognitiveObstacleLayer::onInitialize()
   declare("maximum_soft_cost", maximum_soft_cost_);
   declare("collision_min_height_m", collision_min_height_m_);
   declare("collision_max_height_m", collision_max_height_m_);
+  declare("static_track_coalescing_enabled", false);
   declare("expected_reset_epoch", 0);
   declare("expected_recurrent_session_id", std::string(""));
   declare("expected_map_version", std::string(""));
@@ -125,6 +126,9 @@ void CognitiveObstacleLayer::onInitialize()
   node->get_parameter(name_ + ".maximum_soft_cost", maximum_soft_cost_);
   node->get_parameter(name_ + ".collision_min_height_m", collision_min_height_m_);
   node->get_parameter(name_ + ".collision_max_height_m", collision_max_height_m_);
+  node->get_parameter(
+    name_ + ".static_track_coalescing_enabled",
+    static_track_coalescing_enabled_);
   int reset_epoch = 0;
   int tile_revision = 0;
   int graph_revision = 0;
@@ -433,6 +437,12 @@ bool CognitiveObstacleLayer::StaticTrackKey::operator<(
     other.model_id, other.track_id);
 }
 
+bool CognitiveObstacleLayer::StaticTrackKey::operator==(
+  const StaticTrackKey & other) const
+{
+  return !(*this < other) && !(other < *this);
+}
+
 CognitiveObstacleLayer::StaticTrackKey CognitiveObstacleLayer::staticTrackKey(
   const bio_nav_interfaces::msg::CognitiveObstacleArray & message,
   const std::string & track_id)
@@ -474,6 +484,183 @@ uint64_t CognitiveObstacleLayer::observeStaticTrack(
   return std::max(obstacle.count, state.rehit_count);
 }
 
+bool CognitiveObstacleLayer::sameStaticIdentity(
+  const StaticTrackKey & lhs, const StaticTrackKey & rhs)
+{
+  return lhs.reset_epoch == rhs.reset_epoch &&
+         lhs.recurrent_session_id == rhs.recurrent_session_id &&
+         lhs.map_version == rhs.map_version &&
+         lhs.cognitive_tile_id == rhs.cognitive_tile_id &&
+         lhs.tile_revision == rhs.tile_revision &&
+         lhs.graph_revision == rhs.graph_revision &&
+         lhs.model_id == rhs.model_id;
+}
+
+bool CognitiveObstacleLayer::coalescingMatch(
+  const StaticTrackState & canonical,
+  const StaticObservation & incoming,
+  int64_t incoming_validation_ns, int64_t validation_ttl_ns)
+{
+  const int64_t delta_ns =
+    incoming_validation_ns - canonical.last_validation_stamp_ns;
+  if (delta_ns <= 0 || delta_ns > validation_ttl_ns) {
+    return false;
+  }
+  const double dx = std::abs(incoming.map_x - canonical.map_x);
+  const double dy = std::abs(incoming.map_y - canonical.map_y);
+  const double maximum_dx =
+    canonical.obstacle.position_stddev_m[0] +
+    incoming.obstacle.position_stddev_m[0];
+  const double maximum_dy =
+    canonical.obstacle.position_stddev_m[1] +
+    incoming.obstacle.position_stddev_m[1];
+  return dx <= maximum_dx && dy <= maximum_dy &&
+         std::hypot(dx, dy) <=
+         std::min(canonical.radius_m, incoming.obstacle.radius_m);
+}
+
+std::vector<CognitiveObstacleLayer::AppliedObstacle>
+CognitiveObstacleLayer::observeStaticBatch(
+  const bio_nav_interfaces::msg::CognitiveObstacleArray & message,
+  const std::vector<StaticObservation> & observations)
+{
+  if (!static_track_coalescing_enabled_) {
+    std::vector<AppliedObstacle> applied;
+    for (const auto & observation : observations) {
+      const uint64_t effective_count = observeStaticTrack(
+        message, observation.obstacle,
+        observation.map_x, observation.map_y);
+      const auto & state = static_tracks_.at(observation.key);
+      applied.push_back(AppliedObstacle{
+          state.obstacle, state.map_x, state.map_y, effective_count});
+    }
+    return applied;
+  }
+  const int64_t validation_ns = stampNs(message.validation_stamp);
+  const int64_t validation_ttl_ns = durationNs(message.validation_ttl);
+  std::set<StaticTrackKey> batch_keys;
+  for (const auto & observation : observations) {
+    batch_keys.insert(observation.key);
+  }
+
+  std::map<StaticTrackKey, StaticTrackKey> resolved;
+  std::set<StaticTrackKey> occupied_canonical_keys;
+  std::vector<const StaticObservation *> pending;
+  for (const auto & observation : observations) {
+    const auto alias = static_track_aliases_.find(observation.key);
+    if (alias == static_track_aliases_.end()) {
+      pending.push_back(&observation);
+      continue;
+    }
+    auto canonical = static_tracks_.find(alias->second);
+    if (canonical == static_tracks_.end()) {
+      static_track_aliases_.erase(alias);
+      pending.push_back(&observation);
+      continue;
+    }
+    auto & state = canonical->second;
+    const bool repeated =
+      state.last_source_sequence == message.sequence &&
+      state.last_validation_stamp_ns == validation_ns;
+    if (!repeated && !coalescingMatch(
+        state, observation, validation_ns, validation_ttl_ns))
+    {
+      static_track_aliases_.erase(alias);
+      pending.push_back(&observation);
+      continue;
+    }
+    if (!repeated) {
+      state.last_source_sequence = message.sequence;
+      state.last_validation_stamp_ns = validation_ns;
+      state.obstacle.last_seen = observation.obstacle.last_seen;
+    }
+    resolved.emplace(observation.key, canonical->first);
+    occupied_canonical_keys.insert(canonical->first);
+  }
+
+  std::set<StaticTrackKey> candidate_new_keys;
+  std::map<StaticTrackKey, const StaticObservation *> pending_by_key;
+  for (const auto * observation : pending) {
+    observeStaticTrack(
+      message, observation->obstacle,
+      observation->map_x, observation->map_y);
+    const auto & state = static_tracks_.at(observation->key);
+    if (state.promoted) {
+      candidate_new_keys.insert(observation->key);
+      pending_by_key.emplace(observation->key, observation);
+    }
+  }
+
+  using Edge = std::pair<StaticTrackKey, StaticTrackKey>;
+  std::vector<Edge> edges;
+  std::map<StaticTrackKey, size_t> old_degree;
+  std::map<StaticTrackKey, size_t> new_degree;
+  for (const auto & new_key : candidate_new_keys) {
+    const auto * incoming = pending_by_key.at(new_key);
+    for (const auto & [old_key, old_state] : static_tracks_) {
+      if (batch_keys.count(old_key) != 0U ||
+        occupied_canonical_keys.count(old_key) != 0U ||
+        !old_state.promoted || !sameStaticIdentity(old_key, new_key) ||
+        !coalescingMatch(
+          old_state, *incoming, validation_ns, validation_ttl_ns))
+      {
+        continue;
+      }
+      edges.emplace_back(old_key, new_key);
+      ++old_degree[old_key];
+      ++new_degree[new_key];
+    }
+  }
+
+  for (const auto & [old_key, new_key] : edges) {
+    if (old_degree[old_key] != 1U || new_degree[new_key] != 1U) {
+      continue;
+    }
+    auto canonical = static_tracks_.find(old_key);
+    const auto incoming = pending_by_key.find(new_key);
+    if (canonical == static_tracks_.end() || incoming == pending_by_key.end()) {
+      continue;
+    }
+    canonical->second.last_source_sequence = message.sequence;
+    canonical->second.last_validation_stamp_ns = validation_ns;
+    canonical->second.obstacle.last_seen = incoming->second->obstacle.last_seen;
+    static_tracks_.erase(new_key);
+    for (auto alias = static_track_aliases_.begin();
+      alias != static_track_aliases_.end(); )
+    {
+      if (alias->second == old_key) {
+        alias = static_track_aliases_.erase(alias);
+      } else {
+        ++alias;
+      }
+    }
+    static_track_aliases_[new_key] = old_key;
+    resolved[new_key] = old_key;
+  }
+
+  std::vector<AppliedObstacle> applied;
+  std::set<StaticTrackKey> applied_keys;
+  for (const auto & observation : observations) {
+    auto key = observation.key;
+    const auto resolved_key = resolved.find(key);
+    if (resolved_key != resolved.end()) {
+      key = resolved_key->second;
+    }
+    const auto alias = static_track_aliases_.find(key);
+    if (alias != static_track_aliases_.end()) {
+      key = alias->second;
+    }
+    const auto state = static_tracks_.find(key);
+    if (state == static_tracks_.end() || !applied_keys.insert(key).second) {
+      continue;
+    }
+    applied.push_back(AppliedObstacle{
+        state->second.obstacle, state->second.map_x, state->second.map_y,
+        std::max(state->second.obstacle.count, state->second.rehit_count)});
+  }
+  return applied;
+}
+
 std::vector<CognitiveObstacleLayer::AppliedObstacle>
 CognitiveObstacleLayer::promotedStaticObstacles()
 {
@@ -500,6 +687,7 @@ bool CognitiveObstacleLayer::hasPromotedStaticObstacle()
 void CognitiveObstacleLayer::clearStaticTracks()
 {
   static_tracks_.clear();
+  static_track_aliases_.clear();
 }
 
 void CognitiveObstacleLayer::obstacleCallback(
@@ -641,6 +829,7 @@ void CognitiveObstacleLayer::updateCosts(
     }
     if (!tf_failed) {
       std::set<StaticTrackKey> observed_static_tracks;
+      std::vector<StaticObservation> static_observations;
       for (const auto & obstacle : message->obstacles) {
         geometry_msgs::msg::PointStamped source;
         geometry_msgs::msg::PointStamped target;
@@ -659,12 +848,17 @@ void CognitiveObstacleLayer::updateCosts(
           obstacle.static_confirmed;
         if (!static_revalidated) {
           applied_obstacles.push_back(AppliedObstacle{
-            obstacle, target.point.x, target.point.y, obstacle.count});
+              obstacle, target.point.x, target.point.y, obstacle.count});
           continue;
         }
 
         const auto key = staticTrackKey(*message, obstacle.id);
         if (!observed_static_tracks.insert(key).second) {
+          continue;
+        }
+        if (static_track_coalescing_enabled_) {
+          static_observations.push_back(StaticObservation{
+              key, obstacle, target.point.x, target.point.y});
           continue;
         }
         std::lock_guard<std::mutex> lock(mutex_);
@@ -675,7 +869,15 @@ void CognitiveObstacleLayer::updateCosts(
           *message, obstacle, target.point.x, target.point.y);
         const auto & state = static_tracks_.at(key);
         applied_obstacles.push_back(AppliedObstacle{
-          state.obstacle, state.map_x, state.map_y, effective_count});
+            state.obstacle, state.map_x, state.map_y, effective_count});
+      }
+      if (static_track_coalescing_enabled_ && !static_observations.empty()) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (latest_ == message && latest_admission_reason_.empty()) {
+          auto observed = observeStaticBatch(*message, static_observations);
+          applied_obstacles.insert(
+            applied_obstacles.end(), observed.begin(), observed.end());
+        }
       }
     }
   }

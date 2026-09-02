@@ -194,6 +194,18 @@ public:
 class CognitiveObstacleLayerTestPeer
 {
 public:
+  struct StaticTrackSnapshot
+  {
+    std::string track_id;
+    double map_x;
+    double map_y;
+    double radius_m;
+    double height_m;
+    uint64_t rehit_count;
+    int64_t last_validation_stamp_ns;
+    bool promoted;
+  };
+
   static void configureActive(
     CognitiveObstacleLayer & layer,
     const bio_nav_interfaces::msg::CognitiveObstacleArray & message)
@@ -219,6 +231,49 @@ public:
     std::lock_guard<std::mutex> lock(layer.mutex_);
     return layer.observeStaticTrack(
       message, message.obstacles.at(0), map_x, map_y);
+  }
+
+  static void setStaticTrackCoalescing(
+    CognitiveObstacleLayer & layer, bool enabled)
+  {
+    layer.static_track_coalescing_enabled_ = enabled;
+  }
+
+  static void observeStaticBatch(
+    CognitiveObstacleLayer & layer,
+    const bio_nav_interfaces::msg::CognitiveObstacleArray & message,
+    const std::vector<std::array<double, 2>> & map_positions)
+  {
+    ASSERT_EQ(message.obstacles.size(), map_positions.size());
+    std::vector<CognitiveObstacleLayer::StaticObservation> observations;
+    for (size_t index = 0; index < message.obstacles.size(); ++index) {
+      const auto & obstacle = message.obstacles[index];
+      observations.push_back(CognitiveObstacleLayer::StaticObservation{
+          CognitiveObstacleLayer::staticTrackKey(message, obstacle.id),
+          obstacle, map_positions[index][0], map_positions[index][1]});
+    }
+    std::lock_guard<std::mutex> lock(layer.mutex_);
+    layer.observeStaticBatch(message, observations);
+  }
+
+  static std::vector<StaticTrackSnapshot> staticTracks(
+    CognitiveObstacleLayer & layer)
+  {
+    std::lock_guard<std::mutex> lock(layer.mutex_);
+    std::vector<StaticTrackSnapshot> snapshots;
+    for (const auto & [key, state] : layer.static_tracks_) {
+      snapshots.push_back(StaticTrackSnapshot{
+          key.track_id, state.map_x, state.map_y, state.radius_m,
+          state.height_m, state.rehit_count,
+          state.last_validation_stamp_ns, state.promoted});
+    }
+    return snapshots;
+  }
+
+  static size_t staticTrackAliasCount(CognitiveObstacleLayer & layer)
+  {
+    std::lock_guard<std::mutex> lock(layer.mutex_);
+    return layer.static_track_aliases_.size();
   }
 
   static size_t staticTrackCount(CognitiveObstacleLayer & layer)
@@ -1458,6 +1513,286 @@ TEST(CognitiveObstacleLayer, independent_static_rehits_promote_and_persist_until
   ASSERT_TRUE(layer.worldToMap(1.0, 0.0, mx, my));
   EXPECT_EQ(layer.getCost(mx, my), nav2_costmap_2d::FREE_SPACE);
   EXPECT_EQ(Peer::staticTrackCount(layer), 0U);
+}
+
+namespace
+{
+
+bio_nav_interfaces::msg::CognitiveObstacleArray coalescingFixture(
+  const std::string & track_id)
+{
+  auto message = staticRevalidatedObstacleFixture();
+  message.obstacles[0].id = track_id;
+  message.obstacles[0].count = 1U;
+  message.obstacles[0].confidence = 1.0;
+  message.obstacles[0].reliability = 1.0;
+  message.obstacles[0].ood_probability = 0.0;
+  message.obstacles[0].position_stddev_m = {0.05, 0.05};
+  message.obstacles[0].radius_m = 0.20;
+  return message;
+}
+
+void observeCoalescingMessage(
+  bio_nav_fusion::CognitiveObstacleLayer & layer,
+  bio_nav_interfaces::msg::CognitiveObstacleArray message,
+  int64_t validation_ns,
+  const std::vector<std::array<double, 2>> & map_positions)
+{
+  message.validation_stamp = stampFromNs(validation_ns);
+  message.validation_odom_stamp = message.validation_stamp;
+  bio_nav_fusion::CognitiveObstacleLayerTestPeer::observeStaticBatch(
+    layer, message, map_positions);
+}
+
+void independentlyPromote(
+  bio_nav_fusion::CognitiveObstacleLayer & layer,
+  bio_nav_interfaces::msg::CognitiveObstacleArray message,
+  int64_t first_validation_ns, double map_x, double map_y)
+{
+  for (int64_t rehit = 0; rehit < 3; ++rehit) {
+    observeCoalescingMessage(
+      layer, message, first_validation_ns + rehit * 10000000LL,
+      {{map_x, map_y}});
+  }
+}
+
+}  // namespace
+
+TEST(CognitiveObstacleLayer, disabled_static_coalescing_preserves_per_id_latches)
+{
+  using Layer = bio_nav_fusion::CognitiveObstacleLayer;
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  Layer layer;
+  Peer::setStaticTrackCoalescing(layer, false);
+  independentlyPromote(layer, coalescingFixture("track-a"), 10000000000LL, 1.0, 2.0);
+  independentlyPromote(layer, coalescingFixture("track-b"), 10030000000LL, 1.04, 2.0);
+  EXPECT_EQ(Peer::promotedStaticTrackCount(layer), 2U);
+  EXPECT_EQ(Peer::staticTrackAliasCount(layer), 0U);
+}
+
+TEST(CognitiveObstacleLayer, enabled_churn_coalesces_once_without_moving_anchor)
+{
+  using Layer = bio_nav_fusion::CognitiveObstacleLayer;
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  Layer layer;
+  Peer::setStaticTrackCoalescing(layer, true);
+  auto original = coalescingFixture("track-a");
+  original.obstacles[0].radius_m = 0.18;
+  original.obstacles[0].height_m = 0.16;
+  independentlyPromote(layer, original, 10000000000LL, 1.0, 2.0);
+  auto churn = coalescingFixture("track-b");
+  churn.obstacles[0].radius_m = 0.20;
+  churn.obstacles[0].height_m = 0.30;
+  independentlyPromote(layer, churn, 10030000000LL, 1.04, 2.01);
+
+  ASSERT_EQ(Peer::promotedStaticTrackCount(layer), 1U);
+  ASSERT_EQ(Peer::staticTrackAliasCount(layer), 1U);
+  auto tracks = Peer::staticTracks(layer);
+  ASSERT_EQ(tracks.size(), 1U);
+  EXPECT_EQ(tracks[0].track_id, "track-a");
+  EXPECT_DOUBLE_EQ(tracks[0].map_x, 1.0);
+  EXPECT_DOUBLE_EQ(tracks[0].map_y, 2.0);
+  EXPECT_DOUBLE_EQ(tracks[0].radius_m, 0.18);
+  EXPECT_DOUBLE_EQ(tracks[0].height_m, 0.16);
+  EXPECT_EQ(tracks[0].rehit_count, 3U);
+  const auto refreshed_validation_ns = tracks[0].last_validation_stamp_ns;
+
+  observeCoalescingMessage(layer, churn, 10060000000LL, {{1.04, 2.01}});
+  observeCoalescingMessage(layer, churn, 10060000000LL, {{1.04, 2.01}});
+  tracks = Peer::staticTracks(layer);
+  ASSERT_EQ(tracks.size(), 1U);
+  EXPECT_EQ(tracks[0].rehit_count, 3U);
+  EXPECT_GT(tracks[0].last_validation_stamp_ns, refreshed_validation_ns);
+  EXPECT_DOUBLE_EQ(tracks[0].map_x, 1.0);
+  EXPECT_DOUBLE_EQ(tracks[0].map_y, 2.0);
+
+  layer.reset();
+  EXPECT_EQ(Peer::staticTrackCount(layer), 0U);
+  EXPECT_EQ(Peer::staticTrackAliasCount(layer), 0U);
+}
+
+TEST(CognitiveObstacleLayer, coalescing_rejects_time_geometry_and_identity_mismatch)
+{
+  using Layer = bio_nav_fusion::CognitiveObstacleLayer;
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  struct Counterfactual
+  {
+    const char * name;
+    double x;
+    double y;
+    double old_radius;
+    double new_radius;
+    std::array<double, 2> old_stddev;
+    std::array<double, 2> new_stddev;
+    int64_t new_start_ns;
+  };
+  const std::vector<Counterfactual> cases{
+    {"adjacent", 1.30, 2.0, 0.20, 0.20, {0.05, 0.05}, {0.05, 0.05}, 10030000000LL},
+    {"ttl", 1.01, 2.0, 0.20, 0.20, {0.05, 0.05}, {0.05, 0.05}, 10600000000LL},
+    {"axis", 1.11, 2.0, 0.20, 0.20, {0.05, 0.05}, {0.05, 0.05}, 10030000000LL},
+    {"radius", 1.15, 2.0, 0.10, 0.20, {0.10, 0.10}, {0.10, 0.10}, 10030000000LL},
+  };
+  for (const auto & candidate : cases) {
+    Layer layer;
+    Peer::setStaticTrackCoalescing(layer, true);
+    auto old = coalescingFixture("old");
+    old.obstacles[0].radius_m = candidate.old_radius;
+    old.obstacles[0].position_stddev_m = candidate.old_stddev;
+    independentlyPromote(layer, old, 10000000000LL, 1.0, 2.0);
+    auto incoming = coalescingFixture("new");
+    incoming.obstacles[0].radius_m = candidate.new_radius;
+    incoming.obstacles[0].position_stddev_m = candidate.new_stddev;
+    independentlyPromote(
+      layer, incoming, candidate.new_start_ns, candidate.x, candidate.y);
+    EXPECT_EQ(Peer::promotedStaticTrackCount(layer), 2U) << candidate.name;
+    EXPECT_EQ(Peer::staticTrackAliasCount(layer), 0U) << candidate.name;
+  }
+
+  for (size_t field = 0; field < 7U; ++field) {
+    Layer layer;
+    Peer::setStaticTrackCoalescing(layer, true);
+    independentlyPromote(layer, coalescingFixture("old"), 10000000000LL, 1.0, 2.0);
+    auto incoming = coalescingFixture("new");
+    switch (field) {
+      case 0: ++incoming.reset_epoch; break;
+      case 1: incoming.recurrent_session_id = "other-session"; break;
+      case 2: incoming.map_version = "other-map"; break;
+      case 3: incoming.cognitive_tile_id = "other-tile"; break;
+      case 4: ++incoming.tile_revision; break;
+      case 5: ++incoming.graph_revision; break;
+      case 6: incoming.model_id = "other-model"; break;
+    }
+    independentlyPromote(layer, incoming, 10030000000LL, 1.01, 2.0);
+    EXPECT_EQ(Peer::promotedStaticTrackCount(layer), 2U) << field;
+    EXPECT_EQ(Peer::staticTrackAliasCount(layer), 0U) << field;
+  }
+}
+
+TEST(CognitiveObstacleLayer, soft_new_track_never_coalesces_into_lethal_canonical)
+{
+  using Layer = bio_nav_fusion::CognitiveObstacleLayer;
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  Layer layer;
+  Peer::setStaticTrackCoalescing(layer, true);
+  independentlyPromote(layer, coalescingFixture("old"), 10000000000LL, 1.0, 2.0);
+  auto soft = coalescingFixture("soft-new");
+  soft.obstacles[0].confidence = 0.5;
+  independentlyPromote(layer, soft, 10030000000LL, 1.01, 2.0);
+  EXPECT_EQ(Peer::promotedStaticTrackCount(layer), 1U);
+  EXPECT_EQ(Peer::staticTrackCount(layer), 2U);
+  EXPECT_EQ(Peer::staticTrackAliasCount(layer), 0U);
+}
+
+TEST(CognitiveObstacleLayer, coalescing_rejects_ambiguous_bipartite_matches)
+{
+  using Layer = bio_nav_fusion::CognitiveObstacleLayer;
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+
+  Layer one_to_many;
+  Peer::setStaticTrackCoalescing(one_to_many, true);
+  independentlyPromote(
+    one_to_many, coalescingFixture("old"), 10000000000LL, 1.0, 2.0);
+  auto first = coalescingFixture("new-a");
+  auto second = coalescingFixture("new-b");
+  for (int rehit = 0; rehit < 2; ++rehit) {
+    observeCoalescingMessage(
+      one_to_many, first, 10030000000LL + rehit * 10000000LL,
+      {{1.01, 2.0}});
+    observeCoalescingMessage(
+      one_to_many, second, 10030000000LL + rehit * 10000000LL,
+      {{0.99, 2.0}});
+  }
+  auto both_new = first;
+  both_new.obstacles.push_back(second.obstacles[0]);
+  observeCoalescingMessage(
+    one_to_many, both_new, 10050000000LL,
+    {{1.01, 2.0}, {0.99, 2.0}});
+  EXPECT_EQ(Peer::promotedStaticTrackCount(one_to_many), 3U);
+  EXPECT_EQ(Peer::staticTrackAliasCount(one_to_many), 0U);
+  observeCoalescingMessage(
+    one_to_many, both_new, 10060000000LL,
+    {{1.01, 2.0}, {0.99, 2.0}});
+  EXPECT_EQ(Peer::promotedStaticTrackCount(one_to_many), 3U);
+  EXPECT_EQ(Peer::staticTrackAliasCount(one_to_many), 0U);
+
+  Layer many_to_one;
+  Peer::setStaticTrackCoalescing(many_to_one, false);
+  independentlyPromote(
+    many_to_one, coalescingFixture("old-a"), 10000000000LL, 0.99, 2.0);
+  independentlyPromote(
+    many_to_one, coalescingFixture("old-b"), 10000000000LL, 1.01, 2.0);
+  Peer::setStaticTrackCoalescing(many_to_one, true);
+  independentlyPromote(
+    many_to_one, coalescingFixture("new"), 10030000000LL, 1.0, 2.0);
+  EXPECT_EQ(Peer::promotedStaticTrackCount(many_to_one), 3U);
+  EXPECT_EQ(Peer::staticTrackAliasCount(many_to_one), 0U);
+}
+
+TEST(CognitiveObstacleLayer, index16_geometry_still_requires_old_id_absent_from_batch)
+{
+  using Layer = bio_nav_fusion::CognitiveObstacleLayer;
+  using Peer = bio_nav_fusion::CognitiveObstacleLayerTestPeer;
+  // Minimal map-frame geometry from static index 16 at validation 2633.6 s:
+  // the two IDs overlap both uncertainty and radius gates.
+  constexpr std::array<double, 2> old_xy{-0.8246075368518806, -0.5880398005601826};
+  constexpr std::array<double, 2> new_xy{-0.8422531739006363, -0.5704852497463679};
+  auto old = coalescingFixture("unknown-low-282");
+  old.obstacles[0].radius_m = 0.16074326742718106;
+  old.obstacles[0].position_stddev_m = {
+    0.08534014628082622, 0.06594523991461225};
+  auto incoming = coalescingFixture("unknown-low-299");
+  incoming.obstacles[0].radius_m = 0.1824992053049088;
+  incoming.obstacles[0].position_stddev_m = {
+    0.07447261455933707, 0.0962300321282346};
+
+  const auto run = [&](bool include_old_in_final_batch, bool follow_up) {
+      Layer layer;
+      Peer::setStaticTrackCoalescing(layer, true);
+      independentlyPromote(layer, old, 2633320000000LL, old_xy[0], old_xy[1]);
+      for (int rehit = 0; rehit < 2; ++rehit) {
+        observeCoalescingMessage(
+          layer, incoming, 2633380000000LL + rehit * 10000000LL,
+          {{new_xy[0], new_xy[1]}});
+      }
+      auto final = incoming;
+      std::vector<std::array<double, 2>> positions{{new_xy[0], new_xy[1]}};
+      if (include_old_in_final_batch) {
+        final.obstacles.insert(final.obstacles.begin(), old.obstacles[0]);
+        positions.insert(positions.begin(), old_xy);
+      }
+      observeCoalescingMessage(layer, final, 2633410000000LL, positions);
+      if (follow_up) {
+        EXPECT_EQ(Peer::promotedStaticTrackCount(layer), 2U);
+        EXPECT_EQ(Peer::staticTrackAliasCount(layer), 0U);
+        const auto before_follow_up = Peer::staticTracks(layer);
+        const auto canonical = std::find_if(
+          before_follow_up.begin(), before_follow_up.end(),
+          [](const auto & track) {
+            return track.track_id == "unknown-low-282";
+          });
+        EXPECT_NE(canonical, before_follow_up.end());
+        const uint64_t canonical_rehit =
+          canonical == before_follow_up.end() ? 0U : canonical->rehit_count;
+        observeCoalescingMessage(
+          layer, incoming, 2633430000000LL,
+          {{new_xy[0], new_xy[1]}});
+        const auto tracks = Peer::staticTracks(layer);
+        EXPECT_EQ(tracks.size(), 1U);
+        if (tracks.size() == 1U) {
+          EXPECT_EQ(tracks[0].track_id, "unknown-low-282");
+          EXPECT_DOUBLE_EQ(tracks[0].map_x, old_xy[0]);
+          EXPECT_DOUBLE_EQ(tracks[0].map_y, old_xy[1]);
+          EXPECT_EQ(tracks[0].rehit_count, canonical_rehit);
+        }
+      }
+      return std::pair{
+      Peer::promotedStaticTrackCount(layer),
+      Peer::staticTrackAliasCount(layer)};
+    };
+
+  EXPECT_EQ(run(true, false), (std::pair<size_t, size_t>{2U, 0U}));
+  EXPECT_EQ(run(true, true), (std::pair<size_t, size_t>{1U, 1U}));
+  EXPECT_EQ(run(false, false), (std::pair<size_t, size_t>{1U, 1U}));
 }
 
 TEST(CognitiveObstacleLayer, static_latch_key_clears_for_each_identity_rollover)

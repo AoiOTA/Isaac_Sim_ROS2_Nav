@@ -177,8 +177,12 @@ def resolve_ekf_profile(
     return 'module1_wheel_imu'
 
 
-def cognitive_nav2_parameters(profile):
+def cognitive_nav2_parameters(
+        profile, static_track_coalescing_enabled=False):
     """Return the last-precedence exact-node parameters for M0--M3."""
+    if not isinstance(static_track_coalescing_enabled, bool):
+        raise ValueError(
+            'static_track_coalescing_enabled must be boolean')
     return {
         'controller_server': {
             'ros__parameters': {
@@ -195,6 +199,8 @@ def cognitive_nav2_parameters(profile):
                 'ros__parameters': {
                     'cognitive_obstacle_layer': {
                         'mode': profile.obstacle_layer_mode,
+                        'static_track_coalescing_enabled': (
+                            static_track_coalescing_enabled),
                     },
                 },
             },
@@ -204,6 +210,8 @@ def cognitive_nav2_parameters(profile):
                 'ros__parameters': {
                     'cognitive_obstacle_layer': {
                         'mode': profile.obstacle_layer_mode,
+                        'static_track_coalescing_enabled': (
+                            static_track_coalescing_enabled),
                     },
                 },
             },

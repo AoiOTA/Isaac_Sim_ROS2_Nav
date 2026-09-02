@@ -48,6 +48,10 @@ case "${condition}" in
     )
     ;;
 esac
+static_track_coalescing_enabled="false"
+if [[ "${product_configuration}" == "stable" ]]; then
+  static_track_coalescing_enabled="true"
+fi
 nav2_config_file="${PROJECT_ROOT}/ros2_ws/src/robot_navigation/config/nav2_v6_low_obstacle_isolation.yaml"
 
 reject_graph_override() {
@@ -76,8 +80,12 @@ reject_phase_f_substrate_override() {
     case "${argument}" in
       odometry_mode:=*|structure_tf_source:=*|localization_map_contract:=*|\
       localization_owner:=*|map_file:=*|spawn_poses_file:=*|\
-      route_graph_file:=*|module1_amcl_prior_enabled:=*)
+      route_graph_file:=*|module1_amcl_prior_enabled:=*|nav2_profile:=*|\
+      nav2_profile_params_file:=*|nav2_params_file:=*)
         die "Phase F fixes the Phase-B mixed/AMCL/GVG substrate; rejected override: ${argument}"
+        ;;
+      static_track_coalescing_enabled:=*)
+        die "V6 condition fixes static track coalescing; rejected override: ${argument}"
         ;;
     esac
   done
@@ -110,7 +118,8 @@ reject_runner_condition_override() {
   for argument in "$@"; do
     case "${argument}" in
       scenario_file:=*|spawn_poses_file:=*|nav2_profile:=*|nav2_config_file:=*|\
-      dynamic_case_id:=*|dynamic_variant_id:=*|dynamic_seed:=*|robot_config_file:=*)
+      dynamic_case_id:=*|dynamic_variant_id:=*|dynamic_seed:=*|robot_config_file:=*|\
+      static_track_coalescing_enabled:=*|nav2_profile_params_file:=*|nav2_params_file:=*)
         die "V6 condition (${product_configuration}) fixes runner scenario/spawn/Nav2 identity; rejected override: ${argument}"
         ;;
     esac
@@ -198,6 +207,7 @@ run_ros_profile() {
     "odometry_mode:=${substrate_odometry_mode}" \
     localization_profile:=kujiale \
     nav2_profile:=v6_low_obstacle_isolation \
+    static_track_coalescing_enabled:="${static_track_coalescing_enabled}" \
     cognitive_profile:="${cognitive_profile}" \
     cognitive_graph_mode:="${graph_mode}" \
     initial_pose_source:="${initial_pose_source}" \

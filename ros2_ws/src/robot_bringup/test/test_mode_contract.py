@@ -77,6 +77,21 @@ def test_m0_m3_contract_drives_final_nav2_modes_and_critic_list():
         for costmap in ('local_costmap', 'global_costmap'):
             assert final[costmap][costmap]['ros__parameters'][
                 'cognitive_obstacle_layer']['mode'] == values[0]
+            assert final[costmap][costmap]['ros__parameters'][
+                'cognitive_obstacle_layer'][
+                    'static_track_coalescing_enabled'] is False
+
+
+def test_static_track_coalescing_is_an_exact_dual_costmap_boolean():
+    profile = validate_cognitive_profile(
+        'M3', PACKAGE_ROOT / 'config' / 'modes.yaml')
+    enabled = cognitive_nav2_parameters(profile, True)
+    for costmap in ('local_costmap', 'global_costmap'):
+        assert enabled[costmap][costmap]['ros__parameters'][
+            'cognitive_obstacle_layer'][
+                'static_track_coalescing_enabled'] is True
+    with pytest.raises(ValueError, match='must be boolean'):
+        cognitive_nav2_parameters(profile, 'true')
 
 
 def test_graph_mode_is_an_independent_validated_experiment_axis():
