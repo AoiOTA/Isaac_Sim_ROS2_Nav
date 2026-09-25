@@ -74,6 +74,20 @@ variants:
   whole_house_onebox_recovery:
     user_arm_aliases: {W0: R0, W1: R1}
     seed: 8601
+    deterministic_fault:
+      id: F2
+      kind: deterministic_wrong_pose_initialpose
+      topic: /initialpose
+      source: fault_injector
+      seed_kind: fixed_wrong_g5_pose
+      publish_count: 1
+      pose: {x: -2.20, y: -2.95, yaw_deg: -42.0}
+      covariance: {xy_variance_m2: 0.04, yaw_variance_rad2: 0.030461742}
+      max_injected_pose_xy_error_m: 0.75
+      min_module1_anchor_xy_error_m: 5.0
+      recovery_max_module1_anchor_xy_error_m: 0.75
+      bridge_ignored_initialpose_increment: 1
+      bridge_recurrent_session_unchanged: true
     obstacle_asset:
       config: module3://isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen.yaml
       id: v6_low_box_solo

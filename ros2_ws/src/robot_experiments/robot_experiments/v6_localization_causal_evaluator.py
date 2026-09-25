@@ -20,6 +20,14 @@ from typing import Any, Iterable, Iterator, Mapping, Sequence
 from .v6_localization_causal import (
     SEED_CONFIRMATION_POSITION_THRESHOLD_M,
     SEED_CONFIRMATION_YAW_THRESHOLD_DEG,
+    WHOLE_HOUSE_FAULT_KIND,
+    WHOLE_HOUSE_FAULT_MAX_INJECTED_XY_ERROR_M,
+    WHOLE_HOUSE_FAULT_MIN_ANCHOR_XY_ERROR_M,
+    WHOLE_HOUSE_FAULT_POSE,
+    WHOLE_HOUSE_FAULT_SEED_KIND,
+    WHOLE_HOUSE_FAULT_SOURCE,
+    WHOLE_HOUSE_ONEBOX_VARIANT,
+    WHOLE_HOUSE_RECOVERY_MAX_ANCHOR_XY_ERROR_M,
     _pose_disagreement,
     _propagate_module1_odom_delta,
 )
@@ -776,6 +784,176 @@ def _fault_discriminability(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _wholehouse_fault_discriminability(
+    row: Mapping[str, Any],
+) -> dict[str, Any]:
+    if (
+        row.get("fault_id") != "F2"
+        or row.get("kind") != WHOLE_HOUSE_FAULT_KIND
+        or row.get("topic") != "/initialpose"
+        or row.get("source") != WHOLE_HOUSE_FAULT_SOURCE
+        or row.get("seed_kind") != WHOLE_HOUSE_FAULT_SEED_KIND
+        or row.get("publish_count") != 1
+        or row.get("observed_count") != 1
+        or row.get("first_post_fault_amcl_pose_observed") is not True
+        or row.get("first_post_fault_particle_cloud_observed") is not True
+    ):
+        raise EvaluationError(
+            "whole-house deterministic fault source/count contract changed"
+        )
+    injected = _fault_pose(row, "injected_pose")
+    expected_injected = (
+        WHOLE_HOUSE_FAULT_POSE.x,
+        WHOLE_HOUSE_FAULT_POSE.y,
+        WHOLE_HOUSE_FAULT_POSE.yaw_deg,
+    )
+    if any(
+        not math.isclose(actual, expected, rel_tol=0.0, abs_tol=1.0e-12)
+        for actual, expected in zip(injected, expected_injected)
+    ):
+        raise EvaluationError("whole-house deterministic fault pose changed")
+    covariance = row.get("injected_covariance_xy_yaw")
+    expected_covariance = (
+        WHOLE_HOUSE_FAULT_POSE.xy_variance_m2,
+        WHOLE_HOUSE_FAULT_POSE.xy_variance_m2,
+        WHOLE_HOUSE_FAULT_POSE.yaw_variance_rad2,
+    )
+    if (
+        not isinstance(covariance, (list, tuple))
+        or len(covariance) != 3
+        or any(
+            not math.isclose(
+                _finite(actual, "fault_injected.injected_covariance_xy_yaw"),
+                expected,
+                rel_tol=0.0,
+                abs_tol=1.0e-12,
+            )
+            for actual, expected in zip(covariance, expected_covariance)
+        )
+    ):
+        raise EvaluationError(
+            "whole-house deterministic fault covariance changed"
+        )
+
+    pre_amcl = _fault_pose(row, "pre_fault_amcl_map_pose")
+    pre_module1 = _fault_pose(row, "pre_fault_module1_odom_pose")
+    post_amcl = _fault_pose(row, "post_fault_amcl_map_pose")
+    post_module1 = _fault_pose(row, "post_fault_module1_odom_pose")
+    recorded_delta = _fault_pose(row, "module1_odom_delta")
+    recorded_prediction = _fault_pose(row, "predicted_post_amcl_map_pose")
+    predicted, module1_delta = _propagate_module1_odom_delta(
+        pre_amcl, pre_module1, post_module1
+    )
+    anchor_xy_error_m, anchor_yaw_error_deg = _pose_disagreement(
+        post_amcl, predicted
+    )
+    injected_xy_error_m, injected_yaw_error_deg = _pose_disagreement(
+        post_amcl, injected
+    )
+    recorded = (
+        *recorded_delta,
+        *recorded_prediction,
+        _finite(
+            row.get("injected_pose_xy_error_m"),
+            "fault_injected.injected_pose_xy_error_m",
+        ),
+        _finite(
+            row.get("injected_pose_yaw_error_deg"),
+            "fault_injected.injected_pose_yaw_error_deg",
+        ),
+        _finite(
+            row.get("amcl_disagreement_position_m"),
+            "fault_injected.amcl_disagreement_position_m",
+        ),
+        _finite(
+            row.get("amcl_disagreement_yaw_deg"),
+            "fault_injected.amcl_disagreement_yaw_deg",
+        ),
+    )
+    calculated = (
+        *module1_delta,
+        *predicted,
+        injected_xy_error_m,
+        injected_yaw_error_deg,
+        anchor_xy_error_m,
+        anchor_yaw_error_deg,
+    )
+    if any(
+        not math.isclose(actual, expected, rel_tol=1.0e-9, abs_tol=1.0e-9)
+        for actual, expected in zip(recorded, calculated)
+    ):
+        raise EvaluationError(
+            "whole-house deterministic fault geometry fields disagree"
+        )
+    if (
+        _finite(
+            row.get("max_injected_pose_xy_error_m"),
+            "fault_injected.max_injected_pose_xy_error_m",
+        )
+        != WHOLE_HOUSE_FAULT_MAX_INJECTED_XY_ERROR_M
+        or _finite(
+            row.get("min_module1_anchor_xy_error_m"),
+            "fault_injected.min_module1_anchor_xy_error_m",
+        )
+        != WHOLE_HOUSE_FAULT_MIN_ANCHOR_XY_ERROR_M
+    ):
+        raise EvaluationError(
+            "whole-house deterministic fault XY thresholds changed"
+        )
+    bridge_before = row.get("bridge_ignored_initialpose_before")
+    bridge_after = row.get("bridge_ignored_initialpose_after")
+    if (
+        isinstance(bridge_before, bool)
+        or not isinstance(bridge_before, int)
+        or isinstance(bridge_after, bool)
+        or not isinstance(bridge_after, int)
+        or bridge_after != bridge_before + 1
+        or not str(row.get("bridge_recurrent_session_before", ""))
+        or row.get("bridge_recurrent_session_after")
+        != row.get("bridge_recurrent_session_before")
+    ):
+        raise EvaluationError(
+            "whole-house deterministic fault reset Module1 or was not ignored once"
+        )
+    discriminative = bool(
+        injected_xy_error_m <= WHOLE_HOUSE_FAULT_MAX_INJECTED_XY_ERROR_M
+        and anchor_xy_error_m > WHOLE_HOUSE_FAULT_MIN_ANCHOR_XY_ERROR_M
+    )
+    expected_outcome = (
+        "FAULT_DISCRIMINATIVE"
+        if discriminative
+        else "INVALID_NOT_DISCRIMINATIVE"
+    )
+    if (
+        row.get("amcl_jump_observed") is not discriminative
+        or row.get("outcome") != expected_outcome
+    ):
+        raise EvaluationError(
+            "whole-house deterministic fault XY classification changed"
+        )
+    return {
+        "injected_pose": dict(row["injected_pose"]),
+        "injected_covariance_xy_yaw": list(covariance),
+        "post_fault_amcl_map_pose": dict(row["post_fault_amcl_map_pose"]),
+        "predicted_post_amcl_map_pose": dict(
+            row["predicted_post_amcl_map_pose"]
+        ),
+        "injected_pose_xy_error_m": injected_xy_error_m,
+        "injected_pose_yaw_error_deg": injected_yaw_error_deg,
+        "module1_anchor_xy_error_m": anchor_xy_error_m,
+        "module1_anchor_yaw_error_deg": anchor_yaw_error_deg,
+        "max_injected_pose_xy_error_m": (
+            WHOLE_HOUSE_FAULT_MAX_INJECTED_XY_ERROR_M
+        ),
+        "min_module1_anchor_xy_error_m": (
+            WHOLE_HOUSE_FAULT_MIN_ANCHOR_XY_ERROR_M
+        ),
+        "bridge_ignored_initialpose_increment": bridge_after - bridge_before,
+        "bridge_recurrent_session_unchanged": True,
+        "amcl_jump_observed": discriminative,
+    }
+
+
 def _diagnostic_integer(values: Mapping[str, Any], name: str) -> int:
     value = values.get(name)
     if isinstance(value, bool):
@@ -935,6 +1113,11 @@ def evaluate_phase_de_episode(
     route_start = min((_event_stamp(row, "goal_dispatched") for row in goal_dispatch), default=None)
     route_end = max((_event_stamp(row, "goal_result") for row in goal_results), default=None)
     episode_end = by_event["episode_end"][0]
+    episode_start = by_event["episode_start"][0]
+    variant = episode_start.get("variant")
+    if variant not in (None, WHOLE_HOUSE_ONEBOX_VARIANT):
+        raise EvaluationError("unsupported Phase D/E runtime variant")
+    wholehouse_variant = variant == WHOLE_HOUSE_ONEBOX_VARIANT
     completed = [str(value) for value in episode_end.get("completed_leg_ids", ())]
     route_success = bool(dispatched_legs) and set(dispatched_legs).issubset(
         set(successful_legs) | set(completed)
@@ -950,18 +1133,23 @@ def evaluate_phase_de_episode(
         if len(fault_rows) != 1:
             raise EvaluationError("Phase E requires exactly one fault event")
         fault_row = fault_rows[0]
-        if (
-            fault_row.get("fault_id") != "F2"
-            or fault_row.get("kind")
-            != "amcl_global_localization_particle_spread"
-            or fault_row.get("service")
-            != "/reinitialize_global_localization"
-            or fault_row.get("service_request_count") != 1
-            or fault_row.get("service_response_observed") is not True
-            or fault_row.get("first_post_fault_amcl_pose_observed") is not True
-        ):
-            raise EvaluationError("Phase E particle-spread fault contract changed")
-        fault_discriminability = _fault_discriminability(fault_row)
+        if wholehouse_variant:
+            fault_discriminability = _wholehouse_fault_discriminability(
+                fault_row
+            )
+        else:
+            if (
+                fault_row.get("fault_id") != "F2"
+                or fault_row.get("kind")
+                != "amcl_global_localization_particle_spread"
+                or fault_row.get("service")
+                != "/reinitialize_global_localization"
+                or fault_row.get("service_request_count") != 1
+                or fault_row.get("service_response_observed") is not True
+                or fault_row.get("first_post_fault_amcl_pose_observed") is not True
+            ):
+                raise EvaluationError("Phase E particle-spread fault contract changed")
+            fault_discriminability = _fault_discriminability(fault_row)
         fault_outcome = str(fault_row.get("outcome", ""))
         if fault_outcome not in {
             "FAULT_DISCRIMINATIVE",
@@ -983,13 +1171,76 @@ def evaluate_phase_de_episode(
 
         runner_count = initialpose_sources.get("runner", 0)
         supervisor_count = initialpose_sources.get("supervisor", 0)
+        fault_injector_count = initialpose_sources.get(
+            WHOLE_HOUSE_FAULT_SOURCE, 0
+        )
         unknown_count = sum(
             count
             for source, count in initialpose_sources.items()
-            if source not in {"runner", "supervisor"}
+            if source
+            not in {"runner", "supervisor", WHOLE_HOUSE_FAULT_SOURCE}
         )
-        if runner_count != 1 or unknown_count:
+        if (
+            runner_count != 1
+            or unknown_count
+            or fault_injector_count != (1 if wholehouse_variant else 0)
+        ):
             raise EvaluationError("Phase E runner initialpose ownership changed")
+        if wholehouse_variant:
+            injected_events = [
+                row
+                for row in by_event["initialpose"]
+                if row.get("source") == WHOLE_HOUSE_FAULT_SOURCE
+            ]
+            injected_event = injected_events[0]
+            injected_covariance = injected_event.get("covariance_xy_yaw")
+            if (
+                injected_event.get("seed_kind")
+                != WHOLE_HOUSE_FAULT_SEED_KIND
+                or injected_event.get("count") != 2
+                or not math.isclose(
+                    _finite(injected_event.get("x"), "fault initialpose.x"),
+                    WHOLE_HOUSE_FAULT_POSE.x,
+                    rel_tol=0.0,
+                    abs_tol=1.0e-12,
+                )
+                or not math.isclose(
+                    _finite(injected_event.get("y"), "fault initialpose.y"),
+                    WHOLE_HOUSE_FAULT_POSE.y,
+                    rel_tol=0.0,
+                    abs_tol=1.0e-12,
+                )
+                or not math.isclose(
+                    _finite(
+                        injected_event.get("yaw_deg"),
+                        "fault initialpose.yaw_deg",
+                    ),
+                    WHOLE_HOUSE_FAULT_POSE.yaw_deg,
+                    rel_tol=0.0,
+                    abs_tol=1.0e-9,
+                )
+                or not isinstance(injected_covariance, (list, tuple))
+                or len(injected_covariance) != 3
+                or any(
+                    not math.isclose(
+                        _finite(value, "fault initialpose.covariance"),
+                        expected,
+                        rel_tol=0.0,
+                        abs_tol=1.0e-12,
+                    )
+                    for value, expected in zip(
+                        injected_covariance,
+                        (
+                            WHOLE_HOUSE_FAULT_POSE.xy_variance_m2,
+                            WHOLE_HOUSE_FAULT_POSE.xy_variance_m2,
+                            WHOLE_HOUSE_FAULT_POSE.yaw_variance_rad2,
+                        ),
+                    )
+                )
+            ):
+                raise EvaluationError(
+                    "whole-house fault initialpose event changed"
+                )
         if identity["arm"] == "R0":
             if supervisor_count != 0 or manual_requests:
                 raise EvaluationError("R0 cognitive write ownership changed")
@@ -1038,11 +1289,28 @@ def evaluate_phase_de_episode(
             raise EvaluationError(
                 "invalid fault must stop before rescue and G3"
             )
+        expected_total_initialpose = (
+            2 + (1 if identity["arm"] == "R1" else 0)
+            if wholehouse_variant
+            else 1 + supervisor_count
+        )
         if (
-            episode_end.get("fault_service_request_count") != 1
+            episode_end.get("fault_service_request_count")
+            != (0 if wholehouse_variant else 1)
             or episode_end.get("manual_rescue_count") != len(manual_requests)
             or episode_end.get("supervisor_initialpose_count")
             != supervisor_count
+            or (
+                wholehouse_variant
+                and (
+                    episode_end.get("initialpose_count")
+                    != expected_total_initialpose
+                    or episode_end.get("fault_initialpose_publish_count") != 1
+                    or episode_end.get("fault_initialpose_observed_count") != 1
+                    or episode_end.get("prior_write_count")
+                    != (1 if identity["arm"] == "R1" else 0)
+                )
+            )
         ):
             raise EvaluationError("Phase E request count ledger changed")
         if (
@@ -1073,6 +1341,23 @@ def evaluate_phase_de_episode(
                 raise EvaluationError(
                     "Phase E localization_recovered success must be boolean"
                 )
+            if recovery_success and wholehouse_variant:
+                anchor_error = _finite(
+                    recovery_row.get("module1_anchor_xy_error_m"),
+                    "localization_recovered.module1_anchor_xy_error_m",
+                )
+                anchor_threshold = _finite(
+                    recovery_row.get("max_module1_anchor_xy_error_m"),
+                    "localization_recovered.max_module1_anchor_xy_error_m",
+                )
+                if (
+                    anchor_threshold
+                    != WHOLE_HOUSE_RECOVERY_MAX_ANCHOR_XY_ERROR_M
+                    or anchor_error > anchor_threshold
+                ):
+                    raise EvaluationError(
+                        "whole-house recovery lacks Module1 anchor confirmation"
+                    )
             continuation = ("G3", "G4", "G5", "G1")
             missing_continuation = [
                 leg_id for leg_id in continuation if leg_id not in dispatched_legs
@@ -1185,6 +1470,7 @@ def evaluate_phase_de_episode(
     module1_rows = by_event["module1_diagnostic"]
     return {
         **identity,
+        "variant": variant,
         "fault": (
             None
             if not by_event["fault_injected"]

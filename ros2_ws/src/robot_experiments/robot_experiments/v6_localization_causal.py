@@ -59,6 +59,12 @@ RECOVERY_BY_ARM = {
 }
 WHOLE_HOUSE_ONEBOX_VARIANT = "whole_house_onebox_recovery"
 WHOLE_HOUSE_USER_ARM_ALIASES = {"W0": "R0", "W1": "R1"}
+WHOLE_HOUSE_FAULT_KIND = "deterministic_wrong_pose_initialpose"
+WHOLE_HOUSE_FAULT_SOURCE = "fault_injector"
+WHOLE_HOUSE_FAULT_SEED_KIND = "fixed_wrong_g5_pose"
+WHOLE_HOUSE_FAULT_MAX_INJECTED_XY_ERROR_M = 0.75
+WHOLE_HOUSE_FAULT_MIN_ANCHOR_XY_ERROR_M = 5.0
+WHOLE_HOUSE_RECOVERY_MAX_ANCHOR_XY_ERROR_M = 0.75
 STARTUP_AMCL_POSES_REQUIRED = 3
 SEED_CONFIRMATION_POSITION_THRESHOLD_M = 0.75
 SEED_CONFIRMATION_YAW_THRESHOLD_DEG = 20.0
@@ -165,11 +171,21 @@ class SeedPose:
     yaw_variance_rad2: float
 
 
+WHOLE_HOUSE_FAULT_POSE = SeedPose(
+    x=-2.20,
+    y=-2.95,
+    yaw_deg=-42.0,
+    xy_variance_m2=0.04,
+    yaw_variance_rad2=0.030461742,
+)
+
+
 @dataclass(frozen=True)
 class RecoveryVariant:
     name: str
     user_arm_aliases: Mapping[str, str]
     seed: int
+    deterministic_fault: Mapping[str, Any]
     obstacle_asset: Mapping[str, Any]
     route: tuple[str, ...]
     runtime_identity: Mapping[str, Any]
@@ -440,6 +456,7 @@ def load_config(
     if set(variant_row) != {
         "user_arm_aliases",
         "seed",
+        "deterministic_fault",
         "obstacle_asset",
         "route",
         "runtime_identity",
@@ -454,6 +471,38 @@ def load_config(
     variant_seed = variant_row.get("seed")
     if variant_seed != 8601:
         raise LocalizationConfigError("whole-house one-box seed must be 8601")
+    deterministic_fault = _mapping(
+        variant_row.get("deterministic_fault"),
+        f"variants.{WHOLE_HOUSE_ONEBOX_VARIANT}.deterministic_fault",
+    )
+    expected_deterministic_fault = {
+        "id": "F2",
+        "kind": WHOLE_HOUSE_FAULT_KIND,
+        "topic": "/initialpose",
+        "source": WHOLE_HOUSE_FAULT_SOURCE,
+        "seed_kind": WHOLE_HOUSE_FAULT_SEED_KIND,
+        "publish_count": 1,
+        "pose": {"x": -2.20, "y": -2.95, "yaw_deg": -42.0},
+        "covariance": {
+            "xy_variance_m2": 0.04,
+            "yaw_variance_rad2": 0.030461742,
+        },
+        "max_injected_pose_xy_error_m": (
+            WHOLE_HOUSE_FAULT_MAX_INJECTED_XY_ERROR_M
+        ),
+        "min_module1_anchor_xy_error_m": (
+            WHOLE_HOUSE_FAULT_MIN_ANCHOR_XY_ERROR_M
+        ),
+        "recovery_max_module1_anchor_xy_error_m": (
+            WHOLE_HOUSE_RECOVERY_MAX_ANCHOR_XY_ERROR_M
+        ),
+        "bridge_ignored_initialpose_increment": 1,
+        "bridge_recurrent_session_unchanged": True,
+    }
+    if dict(deterministic_fault) != expected_deterministic_fault:
+        raise LocalizationConfigError(
+            "whole-house deterministic F2 contract changed"
+        )
     obstacle_asset = _mapping(
         variant_row.get("obstacle_asset"),
         f"variants.{WHOLE_HOUSE_ONEBOX_VARIANT}.obstacle_asset",
@@ -499,6 +548,7 @@ def load_config(
             name=WHOLE_HOUSE_ONEBOX_VARIANT,
             user_arm_aliases=dict(aliases),
             seed=variant_seed,
+            deterministic_fault=dict(deterministic_fault),
             obstacle_asset=dict(obstacle_asset),
             route=variant_route,
             runtime_identity=dict(runtime_identity),
@@ -533,14 +583,25 @@ def route_actions(config: LocalizationConfig, arm: str) -> tuple[dict[str, Any],
         raise LocalizationConfigError(f"arm must be one of {list(ARMS)}")
     if PHASE_BY_ARM[arm] == "D":
         return tuple({"action": "goal", "leg_id": leg} for leg in config.route_ids)
-    return (
-        {"action": "goal", "leg_id": "G2"},
+    fault_action = (
         {
+            "action": "fault",
+            "fault_id": "F2",
+            "kind": WHOLE_HOUSE_FAULT_KIND,
+            "topic": "/initialpose",
+            "source": WHOLE_HOUSE_FAULT_SOURCE,
+        }
+        if config.selected_variant is not None
+        else {
             "action": "fault",
             "fault_id": config.fault_id,
             "kind": config.fault_kind,
             "service": config.fault_service,
-        },
+        }
+    )
+    return (
+        {"action": "goal", "leg_id": "G2"},
+        fault_action,
         {"action": "recover", "method": RECOVERY_BY_ARM[arm]},
         {"action": "goal", "leg_id": "G3"},
         {"action": "goal", "leg_id": "G4"},
@@ -579,6 +640,15 @@ def build_plan(config: LocalizationConfig) -> dict[str, Any]:
                         "expected_total_count": 1,
                         "expected_supervisor_count": 0,
                     },
+                    "expected_episode_ledger": {
+                        "startup_initialpose": 1,
+                        "fault_initialpose_publish": 1,
+                        "fault_initialpose_observed": 1,
+                        "total_initialpose": 2 if arm == "R0" else 3,
+                        "supervisor_initialpose": 0 if arm == "R0" else 1,
+                        "manual_rescue": 0 if arm == "R0" else 1,
+                        "prior_write": 0 if arm == "R0" else 1,
+                    },
                     "actions": list(route_actions(config, arm)),
                 }
             )
@@ -592,6 +662,7 @@ def build_plan(config: LocalizationConfig) -> dict[str, Any]:
             "phase_e_run4_candidate_enabled": True,
             "variant": variant.name,
             "user_arm_aliases": dict(variant.user_arm_aliases),
+            "deterministic_fault": dict(variant.deterministic_fault),
             "obstacle_asset": dict(variant.obstacle_asset),
             "runtime_identity": dict(variant.runtime_identity),
             "route": list(variant.route),
@@ -751,6 +822,9 @@ class LocalizationCausalNode(V6FormalNode):
         self._supervisor_initialpose_count = 0
         self._manual_rescue_count = 0
         self._fault_service_request_count = 0
+        self._fault_initialpose_publish_count = 0
+        self._fault_initialpose_observed_count = 0
+        self._fault_initialpose_stamp_ns = 0
         self._nomotion_request_count = 0
         self._prior_write_count = 0
         self._amcl_count = 0
@@ -758,7 +832,9 @@ class LocalizationCausalNode(V6FormalNode):
         self._module1_odom_count = 0
         self._last_amcl_covariance: tuple[float, float, float] | None = None
         self._last_amcl_pose: tuple[float, float, float] | None = None
+        self._last_amcl_stamp_ns = 0
         self._last_module1_odom_pose: tuple[float, float, float] | None = None
+        self._last_particle_stamp_ns = 0
         self._first_post_fault_amcl_covariance: tuple[float, float, float] | None = None
         self._first_post_fault_amcl_pose: tuple[float, float, float] | None = None
         self._fault_observation_active = False
@@ -768,6 +844,9 @@ class LocalizationCausalNode(V6FormalNode):
         self._manual_request_stamp_ns = 0
         self._manual_request_diagnostic_floor: dict[str, int] = {}
         self._last_supervisor: dict[str, str] = {}
+        self._last_bridge: dict[str, str] = {}
+        self._fault_pre_amcl_map_pose: tuple[float, float, float] | None = None
+        self._fault_pre_module1_odom_pose: tuple[float, float, float] | None = None
         self._last_cmd_zero: bool | None = None
         self._cmd_vel_sim_zero_since: float | None = None
         self._event_stream_started = False
@@ -947,6 +1026,7 @@ class LocalizationCausalNode(V6FormalNode):
     def _amcl_pose(self, message: Any) -> None:
         super()._amcl_pose(message)
         self._amcl_count += 1
+        self._last_amcl_stamp_ns = self._header_stamp_ns(message)
         covariance = tuple(float(value) for value in message.pose.covariance)
         self._last_amcl_covariance = (
             covariance[0], covariance[7], covariance[35]
@@ -954,6 +1034,14 @@ class LocalizationCausalNode(V6FormalNode):
         post_fault = bool(
             self._fault_observation_active
             and self._amcl_count > self._fault_amcl_baseline
+            and (
+                self.config.selected_variant is None
+                or (
+                    self._fault_initialpose_observed_count == 1
+                    and self._last_amcl_stamp_ns
+                    >= self._fault_initialpose_stamp_ns
+                )
+            )
         )
         if post_fault and self._first_post_fault_amcl_covariance is None:
             self._first_post_fault_amcl_covariance = self._last_amcl_covariance
@@ -985,6 +1073,7 @@ class LocalizationCausalNode(V6FormalNode):
 
     def _particle_cloud(self, message: Any) -> None:
         self._particle_cloud_count += 1
+        self._last_particle_stamp_ns = self._header_stamp_ns(message)
         self._event(
             "particle_cloud",
             count=self._particle_cloud_count,
@@ -992,6 +1081,14 @@ class LocalizationCausalNode(V6FormalNode):
             post_fault=bool(
                 self._fault_observation_active
                 and self._particle_cloud_count > self._fault_particle_baseline
+                and (
+                    self.config.selected_variant is None
+                    or (
+                        self._fault_initialpose_observed_count == 1
+                        and self._last_particle_stamp_ns
+                        >= self._fault_initialpose_stamp_ns
+                    )
+                )
             ),
         )
 
@@ -1015,6 +1112,7 @@ class LocalizationCausalNode(V6FormalNode):
         else:
             source, seed_kind = "unknown", "unknown"
         pose = message.pose.pose
+        covariance = tuple(float(value) for value in message.pose.covariance)
         self._event(
             "initialpose",
             source=source,
@@ -1023,7 +1121,11 @@ class LocalizationCausalNode(V6FormalNode):
             x=float(pose.position.x),
             y=float(pose.position.y),
             yaw_deg=_yaw_deg(pose.orientation),
+            covariance_xy_yaw=[covariance[0], covariance[7], covariance[35]],
         )
+        if source == WHOLE_HOUSE_FAULT_SOURCE:
+            self._fault_initialpose_observed_count += 1
+            self._fault_initialpose_stamp_ns = stamp_ns
         if source == "supervisor":
             self._supervisor_initialpose_count += 1
             self._prior_write_count += 1
@@ -1090,6 +1192,7 @@ class LocalizationCausalNode(V6FormalNode):
                     values=values,
                 )
             elif str(status.name) == "bio_nav_ros_bridge":
+                self._last_bridge = values
                 self._event(
                     "module1_diagnostic",
                     name=str(status.name),
@@ -1111,7 +1214,9 @@ class LocalizationCausalNode(V6FormalNode):
         }
         self._event("module1_diagnostic", name="planning_prior", **values, values=values)
 
-    def _publish_seed(self, pose: SeedPose, seed_kind: str) -> None:
+    def _publish_initialpose(
+        self, pose: SeedPose, *, source: str, seed_kind: str
+    ) -> int:
         Message = self._types["PoseWithCovarianceStamped"]
         message = Message()
         message.header.frame_id = "map"
@@ -1128,8 +1233,17 @@ class LocalizationCausalNode(V6FormalNode):
             int(message.header.stamp.sec) * 1_000_000_000
             + int(message.header.stamp.nanosec)
         )
-        self._initialpose_source_queue.append((stamp_ns, "runner", seed_kind))
+        self._initialpose_source_queue.append((stamp_ns, source, seed_kind))
+        if source == WHOLE_HOUSE_FAULT_SOURCE:
+            self._fault_initialpose_publish_count += 1
+            self._fault_initialpose_stamp_ns = stamp_ns
         self.initialpose_publisher.publish(message)
+        return stamp_ns
+
+    def _publish_seed(self, pose: SeedPose, seed_kind: str) -> None:
+        self._publish_initialpose(
+            pose, source="runner", seed_kind=seed_kind
+        )
 
     def _call_empty_service(self, client: Any, name: str, timeout_s: float) -> bool:
         if not client.wait_for_service(timeout_sec=timeout_s):
@@ -1259,6 +1373,211 @@ class LocalizationCausalNode(V6FormalNode):
             == baseline["candidate_array_publish_count"] + 1
         )
 
+    def _module1_anchor_disagreement(
+        self,
+    ) -> tuple[tuple[float, float, float], float, float] | None:
+        if (
+            self._fault_pre_amcl_map_pose is None
+            or self._fault_pre_module1_odom_pose is None
+            or self._last_module1_odom_pose is None
+            or self._last_amcl_pose is None
+        ):
+            return None
+        predicted, _ = _propagate_module1_odom_delta(
+            self._fault_pre_amcl_map_pose,
+            self._fault_pre_module1_odom_pose,
+            self._last_module1_odom_pose,
+        )
+        position_m, yaw_deg = _pose_disagreement(
+            self._last_amcl_pose, predicted
+        )
+        return predicted, position_m, yaw_deg
+
+    def _deterministic_wholehouse_fault(
+        self,
+        pre_amcl_map_pose: tuple[float, float, float],
+        pre_module1_odom_pose: tuple[float, float, float],
+    ) -> None:
+        try:
+            bridge_ignored_floor = int(
+                self._last_bridge.get("ignored_initialpose", "")
+            )
+        except ValueError:
+            bridge_ignored_floor = -1
+        bridge_session_floor = self._last_bridge.get(
+            "recurrent_session_id", ""
+        )
+        if bridge_ignored_floor < 0 or not bridge_session_floor:
+            self.guard.stop("F2_bridge_diagnostic_missing")
+            return
+        if self._fault_initialpose_publish_count:
+            self.guard.stop("F2_fault_initialpose_retry_forbidden")
+            return
+
+        self._fault_pre_amcl_map_pose = pre_amcl_map_pose
+        self._fault_pre_module1_odom_pose = pre_module1_odom_pose
+        observed_floor = self._fault_initialpose_observed_count
+        self._publish_initialpose(
+            WHOLE_HOUSE_FAULT_POSE,
+            source=WHOLE_HOUSE_FAULT_SOURCE,
+            seed_kind=WHOLE_HOUSE_FAULT_SEED_KIND,
+        )
+        echo_observed = self._spin_until(
+            lambda: self._fault_initialpose_observed_count > observed_floor
+            or self.guard.state == "STOP",
+            min(10.0, self.config.recovery_timeout_s),
+        )
+        if (
+            not echo_observed
+            or self._fault_initialpose_publish_count != 1
+            or self._fault_initialpose_observed_count != observed_floor + 1
+        ):
+            self.guard.stop("F2_fault_initialpose_echo_not_exactly_once")
+            return
+
+        # Fence AMCL and ParticleCloud after our own echoed header stamp.  This
+        # excludes samples queued before the deterministic fault publication.
+        self._fault_stamp_ns = self._fault_initialpose_stamp_ns
+        self._fault_amcl_baseline = self._amcl_count
+        self._fault_particle_baseline = self._particle_cloud_count
+        self._first_post_fault_amcl_covariance = None
+        self._first_post_fault_amcl_pose = None
+        self._fault_observation_active = True
+        amcl_observed = self._spin_until(
+            lambda: (
+                self._first_post_fault_amcl_pose is not None
+                and self._last_amcl_stamp_ns >= self._fault_initialpose_stamp_ns
+            )
+            or self.guard.state == "STOP",
+            min(10.0, self.config.recovery_timeout_s),
+        )
+        if not amcl_observed or self.guard.state == "STOP":
+            self.guard.stop("F2_first_post_fault_amcl_pose_timeout")
+            return
+        particle_observed = self._spin_until(
+            lambda: (
+                self._particle_cloud_count > self._fault_particle_baseline
+                and self._last_particle_stamp_ns
+                >= self._fault_initialpose_stamp_ns
+            )
+            or self.guard.state == "STOP",
+            min(10.0, self.config.recovery_timeout_s),
+        )
+        if not particle_observed or self.guard.state == "STOP":
+            self.guard.stop("F2_first_post_fault_particle_cloud_timeout")
+            return
+
+        bridge_observed = self._spin_until(
+            lambda: (
+                self._diagnostic_int(
+                    self._last_bridge, "ignored_initialpose"
+                )
+                >= bridge_ignored_floor + 1
+            )
+            or self.guard.state == "STOP",
+            min(10.0, self.config.recovery_timeout_s),
+        )
+        bridge_ignored_after = self._diagnostic_int(
+            self._last_bridge, "ignored_initialpose"
+        )
+        bridge_session_after = self._last_bridge.get(
+            "recurrent_session_id", ""
+        )
+        if (
+            not bridge_observed
+            or bridge_ignored_after != bridge_ignored_floor + 1
+            or bridge_session_after != bridge_session_floor
+        ):
+            self.guard.stop("F2_bridge_module1_isolation_failed")
+            return
+
+        post_amcl_map_pose = self._first_post_fault_amcl_pose
+        post_module1_odom_pose = self._last_module1_odom_pose
+        assert post_amcl_map_pose is not None
+        if post_module1_odom_pose is None:
+            self.guard.stop("F2_post_fault_pose_missing")
+            return
+        predicted_map_pose, module1_delta = _propagate_module1_odom_delta(
+            pre_amcl_map_pose,
+            pre_module1_odom_pose,
+            post_module1_odom_pose,
+        )
+        anchor_xy_error_m, anchor_yaw_error_deg = _pose_disagreement(
+            post_amcl_map_pose, predicted_map_pose
+        )
+        injected_xy_error_m, injected_yaw_error_deg = _pose_disagreement(
+            post_amcl_map_pose,
+            (
+                WHOLE_HOUSE_FAULT_POSE.x,
+                WHOLE_HOUSE_FAULT_POSE.y,
+                WHOLE_HOUSE_FAULT_POSE.yaw_deg,
+            ),
+        )
+        discriminative = bool(
+            injected_xy_error_m
+            <= WHOLE_HOUSE_FAULT_MAX_INJECTED_XY_ERROR_M
+            and anchor_xy_error_m > WHOLE_HOUSE_FAULT_MIN_ANCHOR_XY_ERROR_M
+        )
+        fault_outcome = (
+            "FAULT_DISCRIMINATIVE"
+            if discriminative
+            else "INVALID_NOT_DISCRIMINATIVE"
+        )
+        self._event(
+            "fault_injected",
+            fault_id="F2",
+            kind=WHOLE_HOUSE_FAULT_KIND,
+            topic="/initialpose",
+            source=WHOLE_HOUSE_FAULT_SOURCE,
+            seed_kind=WHOLE_HOUSE_FAULT_SEED_KIND,
+            publish_count=self._fault_initialpose_publish_count,
+            observed_count=self._fault_initialpose_observed_count,
+            first_post_fault_amcl_pose_observed=True,
+            first_post_fault_particle_cloud_observed=True,
+            first_post_fault_covariance_xy_yaw=list(
+                self._first_post_fault_amcl_covariance or ()
+            ),
+            injected_pose={
+                "x": WHOLE_HOUSE_FAULT_POSE.x,
+                "y": WHOLE_HOUSE_FAULT_POSE.y,
+                "yaw_deg": WHOLE_HOUSE_FAULT_POSE.yaw_deg,
+            },
+            injected_covariance_xy_yaw=[
+                WHOLE_HOUSE_FAULT_POSE.xy_variance_m2,
+                WHOLE_HOUSE_FAULT_POSE.xy_variance_m2,
+                WHOLE_HOUSE_FAULT_POSE.yaw_variance_rad2,
+            ],
+            pre_fault_amcl_map_pose=_pose_fields(pre_amcl_map_pose),
+            pre_fault_module1_odom_pose=_pose_fields(pre_module1_odom_pose),
+            post_fault_amcl_map_pose=_pose_fields(post_amcl_map_pose),
+            post_fault_module1_odom_pose=_pose_fields(
+                post_module1_odom_pose
+            ),
+            module1_odom_delta=_pose_fields(module1_delta),
+            predicted_post_amcl_map_pose=_pose_fields(predicted_map_pose),
+            injected_pose_xy_error_m=injected_xy_error_m,
+            injected_pose_yaw_error_deg=injected_yaw_error_deg,
+            amcl_disagreement_position_m=anchor_xy_error_m,
+            amcl_disagreement_yaw_deg=anchor_yaw_error_deg,
+            max_injected_pose_xy_error_m=(
+                WHOLE_HOUSE_FAULT_MAX_INJECTED_XY_ERROR_M
+            ),
+            min_module1_anchor_xy_error_m=(
+                WHOLE_HOUSE_FAULT_MIN_ANCHOR_XY_ERROR_M
+            ),
+            bridge_ignored_initialpose_before=bridge_ignored_floor,
+            bridge_ignored_initialpose_after=bridge_ignored_after,
+            bridge_recurrent_session_before=bridge_session_floor,
+            bridge_recurrent_session_after=bridge_session_after,
+            outcome=fault_outcome,
+            amcl_jump_observed=discriminative,
+            supervisor_lost_observed=(
+                self._last_supervisor.get("state", "").upper() == "LOST"
+            ),
+        )
+        if not discriminative:
+            self.guard.stop(fault_outcome)
+
     def _fault(self) -> None:
         if self._fault_service_request_count:
             self.guard.stop("F2_fault_service_retry_forbidden")
@@ -1309,6 +1628,11 @@ class LocalizationCausalNode(V6FormalNode):
 
         pre_amcl_map_pose = self._last_amcl_pose
         pre_module1_odom_pose = self._last_module1_odom_pose
+        if self.config.selected_variant is not None:
+            self._deterministic_wholehouse_fault(
+                pre_amcl_map_pose, pre_module1_odom_pose
+            )
+            return
         self._fault_service_request_count = 1
         if not self._call_empty_service(
             self.reinitialize_global_localization_client,
@@ -1479,8 +1803,19 @@ class LocalizationCausalNode(V6FormalNode):
             self.guard.stop(f"unsupported_recovery:{method}")
             return
 
+        def anchor_recovered() -> bool:
+            if self.config.selected_variant is None:
+                return True
+            disagreement = self._module1_anchor_disagreement()
+            return bool(
+                disagreement is not None
+                and disagreement[1]
+                <= WHOLE_HOUSE_RECOVERY_MAX_ANCHOR_XY_ERROR_M
+            )
+
         recovered = self._spin_until(
             lambda: self._amcl_recovered(baseline)
+            and anchor_recovered()
             and (method != "supervisor_manual_rescue" or self._supervisor_recovered()),
             self.config.recovery_timeout_s,
         )
@@ -1493,6 +1828,7 @@ class LocalizationCausalNode(V6FormalNode):
         ):
             self.guard.stop("supervisor_initialpose_count_not_exactly_one")
             return
+        anchor_disagreement = self._module1_anchor_disagreement()
         self._event(
             "localization_recovered",
             success=recovered,
@@ -1503,6 +1839,22 @@ class LocalizationCausalNode(V6FormalNode):
             fault_service_request_count=self._fault_service_request_count,
             nomotion_request_count=self._nomotion_request_count,
             manual_rescue_count=self._manual_rescue_count,
+            module1_propagated_anchor=(
+                None
+                if anchor_disagreement is None
+                else _pose_fields(anchor_disagreement[0])
+            ),
+            module1_anchor_xy_error_m=(
+                None if anchor_disagreement is None else anchor_disagreement[1]
+            ),
+            module1_anchor_yaw_error_deg=(
+                None if anchor_disagreement is None else anchor_disagreement[2]
+            ),
+            max_module1_anchor_xy_error_m=(
+                WHOLE_HOUSE_RECOVERY_MAX_ANCHOR_XY_ERROR_M
+                if self.config.selected_variant is not None
+                else None
+            ),
         )
         if not recovered:
             self.guard.stop(f"localization_recovery_timeout:{method}")
@@ -1671,7 +2023,14 @@ class LocalizationCausalNode(V6FormalNode):
             manual_rescue_count=self._manual_rescue_count,
             supervisor_initialpose_count=self._supervisor_initialpose_count,
             fault_service_request_count=self._fault_service_request_count,
+            fault_initialpose_publish_count=(
+                self._fault_initialpose_publish_count
+            ),
+            fault_initialpose_observed_count=(
+                self._fault_initialpose_observed_count
+            ),
             nomotion_request_count=self._nomotion_request_count,
+            prior_write_count=self._prior_write_count,
             completed_leg_ids=result["completed_leg_ids"],
         )
         return result
@@ -1715,6 +2074,9 @@ def cli(argv: Sequence[str] | None = None) -> int:
                             config.selected_variant.user_arm_aliases
                         ),
                         "seed": config.selected_variant.seed,
+                        "deterministic_fault": dict(
+                            config.selected_variant.deterministic_fault
+                        ),
                         "obstacle_asset": dict(
                             config.selected_variant.obstacle_asset
                         ),
