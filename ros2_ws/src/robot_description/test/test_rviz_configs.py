@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 
 import pytest
@@ -109,7 +110,7 @@ def test_localization_workflow_has_static_and_diagnostic_maps_and_pose_tool():
     assert pose_tool['Topic']['Value'] == '/initialpose'
 
 
-def test_navigation_workflow_has_complete_official_nav2_interaction():
+def test_navigation_workflow_has_single_indoor_cognitive_demo_view():
     config = _config('navigation.rviz')
     expected_topics = {
         'Global Costmap': '/global_costmap/costmap',
@@ -124,20 +125,31 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
     for display_name, topic in expected_topics.items():
         assert _named(config, display_name)['Topic']['Value'] == topic
 
-    global_plan = _named(config, 'Global Plan')
-    odometry = _named(config, 'Odometry')
-    assert global_plan['Color'] == '255; 215; 0'
-    assert global_plan['Pose Color'] == global_plan['Color']
-    assert global_plan['Line Width'] >= 0.1
-    assert global_plan['Color'] != odometry['Shape']['Color']
+    assert _named(config, 'Static Map')['Enabled'] is True
+    assert _named(config, 'RobotModel')['Enabled'] is True
+    global_costmap = _named(config, 'Global Costmap')
+    local_costmap = _named(config, 'Local Costmap')
+    assert global_costmap['Enabled'] is True
+    assert 0.08 <= global_costmap['Alpha'] <= 0.10
+    assert local_costmap['Enabled'] is True
+    assert local_costmap['Alpha'] <= 0.12
 
-    optimal = _named(config, 'MPPI Optimal Trajectory')
-    candidates = _named(config, 'MPPI Candidate Trajectories')
-    assert optimal['Enabled'] is True
-    assert optimal['Topic']['Value'] == '/optimal_trajectory'
-    assert optimal['Line Width'] >= 0.07
-    assert candidates['Enabled'] is True
-    assert candidates['Topic']['Value'] == '/trajectories'
+    # The public demo route is drawn once by the unified Integration marker
+    # stream.  The raw Nav2 plans remain available as diagnostic toggles.
+    for display_name in (
+        'Grid',
+        'TF',
+        'LaserScan',
+        'Odometry',
+        'Module1 Candidate Odometry (No TF Authority)',
+        'Global Plan',
+        'Local Plan',
+        'MPPI Optimal Trajectory',
+        'MPPI Candidate Trajectories',
+        'Collision Monitor',
+        'RGB-D Fusion',
+    ):
+        assert _named(config, display_name)['Enabled'] is False
 
     panels = [panel['Class'] for panel in config['Panels']]
     tools = [tool['Class'] for tool in config['Visualization Manager']['Tools']]
@@ -152,7 +164,6 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
         encoding='utf-8')
     assert _named(config, 'Transformed Reference Plan')['Topic'][
         'Value'] == '/transformed_global_plan'
-    assert _named(config, 'MPPI Candidate Trajectories')['Enabled'] is True
     module1_odom = _named(config, 'Module1 Candidate Odometry (No TF Authority)')
     _assert_topic(
         module1_odom,
@@ -160,49 +171,66 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
         reliability='Reliable',
         durability='Volatile',
     )
-    assert module1_odom['Enabled'] is True
+    assert module1_odom['Enabled'] is False
     assert _named(config, 'SLAM Toolbox Diagnostic Map')['Enabled'] is False
 
-    current = _named(config, 'Current Cognitive Navigation')
+    current = _named(config, 'Indoor Cognitive Navigation Demo')
     _assert_topic(
         current,
         '/bio_nav/v310/rviz',
         reliability='Reliable',
         durability='Volatile',
     )
-    required_current_namespaces = {
-        # Module1 localization candidates and AMCL comparison.
-        'm1_cognitive_posterior',
-        'm1_dominant_covariance',
-        'm1_validated_candidates',
-        'm1_status',
-        'amcl_pose_covariance',
-        'route_estimated_trajectory',
-        # Module2 belief, SR/DR, obstacle and consumer state.
-        'module2_p_corr',
-        'module2_place_peak',
-        'module2_sr',
-        'module2_dr',
-        'module2_cognitive_obstacles',
-        'module2_applied_status',
-        # Module3 topology, route/path and ownership.
-        'module3_gvg_edges',
-        'module3_gvg_nodes',
-        'module3_final_cost',
-        'selected_canonical_route',
-        'route_cognitive_selected',
-        'route_projection',
-        'smac_plan',
-        'executed_trajectory',
-        'ownership_module2',
-        'ownership_module3',
-        'ownership_handoff',
+    demo_namespaces = {
+        'demo_grid_outline',
+        'demo_m1_belief',
+        'demo_m1_reference_pose',
+        'demo_m1_cognitive_pose',
+        'demo_m1_pose_delta',
+        'demo_m2_srdr_grid',
+        'demo_m2_applied_edges',
+        'demo_m2_obstacle_offers',
+        'demo_m2_predicted_risk',
+        'demo_m2_consumers',
+        'demo_navigation',
+        'demo_story',
+        'demo_m3_gvg',
+        'demo_m3_lookahead',
+        'demo_m3_smac',
+        'demo_m3_mppi_candidates',
+        'demo_m3_mppi_optimal',
+        'demo_m3_pipeline',
     }
-    assert required_current_namespaces <= {
+    assert demo_namespaces == {
         namespace
         for namespace, enabled in current['Namespaces'].items()
         if enabled
     }
+    integration_visualizer = (
+        PACKAGE_ROOT.parents[3]
+        / 'bio_nav_integration'
+        / 'ros2_ws/src/bio_nav_ros_bridge/bio_nav_ros_bridge'
+        / 'v310_visualizer.py'
+    )
+    producer_tree = ast.parse(
+        integration_visualizer.read_text(encoding='utf-8'))
+    producer_demo_namespaces = {
+        call.args[0].value
+        for call in ast.walk(producer_tree)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == '_marker'
+        and call.args
+        and isinstance(call.args[0], ast.Constant)
+        and isinstance(call.args[0].value, str)
+        and call.args[0].value.startswith('demo_')
+    }
+    assert producer_demo_namespaces <= set(current['Namespaces'])
+    assert all(
+        not enabled
+        for namespace, enabled in current['Namespaces'].items()
+        if namespace not in demo_namespaces
+    )
 
     module2 = _named(config, 'Module2 Live Overlay')
     _assert_topic(
@@ -211,7 +239,7 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
         reliability='Reliable',
         durability='Volatile',
     )
-    assert module2['Enabled'] is True
+    assert module2['Enabled'] is False
     assert module2['Namespaces']['Motion Belief'] is True
     assert module2['Namespaces']['Motion Peak'] is True
     assert module2['Namespaces']['Dynamic Risk'] is False
@@ -250,8 +278,8 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
     voxel_grid = _named(config, 'Marked Voxels (3D)')
     assert voxel_grid['Class'] == 'robot_rviz_plugins/Voxel Grid'
     assert voxel_grid['Topic']['Value'] == '/local_costmap/voxel_grid'
-    assert voxel_grid['Enabled'] is True
-    assert voxel_grid['Value'] is True
+    assert voxel_grid['Enabled'] is False
+    assert voxel_grid['Value'] is False
     assert voxel_grid['Color Transformer'] == 'FlatColor'
     assert voxel_grid['Style'] == 'Boxes'
     assert voxel_grid['Size (m)'] == pytest.approx(0.05)
@@ -259,10 +287,57 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
     assert temporal_voxels['Class'] == 'rviz_default_plugins/PointCloud2'
     assert temporal_voxels['Topic']['Value'] == (
         '/local_costmap/stvl_voxel_grid')
-    assert temporal_voxels['Enabled'] is True
+    assert temporal_voxels['Enabled'] is False
     assert temporal_voxels['Color Transformer'] == 'FlatColor'
     assert temporal_voxels['Style'] == 'Boxes'
     assert temporal_voxels['Size (m)'] == pytest.approx(0.05)
+
+    view = config['Visualization Manager']['Views']['Current']
+    assert view['Class'] == 'rviz_default_plugins/TopDownOrtho'
+    assert view['Angle'] == pytest.approx(0.0)
+    assert view['X'] == pytest.approx(0.0)
+    assert view['Y'] == pytest.approx(0.5)
+    assert view['Scale'] == pytest.approx(50.0)
+    window = config['Window Geometry']
+    assert (window['Width'], window['Height']) == (1920, 1080)
+    # Reserve a conservative 120x80 px for window chrome.  The central grid
+    # plus side panels occupy x=[-17.6, 17.6], y=[-8.0, 9.5] metres.
+    visible_width_m = (window['Width'] - 120) / view['Scale']
+    visible_height_m = (window['Height'] - 80) / view['Scale']
+    assert 0.75 <= 16.0 / visible_height_m <= 0.80
+    assert view['X'] - visible_width_m / 2.0 <= -17.6
+    assert view['X'] + visible_width_m / 2.0 >= 17.6
+    assert view['Y'] - visible_height_m / 2.0 <= -8.0
+    assert view['Y'] + visible_height_m / 2.0 >= 9.5
+    assert window['Hide Left Dock'] is True
+    assert window['Hide Right Dock'] is True
+
+    active_leaves = []
+
+    def collect_active_leaves(display, parent_enabled=True):
+        enabled = parent_enabled and display.get('Enabled', True)
+        children = display.get('Displays', [])
+        if children:
+            for child in children:
+                collect_active_leaves(child, enabled)
+        elif enabled:
+            active_leaves.append(display)
+
+    for display in config['Visualization Manager']['Displays']:
+        collect_active_leaves(display)
+    assert {display['Name'] for display in active_leaves} == {
+        'RobotModel',
+        'Static Map',
+        'Global Costmap',
+        'Local Costmap',
+        'Indoor Cognitive Navigation Demo',
+    }
+    active_topics = [
+        display['Topic']['Value']
+        for display in active_leaves
+        if isinstance(display.get('Topic'), dict)
+    ]
+    assert len(active_topics) == len(set(active_topics))
 
 
 def test_rivermark_workflow_exposes_tiles_module2_and_module3_authority():

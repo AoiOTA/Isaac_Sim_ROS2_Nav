@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import isaac_sim.src.bridge.reset_service as reset_service_module
 from isaac_sim.apps.navigation_sim import (
     _clock_message_from_simulation_time,
     _prime_isaac_ros_clock,
@@ -64,6 +65,7 @@ def test_startup_primes_isaac_clock_under_zero_hold_before_reset():
         max_frame_lag_seconds=0.01,
         publish_clock=publish_clock,
         destroy_clock=destroy_clock,
+        handoff_clock=lambda: events.append("handoff"),
         max_updates=3,
     )
 
@@ -78,6 +80,7 @@ def test_startup_primes_isaac_clock_under_zero_hold_before_reset():
         "app_update",
         "publish",
         "spin",
+        "handoff",
         "destroy",
     ]
     source = (ROOT / "isaac_sim/apps/navigation_sim.py").read_text(
@@ -88,8 +91,9 @@ def test_startup_primes_isaac_clock_under_zero_hold_before_reset():
     publisher = source.index("node.create_publisher(", zero)
     prime = source.index("_prime_isaac_ros_clock(", publisher)
     destroy = source.index("destroy_clock=lambda", prime)
+    handoff = source.index("handoff_clock=lambda", destroy)
     startup = source.index("startup_reset = reset_bridge.start_reset(", prime)
-    assert bind < zero < publisher < prime < destroy < startup
+    assert bind < zero < publisher < prime < destroy < handoff < startup
     assert '"/clock"' in source[publisher:prime]
     assert "qos_profile_sensor_data" in source[publisher:prime]
 
@@ -132,21 +136,60 @@ def test_bootstrap_publisher_is_destroyed_when_publish_raises():
 
 
 def test_bootstrap_publisher_destroy_failure_is_fail_stop():
+    state = {"simulation": 0.0, "ros": 0.0}
+
+    def update():
+        state["simulation"] = 0.01
+
+    def spin_once():
+        state["ros"] = state["simulation"]
+
     with pytest.raises(
         RuntimeError,
         match="failed to destroy bootstrap /clock publisher",
     ):
         _prime_isaac_ros_clock(
-            play_first_update=lambda: None,
+            play_first_update=update,
             app_update=lambda: None,
-            spin_once=lambda: None,
-            simulation_time=lambda: 0.01,
-            ros_time=lambda: 0.01,
+            spin_once=spin_once,
+            simulation_time=lambda: state["simulation"],
+            ros_time=lambda: state["ros"],
             max_frame_lag_seconds=0.01,
             publish_clock=lambda _current_time: None,
             destroy_clock=lambda: False,
             max_updates=1,
         )
+
+
+def test_bootstrap_cleanup_does_not_mask_handoff_failure():
+    state = {"simulation": 0.0, "ros": 0.0}
+
+    def update():
+        state["simulation"] = 0.01
+
+    def spin_once():
+        state["ros"] = state["simulation"]
+
+    with pytest.raises(RuntimeError, match="EKF /set_pose timed out") as caught:
+        _prime_isaac_ros_clock(
+            play_first_update=update,
+            app_update=lambda: None,
+            spin_once=spin_once,
+            simulation_time=lambda: state["simulation"],
+            ros_time=lambda: state["ros"],
+            publish_clock=lambda _current_time: None,
+            destroy_clock=lambda: False,
+            max_frame_lag_seconds=0.01,
+            max_updates=1,
+            handoff_clock=lambda: (_ for _ in ()).throw(
+                RuntimeError("EKF /set_pose timed out")
+            ),
+        )
+
+    assert caught.value.__notes__ == [
+        "bootstrap /clock publisher cleanup also failed: "
+        "node.destroy_publisher() returned false"
+    ]
 
 
 def test_startup_clock_priming_failure_is_bounded_and_fail_stop():
@@ -1004,13 +1047,17 @@ class FakeResetClient:
         future=None,
         queue_error=None,
         discovered_on_wait=False,
+        discovered_after_waits=None,
         wait_error=None,
+        wait_result=None,
     ):
         self.ready = ready
         self.future = future or FakeFuture()
         self.queue_error = queue_error
         self.discovered_on_wait = discovered_on_wait
+        self.discovered_after_waits = discovered_after_waits
         self.wait_error = wait_error
+        self.wait_result = wait_result
         self.wait_calls = []
         self.queue_count = 0
 
@@ -1022,8 +1069,14 @@ class FakeResetClient:
         if self.wait_error is not None:
             raise self.wait_error
         if self.discovered_on_wait:
+            self.ready = timeout_sec > 0.0
+        if (
+            self.discovered_after_waits is not None
+            and timeout_sec > 0.0
+            and len(self.wait_calls) >= self.discovered_after_waits
+        ):
             self.ready = True
-        return self.ready
+        return self.ready if self.wait_result is None else self.wait_result
 
     def call_async(self, request):
         del request
@@ -1099,6 +1152,95 @@ def _odometry_transaction_bridge(events, wheel_client, ekf_client):
     transaction.timeout_timer = FakeTimer()
     bridge._active_transaction = transaction
     return bridge, transaction, gate
+
+
+def test_startup_service_handoff_returns_immediately_when_services_are_ready():
+    wheel = FakeResetClient()
+    ekf = FakeResetClient()
+    bridge, _, _ = _odometry_transaction_bridge([], wheel, ekf)
+    progress_calls = []
+
+    bridge.wait_for_startup_services(
+        progress=lambda: progress_calls.append(True)
+    )
+
+    assert progress_calls == []
+    assert wheel.wait_calls == []
+    assert ekf.wait_calls == []
+    assert not bridge._required_service_discovery_pending
+
+
+def test_startup_service_handoff_pumps_clock_until_delayed_ekf_is_ready(
+    monkeypatch,
+):
+    wheel = FakeResetClient()
+    ekf = FakeResetClient(ready=False, discovered_after_waits=3)
+    bridge, _, _ = _odometry_transaction_bridge([], wheel, ekf)
+    now = [0.0]
+    progress_calls = []
+    monkeypatch.setattr(reset_service_module.time, "monotonic", lambda: now[0])
+
+    def progress():
+        progress_calls.append(True)
+        now[0] += 0.25
+
+    bridge.wait_for_startup_services(progress=progress)
+
+    assert len(progress_calls) == 3
+    assert wheel.wait_calls == []
+    assert ekf.wait_calls == pytest.approx([0.05, 0.05, 0.05])
+    assert all(timeout > 0.0 for timeout in ekf.wait_calls)
+    assert not bridge._required_service_discovery_pending
+
+
+def test_startup_service_handoff_timeout_names_service_and_elapsed(
+    monkeypatch,
+):
+    wheel = FakeResetClient()
+    ekf = FakeResetClient(ready=False)
+    bridge, _, _ = _odometry_transaction_bridge([], wheel, ekf)
+    now = [0.0]
+    monkeypatch.setattr(reset_service_module.time, "monotonic", lambda: now[0])
+
+    with pytest.raises(
+        ResetServiceError,
+        match=(
+            r"required startup reset service did not become ready: "
+            r"label=EKF, service=/set_pose, elapsed_s=1\.500, "
+            r"timeout_s=1\.500"
+        ),
+    ):
+        bridge.wait_for_startup_services(
+            progress=lambda: now.__setitem__(0, now[0] + 0.5)
+        )
+
+    assert ekf.wait_calls == pytest.approx([0.05, 0.05])
+    assert all(timeout > 0.0 for timeout in ekf.wait_calls)
+    assert bridge._required_service_discovery_pending
+
+
+def test_startup_transaction_honors_false_service_wait_result():
+    events = []
+    wheel = FakeResetClient(
+        ready=False,
+        discovered_on_wait=True,
+        wait_result=False,
+    )
+    ekf = FakeResetClient()
+    bridge, transaction, gate = _odometry_transaction_bridge(
+        events, wheel, ekf
+    )
+
+    bridge.reset_ros_odometry("mixed")
+    transaction.seal()
+    ekf.future.complete()
+
+    assert wheel.wait_calls == [1.5]
+    assert wheel.queue_count == 0
+    assert transaction.errors == [
+        "wheel odometry: required reset service is unavailable"
+    ]
+    assert gate.held
 
 
 def test_mixed_startup_waits_once_for_delayed_required_service_discovery():

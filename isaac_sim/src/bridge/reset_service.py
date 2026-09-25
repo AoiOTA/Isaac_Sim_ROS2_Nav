@@ -10,10 +10,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 import math
+import time
 from typing import Any, Callable
 
 from isaac_sim.src.robot.reset import ResetManager, ResetRequest
 from isaac_sim.src.robot.spawn_pose_manager import SpawnPoseManager
+
+
+STARTUP_SERVICE_DISCOVERY_SLICE_SECONDS = 0.05
 
 
 class ResetServiceError(RuntimeError):
@@ -712,14 +716,68 @@ class ResetServiceBridge:
         try:
             if client.service_is_ready():
                 return True
-            client.wait_for_service(timeout_sec=self._transaction_timeout_sec)
+            discovered = client.wait_for_service(
+                timeout_sec=self._transaction_timeout_sec
+            )
         except Exception as exc:
             self.node.get_logger().error(
                 f"failed while waiting for {label} reset service discovery: {exc}"
             )
             transaction.record_error(f"{label} service discovery", exc)
             return False
-        return True
+        if discovered and client.service_is_ready():
+            return True
+        message = "required reset service is unavailable"
+        self.node.get_logger().error(f"{label}: {message}")
+        transaction.record_error(label, message)
+        return False
+
+    def wait_for_startup_services(self, *, progress: Callable[[], None]) -> None:
+        """Keep the simulation progressing until mixed-odom services exist."""
+
+        if not getattr(self, "_required_service_discovery_pending", False):
+            return
+        if not callable(progress):
+            raise ResetServiceError("startup service progress must be callable")
+
+        started_at = time.monotonic()
+        for label, service_name, client in (
+            ("wheel odometry", "/wheel_odometry/reset", self._wheel_reset_client),
+            ("EKF", "/set_pose", self._ekf_set_pose_client),
+        ):
+            while not client.service_is_ready():
+                elapsed = time.monotonic() - started_at
+                if elapsed >= self._transaction_timeout_sec:
+                    raise ResetServiceError(
+                        "required startup reset service did not become ready: "
+                        f"label={label}, service={service_name}, "
+                        f"elapsed_s={elapsed:.3f}, "
+                        f"timeout_s={self._transaction_timeout_sec:.3f}"
+                    )
+                progress()
+                elapsed = time.monotonic() - started_at
+                remaining = self._transaction_timeout_sec - elapsed
+                if remaining <= 0.0:
+                    raise ResetServiceError(
+                        "required startup reset service did not become ready: "
+                        f"label={label}, service={service_name}, "
+                        f"elapsed_s={elapsed:.3f}, "
+                        f"timeout_s={self._transaction_timeout_sec:.3f}"
+                    )
+                try:
+                    client.wait_for_service(
+                        timeout_sec=min(
+                            STARTUP_SERVICE_DISCOVERY_SLICE_SECONDS,
+                            remaining,
+                        )
+                    )
+                except Exception as exc:
+                    raise ResetServiceError(
+                        "failed while waiting for required startup reset "
+                        f"service: label={label}, service={service_name}, "
+                        f"elapsed_s={time.monotonic() - started_at:.3f}"
+                    ) from exc
+        self._required_service_discovery_pending = False
 
     def reset_ros_odometry(self, odometry_mode: str) -> None:
         """Notify local estimators and reset their filter state."""

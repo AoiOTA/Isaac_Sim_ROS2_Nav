@@ -119,11 +119,12 @@ def _prime_isaac_ros_clock(
     destroy_clock: Callable[[], bool],
     max_frame_lag_seconds: float,
     max_updates: int = 5,
+    handoff_clock: Callable[[], None] | None = None,
 ) -> tuple[float, float, float, float]:
-    """Bootstrap ROS time from Isaac, then retire the temporary publisher."""
+    """Bootstrap ROS time and keep publishing through service handoff."""
 
     try:
-        return _prime_isaac_ros_clock_until_aligned(
+        result = _prime_isaac_ros_clock_until_aligned(
             play_first_update=play_first_update,
             app_update=app_update,
             spin_once=spin_once,
@@ -133,12 +134,29 @@ def _prime_isaac_ros_clock(
             max_frame_lag_seconds=max_frame_lag_seconds,
             max_updates=max_updates,
         )
-    finally:
-        if not destroy_clock():
-            raise RuntimeError(
-                "failed to destroy bootstrap /clock publisher before "
-                "startup reset"
+        if handoff_clock is not None:
+            handoff_clock()
+    except BaseException as exc:
+        try:
+            destroyed = destroy_clock()
+        except Exception as cleanup_exc:
+            exc.add_note(
+                "bootstrap /clock publisher cleanup also failed: "
+                f"{type(cleanup_exc).__name__}: {cleanup_exc}"
             )
+        else:
+            if not destroyed:
+                exc.add_note(
+                    "bootstrap /clock publisher cleanup also failed: "
+                    "node.destroy_publisher() returned false"
+                )
+        raise
+    if not destroy_clock():
+        raise RuntimeError(
+            "failed to destroy bootstrap /clock publisher before "
+            "startup reset"
+        )
+    return result
 
 
 def _prime_isaac_ros_clock_until_aligned(
@@ -1889,14 +1907,24 @@ def run(
         reset_bridge.bind(reset_manager)
         # ResetStopGate starts held.  Re-publish zero after the control graph
         # exists, then briefly publish Isaac's current epoch from this same
-        # node before mixed-mode wheel and EKF startup service discovery.
-        # OmniGraph takes over after the bootstrap publisher is destroyed.
+        # node through mixed-mode wheel and EKF startup service discovery.
+        # OmniGraph takes over only after the required services are ready.
         reset_stop_gate.publish_zero()
         bootstrap_clock_publisher = node.create_publisher(
             Clock,
             "/clock",
             qos_profile_sensor_data,
         )
+
+        def progress_bootstrap_clock() -> None:
+            app.update()
+            bootstrap_clock_publisher.publish(
+                _clock_message_from_simulation_time(
+                    float(SimulationManager.get_simulation_time())
+                )
+            )
+            rclpy.spin_once(node, timeout_sec=0.0)
+
         _prime_isaac_ros_clock(
             play_first_update=runtime.play,
             app_update=app.update,
@@ -1912,6 +1940,9 @@ def run(
             ),
             destroy_clock=lambda: node.destroy_publisher(
                 bootstrap_clock_publisher
+            ),
+            handoff_clock=lambda: reset_bridge.wait_for_startup_services(
+                progress=progress_bootstrap_clock
             ),
             max_frame_lag_seconds=max(
                 1.0 / config.simulation.physics_hz,
