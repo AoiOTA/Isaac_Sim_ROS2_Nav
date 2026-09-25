@@ -1,0 +1,64 @@
+schema_version: 1
+map_version: kujiale_realistic_v7
+created_at: "2026-08-17"
+availability: local_generated
+artifact_policy: occupancy_pair_plus_route_graph_plus_posegraph
+bundle_sha256: ceb2e2545f39528873eb1eb8c8f8e69ed477b371bc8fafbfab9f274ed8feeb22
+source:
+  environment_asset: kujiale_0026/kujiale_0026_A_to_B_door_open.usd
+  robot: jackal
+  odometry_mode: ideal
+  localization_backend: slam_toolbox
+  input_map: runs/operator_maps/kujiale_realistic_v7/kujiale_realistic_v7
+occupancy_grid:
+  resolution_m: 0.05
+  width_cells: 238
+  height_cells: 158
+  origin: [-0.783, -2.052, 0.0]
+  files:
+    - role: yaml
+      path: data/maps/occupancy/kujiale_realistic_v7.yaml
+      bytes: 142
+      sha256: 95e320545b374150d2afbc1d890869657770f72575e3a3f6974e0cb9b30276f3
+    - role: image
+      path: data/maps/occupancy/kujiale_realistic_v7.pgm
+      bytes: 37619
+      sha256: 53831ad4002ef4aadcfe48fa0d5868242a2696417b629025871cfc659f39f1b6
+pose_graph:
+  prefix: data/maps/posegraphs/kujiale_realistic_v7
+  files:
+    - role: posegraph
+      path: data/maps/posegraphs/kujiale_realistic_v7.posegraph
+      bytes: 34343143
+      sha256: fdf69bf1ed6c8bc3f6ca9ad05e80f734b3590204055cb6ba2527c0d935edc739
+    - role: data
+      path: data/maps/posegraphs/kujiale_realistic_v7.data
+      bytes: 6777888
+      sha256: 217d2e64fa857678dd2c4d9d6901b589180fb19653cd4c542b9047f705f58d50
+route_graph:
+  geojson:
+    path: ros2_ws/src/robot_route_planner/config/kujiale_realistic_v7_gvg_v1.geojson
+    sha256: 18545ffa96ced7cc0db0e4feb9642e9ca1f72e71a50dbb1520578cb72c8c5121
+  support_map:
+    path: ros2_ws/src/robot_route_planner/config/kujiale_realistic_v7_gvg_v1_support_map.json
+    sha256: a320f4bd1f91f2b50981892cd7d0165cb7f4cab898ac3fdc16b712995d829e57
+  summary:
+    path: ros2_ws/src/robot_route_planner/config/kujiale_realistic_v7_gvg_v1_summary.json
+    sha256: 0dd1de28457a1a52e73ffaf703a310bbda1873611979b791e5f4f6bcedaafa4a
+calibration:
+  calibrated: true
+  spawn_pose_profile: long_route_start_g1_v7
+  bundle_sha256: ceb2e2545f39528873eb1eb8c8f8e69ed477b371bc8fafbfab9f274ed8feeb22
+  calibrated_at: "2026-08-17"
+  calibration_method: ideal_mapping_anchor_at_long_route_start_g1
+  usd_base_position: [2.45, 5.15, 0.0635]
+  usd_base_yaw_deg: 270.0
+  map_base_position: [0.0, 0.0]
+  map_base_yaw_deg: 0.0
+  position_stddev_m: 0.05
+  yaw_stddev_deg: 1.0
+notes:
+  - The four generated artifacts are one indivisible SLAM Toolbox version, built from runs/operator_maps/kujiale_realistic_v7 (async mapping, ideal odometry, no scan matching).
+  - The large .posegraph file (34 MB) is kept local and is not committed to git.
+  - Mapping started at spawn long_route_start_g1, so the SLAM Toolbox posegraph "map" frame origin is that spawn; the calibration anchors map (0, 0, yaw 0) to USD base [2.45, 5.15, 0.0635], yaw 270 deg.
+  - The route_graph trio binds the kujiale_realistic_v7_gvg_v1 GVG baseline graph to this bundle; summary.map_version must equal map_version.
