@@ -14,6 +14,7 @@ from .map_manifest import validate_initial_pose_contract
 OPERATIONS = frozenset({
     'mapping', 'incremental_mapping', 'localization', 'navigation'})
 ODOMETRY_MODES = frozenset({'ideal', 'realistic'})
+LOCALIZATION_BACKENDS = frozenset({'ideal', 'slam_toolbox', 'amcl'})
 STRUCTURE_TF_SOURCES = frozenset({'isaac', 'rsp'})
 NAV2_PROFILES = frozenset({
     'stable', 'performance', 'dynamic_avoidance', 'bio_nav_planning_only',
@@ -201,6 +202,32 @@ def validate_nav2_profile(value):
     profile = value.strip().lower()
     _require_choice('nav2_profile', profile, NAV2_PROFILES)
     return profile
+
+
+def validate_localization_backend(value):
+    """Normalize the sole map-to-odom owner selected at launch."""
+    backend = value.strip().lower()
+    _require_choice('localization_backend', backend, LOCALIZATION_BACKENDS)
+    return backend
+
+
+def resolve_localization_backend(odometry_mode, requested_backend=''):
+    """Resolve the legacy implicit mapping or validate an explicit owner."""
+
+    odometry = odometry_mode.strip().lower()
+    _require_choice('odometry_mode', odometry, ODOMETRY_MODES)
+    requested = requested_backend.strip().lower()
+    if not requested:
+        return 'ideal' if odometry == 'ideal' else 'slam_toolbox'
+
+    backend = validate_localization_backend(requested)
+    if backend == 'ideal' and odometry != 'ideal':
+        raise ValueError(
+            'localization_backend=ideal requires odometry_mode=ideal')
+    if backend == 'amcl' and odometry != 'realistic':
+        raise ValueError(
+            'localization_backend=amcl requires odometry_mode=realistic')
+    return backend
 
 
 def validate_mode(

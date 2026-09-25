@@ -3,18 +3,22 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from robot_route_planner.models import Edge, Graph, Node, NodeType, Traversability
 from robot_route_planner.map_io import OccupancyMap
 from robot_route_planner.ros_node import (
     CostmapSnapshot,
     RouteCoordinator,
+    edge_prior_expiry_ns,
+    edge_prior_is_fresh,
     footprint_is_free,
     navigation_result_succeeded,
     populate_fresh_goal,
     select_live_feasible_lookahead,
     select_map_pose,
     select_support_attachment,
+    validate_online_odometry_topic,
 )
 from robot_route_planner.route_cost import edge_cost_breakdown, shortest_route
 from robot_route_planner.route_support import export_route_support_graph
@@ -271,6 +275,161 @@ def test_map_frame_odometry_wins_over_transient_tf_and_odom_frame_uses_tf() -> N
     assert select_map_pose("map", "map", (1.0, 2.0), (9.0, 8.0)) == (1.0, 2.0)
     assert select_map_pose("map", "odom", (1.0, 2.0), (9.0, 8.0)) == (9.0, 8.0)
     assert select_map_pose("map", None, None, None) is None
+
+
+def test_online_route_tracking_rejects_ground_truth_odometry() -> None:
+    assert validate_online_odometry_topic(" /odom ") == "/odom"
+    assert validate_online_odometry_topic("odom") == "/odom"
+    for topic in ("/ground_truth/odom", "ground_truth/odom"):
+        with pytest.raises(ValueError, match="evaluator or diagnostic"):
+            validate_online_odometry_topic(topic)
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "robot_route_planner"
+        / "ros_node.py"
+    ).read_text(encoding="utf-8")
+    assert '("odometry_topic", "/odom")' in source
+    assert '("odometry_topic", "/ground_truth/odom")' not in source
+
+
+def test_edge_prior_freshness_uses_message_stamp_plus_ttl() -> None:
+    message = SimpleNamespace(
+        header=SimpleNamespace(stamp=SimpleNamespace(sec=10, nanosec=250)),
+        ttl=SimpleNamespace(sec=2, nanosec=500),
+    )
+    expiry = 12_000_000_750
+
+    assert edge_prior_expiry_ns(message) == expiry
+    assert edge_prior_is_fresh(message, expiry - 1)
+    assert edge_prior_is_fresh(message, expiry)
+    assert not edge_prior_is_fresh(message, expiry + 1)
+    assert not edge_prior_is_fresh(message, 10_000_000_249)
+
+
+def test_future_and_out_of_order_edge_priors_do_not_replace_current_lease() -> None:
+    applied = []
+    coordinator = RouteCoordinator.__new__(RouteCoordinator)
+    coordinator.pending_goal = object()
+    coordinator.pending_deadline_ns = 123
+    coordinator.request_id = 3
+    coordinator.graph = SimpleNamespace(
+        graph_id="graph", revision=4, edges=[SimpleNamespace(id=7)]
+    )
+    coordinator.latest_priors = {7: (0.5, 1.0)}
+    coordinator.latest_prior_expiry_ns = 15_000_000_000
+    coordinator.latest_prior_stamp_ns = 12_000_000_000
+    coordinator._now = lambda: SimpleNamespace(nanoseconds=13_000_000_000)
+    coordinator._prepare_route = applied.append
+    coordinator.node = SimpleNamespace(
+        get_logger=lambda: SimpleNamespace(info=lambda _message: None)
+    )
+
+    def prior(stamp_s):
+        return SimpleNamespace(
+            request_id=3,
+            graph_id="graph",
+            graph_revision=4,
+            healthy=True,
+            header=SimpleNamespace(
+                stamp=SimpleNamespace(sec=stamp_s, nanosec=0)),
+            ttl=SimpleNamespace(sec=2, nanosec=0),
+            priors=[SimpleNamespace(
+                edge_id=7, cost_delta_m=9.0, confidence=1.0)],
+        )
+
+    RouteCoordinator._on_priors(coordinator, prior(11))
+    RouteCoordinator._on_priors(coordinator, prior(14))
+
+    assert applied == []
+    assert coordinator.latest_priors == {7: (0.5, 1.0)}
+    assert coordinator.latest_prior_stamp_ns == 12_000_000_000
+    assert coordinator.pending_deadline_ns == 123
+
+
+def test_clock_rollback_fails_open_and_refreshes_route_context() -> None:
+    events = []
+    coordinator = RouteCoordinator.__new__(RouteCoordinator)
+    coordinator.defaults = {
+        "module2_edge_prior": {"active_refresh_period_s": 5.0}
+    }
+    coordinator.last_runtime_clock_ns = 20_000_000_000
+    coordinator.last_context_publish_ns = 19_000_000_000
+    coordinator.latest_prior_expiry_ns = 25_000_000_000
+    coordinator.latest_prior_stamp_ns = 19_000_000_000
+    coordinator.latest_priors = {7: (1.0, 1.0)}
+    coordinator.pending_deadline_ns = 24_000_000_000
+    coordinator.pending_goal = object()
+    coordinator.module2_enabled = True
+    coordinator._now = lambda: SimpleNamespace(nanoseconds=3_000_000_000)
+    coordinator._prepare_route = lambda priors: events.append(("route", priors))
+    coordinator._publish_route_context = lambda: events.append(("context", None))
+    coordinator.runtime = SimpleNamespace(tick=lambda _now_s: False)
+    coordinator.node = SimpleNamespace(
+        get_logger=lambda: SimpleNamespace(info=lambda _message: None)
+    )
+
+    RouteCoordinator._runtime_tick(coordinator)
+
+    assert coordinator.latest_priors == {}
+    assert coordinator.latest_prior_expiry_ns is None
+    assert coordinator.latest_prior_stamp_ns is None
+    assert coordinator.pending_deadline_ns is None
+    assert events == [("route", {}), ("context", None)]
+
+
+def test_late_route_callback_cannot_replace_new_generation_tracker() -> None:
+    coordinator = RouteCoordinator.__new__(RouteCoordinator)
+    coordinator.pending_goal = object()
+    coordinator.request_id = 8
+    coordinator.graph = SimpleNamespace(graph_id="graph", revision=3)
+    coordinator.route_prepare_generation = 2
+    coordinator.tracker = "new-tracker"
+    late_result_was_read = []
+    late_future = SimpleNamespace(
+        result=lambda: late_result_was_read.append(True)
+    )
+
+    RouteCoordinator._on_route_result(
+        coordinator,
+        late_future,
+        (8, "graph", 3, 1),
+    )
+
+    assert late_result_was_read == []
+    assert coordinator.tracker == "new-tracker"
+
+
+def test_expired_edge_prior_fails_open_before_route_cost_application() -> None:
+    applied = []
+    coordinator = RouteCoordinator.__new__(RouteCoordinator)
+    coordinator.pending_goal = object()
+    coordinator.request_id = 3
+    coordinator.graph = SimpleNamespace(
+        graph_id="graph", revision=4, edges=[SimpleNamespace(id=7)]
+    )
+    coordinator.pending_deadline_ns = 99
+    coordinator.latest_priors = {7: (1.0, 1.0)}
+    coordinator.latest_prior_expiry_ns = 99
+    coordinator._now = lambda: SimpleNamespace(nanoseconds=20_000_000_000)
+    coordinator._prepare_route = applied.append
+    coordinator.node = SimpleNamespace(
+        get_logger=lambda: SimpleNamespace(info=lambda _message: None)
+    )
+    message = SimpleNamespace(
+        request_id=3,
+        graph_id="graph",
+        graph_revision=4,
+        healthy=True,
+        header=SimpleNamespace(stamp=SimpleNamespace(sec=10, nanosec=0)),
+        ttl=SimpleNamespace(sec=2, nanosec=0),
+        priors=[SimpleNamespace(edge_id=7, cost_delta_m=1.0, confidence=1.0)],
+    )
+
+    RouteCoordinator._on_priors(coordinator, message)
+
+    assert applied == [{}]
+    assert coordinator.latest_priors == {}
+    assert coordinator.latest_prior_expiry_ns is None
 
 
 def test_final_goal_copy_refreshes_header_without_changing_pose() -> None:

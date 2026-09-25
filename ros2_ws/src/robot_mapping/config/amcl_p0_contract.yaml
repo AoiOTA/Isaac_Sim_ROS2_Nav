@@ -1,0 +1,13 @@
+amcl:
+  ros__parameters:
+    use_sim_time: true
+    base_frame_id: base_link
+    odom_frame_id: odom
+    global_frame_id: map
+    scan_topic: /scan
+    tf_broadcast: true
+    robot_model_type: nav2_amcl::DifferentialMotionModel
+    laser_model_type: likelihood_field_prob
+    min_particles: 500
+    max_particles: 3000
+

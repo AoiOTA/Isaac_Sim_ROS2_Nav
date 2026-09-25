@@ -61,7 +61,7 @@ class WheelOdometryNode(Node):
             self.get_parameter('pose_covariance_diagonal').value)
         self._twist_covariance = covariance_from_diagonal(
             self.get_parameter('twist_covariance_diagonal').value)
-        self._latest_joint_sample = None
+        self._latest_odometry_sample = None
         self._last_rejection = None
 
         reliable_qos = QoSProfile(
@@ -89,24 +89,27 @@ class WheelOdometryNode(Node):
         self._timer = self.create_timer(1.0 / publish_rate, self._timer_callback)
 
     def _joint_state_callback(self, message):
-        self._latest_joint_sample = (list(message.name), list(message.velocity))
-
-    def _timer_callback(self):
-        if self._latest_joint_sample is None:
-            return
-        now = self.get_clock().now()
-        names, velocities = self._latest_joint_sample
+        stamp = message.header.stamp
+        stamp_s = float(stamp.sec) + float(stamp.nanosec) * 1.0e-9
         result = self._integrator.update(
-            names, velocities, now.nanoseconds * 1.0e-9)
+            list(message.name), list(message.velocity), stamp_s)
         if not result.accepted:
             if result.reason != self._last_rejection:
                 self.get_logger().warning(
                     f'Wheel odometry sample rejected: {result.reason}')
                 self._last_rejection = result.reason
             return
-
         self._last_rejection = None
-        self._odom_publisher.publish(self._to_message(result.sample, now.to_msg()))
+        self._latest_odometry_sample = (result.sample, stamp)
+
+    def _timer_callback(self):
+        if self._latest_odometry_sample is None:
+            return
+        # Integration happens for every sensor timestamp in the subscription
+        # callback. The timer only bounds publication load.
+        sample, stamp = self._latest_odometry_sample
+        self._latest_odometry_sample = None
+        self._odom_publisher.publish(self._to_message(sample, stamp))
 
     def _to_message(self, sample, stamp):
         message = Odometry()
@@ -136,7 +139,7 @@ class WheelOdometryNode(Node):
 
     def _reset_state(self):
         self._integrator.reset()
-        self._latest_joint_sample = None
+        self._latest_odometry_sample = None
         self._last_rejection = None
 
 

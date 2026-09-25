@@ -13,12 +13,20 @@ def generate_launch_description():
         / 'launch'
         / 'ros_stack.launch.py'
     )
+    default_amcl_params = (
+        Path(get_package_share_directory('robot_mapping'))
+        / 'config' / 'amcl_p0_contract.yaml'
+    )
     return LaunchDescription([
         DeclareLaunchArgument('odometry_mode', default_value='ideal'),
+        DeclareLaunchArgument(
+            'localization_backend', default_value=''),
         DeclareLaunchArgument('structure_tf_source', default_value='isaac'),
         DeclareLaunchArgument('posegraph_file', default_value=''),
         DeclareLaunchArgument('ceres_num_threads', default_value='12'),
         DeclareLaunchArgument('map_file', default_value=''),
+        DeclareLaunchArgument(
+            'amcl_params_file', default_value=str(default_amcl_params)),
         DeclareLaunchArgument('map_manifest_file', default_value=''),
         DeclareLaunchArgument(
             'posegraph_calibration', default_value='false'),
@@ -48,12 +56,15 @@ def generate_launch_description():
             launch_arguments={
                 'operation': 'localization',
                 'odometry_mode': LaunchConfiguration('odometry_mode'),
+                'localization_backend': LaunchConfiguration(
+                    'localization_backend'),
                 'structure_tf_source': LaunchConfiguration(
                     'structure_tf_source'),
                 'posegraph_file': LaunchConfiguration('posegraph_file'),
                 'ceres_num_threads': LaunchConfiguration(
                     'ceres_num_threads'),
                 'map_file': LaunchConfiguration('map_file'),
+                'amcl_params_file': LaunchConfiguration('amcl_params_file'),
                 'map_manifest_file': LaunchConfiguration(
                     'map_manifest_file'),
                 'posegraph_calibration': LaunchConfiguration(

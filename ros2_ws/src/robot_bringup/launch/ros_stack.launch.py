@@ -16,6 +16,7 @@ from launch_ros.actions import Node
 from robot_bringup.interactive_policy import resolve_interactive_selection
 from robot_bringup.interactive_policy import teleop_terminal_command
 from robot_bringup.mode_contract import validate_mode
+from robot_bringup.mode_contract import resolve_localization_backend
 from robot_bringup.mode_contract import validate_nav2_profile
 from robot_bringup.mode_contract import validate_nav2_profile_params_file
 from robot_bringup.mode_contract import validate_robot_runtime_files
@@ -51,6 +52,11 @@ def _include(package, launch_file, arguments):
 
 
 def _launch_setup(context):
+    odometry_mode = LaunchConfiguration('odometry_mode').perform(context)
+    localization_backend = resolve_localization_backend(
+        odometry_mode,
+        LaunchConfiguration('localization_backend').perform(context),
+    )
     initial_pose_source = LaunchConfiguration(
         'initial_pose_source').perform(context).strip().lower()
     if initial_pose_source not in {'auto', 'rviz'}:
@@ -61,7 +67,7 @@ def _launch_setup(context):
         'spawn_poses_file').perform(context).strip()
     selection = validate_mode(
         operation=LaunchConfiguration('operation').perform(context),
-        odometry_mode=LaunchConfiguration('odometry_mode').perform(context),
+        odometry_mode=odometry_mode,
         structure_tf_source=LaunchConfiguration(
             'structure_tf_source').perform(context),
         posegraph_file=LaunchConfiguration('posegraph_file').perform(context),
@@ -77,7 +83,7 @@ def _launch_setup(context):
     )
     selected_spawn = None
     if (selection.operation in {'localization', 'navigation'}
-            and selection.odometry_mode == 'ideal'
+            and localization_backend == 'ideal'
             and initial_pose_source == 'auto'):
         selected_spawn = load_spawn_pose(
             spawn_poses_file,
@@ -92,9 +98,11 @@ def _launch_setup(context):
     posegraph_calibration = posegraph_calibration_value == 'true'
     if posegraph_calibration and not (
             selection.operation == 'localization'
-            and selection.odometry_mode == 'ideal'):
+            and selection.odometry_mode == 'ideal'
+            and localization_backend == 'slam_toolbox'):
         raise RuntimeError(
-            'posegraph_calibration is only valid for Ideal localization')
+            'posegraph_calibration requires Ideal odometry, localization '
+            'operation, and localization_backend=slam_toolbox')
     use_self_filter = LaunchConfiguration('use_self_filter').perform(context)
     if (selection.operation == 'incremental_mapping'
             and initial_pose_source != 'auto'):
@@ -147,6 +155,7 @@ def _launch_setup(context):
         'ROS stack mode: '
         f'operation={selection.operation}, '
         f'odometry={selection.odometry_mode}, '
+        f'localization_backend={localization_backend}, '
         f'structure_tf={selection.structure_tf_source}, '
         f'rviz={interactive.use_rviz}, teleop={interactive.use_teleop}, '
         f'nav2_profile={nav2_profile}, '
@@ -266,12 +275,9 @@ def _launch_setup(context):
                     'use_sim_time': use_sim_time,
                     'posegraph_file': selection.posegraph_prefix,
                     'map_file': selection.occupancy_map_file,
-                    'use_posegraph_localization': (
-                        'true'
-                        if (selection.odometry_mode == 'realistic'
-                            or posegraph_calibration)
-                        else 'false'
-                    ),
+                    'localization_backend': localization_backend,
+                    'amcl_params_file': LaunchConfiguration(
+                        'amcl_params_file').perform(context),
                     'map_to_odom_x': (
                         str(selected_spawn.map.position[0])
                         if selected_spawn is not None else '0.0'
@@ -421,6 +427,10 @@ def _launch_setup(context):
 
 
 def generate_launch_description():
+    default_amcl_params = (
+        Path(get_package_share_directory('robot_mapping'))
+        / 'config' / 'amcl_p0_contract.yaml'
+    )
     return LaunchDescription([
         DeclareLaunchArgument(
             'operation',
@@ -431,12 +441,21 @@ def generate_launch_description():
             default_value='ideal',
             description='ideal or realistic'),
         DeclareLaunchArgument(
+            'localization_backend',
+            default_value='',
+            description=(
+                'optional explicit ideal, slam_toolbox, or amcl backend; '
+                'unset preserves the odometry-mode legacy mapping; AMCL is '
+                'a P0 contract only')),
+        DeclareLaunchArgument(
             'structure_tf_source',
             default_value='isaac',
             description='isaac or rsp'),
         DeclareLaunchArgument('posegraph_file', default_value=''),
         DeclareLaunchArgument('ceres_num_threads', default_value='12'),
         DeclareLaunchArgument('map_file', default_value=''),
+        DeclareLaunchArgument(
+            'amcl_params_file', default_value=str(default_amcl_params)),
         # Keep the manifest explicit at the core-launch boundary so direct
         # users get the same map-integrity validation as the wrapper launches.
         DeclareLaunchArgument(

@@ -43,6 +43,43 @@ def select_map_pose(
     return tf_xy
 
 
+def validate_online_odometry_topic(topic: str) -> str:
+    """Keep evaluator ground truth out of online route tracking."""
+
+    stripped = str(topic).strip()
+    if not stripped:
+        raise ValueError("odometry_topic must not be empty")
+    normalized = "/" + "/".join(
+        component for component in stripped.split("/") if component
+    )
+    if normalized == "/ground_truth" or normalized.startswith("/ground_truth/"):
+        raise ValueError(
+            "RouteCoordinator cannot consume /ground_truth; use an evaluator "
+            "or diagnostic node"
+        )
+    return normalized
+
+
+def edge_prior_stamp_ns(message) -> int:
+    stamp = message.header.stamp
+    return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+
+
+def edge_prior_expiry_ns(message) -> int:
+    """Return source stamp plus the duration carried by EdgePriorArray."""
+
+    ttl = message.ttl
+    ttl_ns = int(ttl.sec) * 1_000_000_000 + int(ttl.nanosec)
+    return edge_prior_stamp_ns(message) + ttl_ns
+
+
+def edge_prior_is_fresh(message, now_ns: int) -> bool:
+    ttl = message.ttl
+    ttl_ns = int(ttl.sec) * 1_000_000_000 + int(ttl.nanosec)
+    age_ns = int(now_ns) - edge_prior_stamp_ns(message)
+    return ttl_ns > 0 and 0 <= age_ns <= ttl_ns
+
+
 def populate_fresh_goal(target, source, header) -> None:
     """Copy a final goal pose while retaining the newest progress timestamp."""
     target.header = header
@@ -252,7 +289,7 @@ class RouteCoordinator:
             ("structural_map_topic", "/bio_nav/structural_map"),
             ("occupancy_map_topic", "/map"),
             ("goal_complete_topic", "/bio_nav/route_goal_complete"),
-            ("odometry_topic", "/ground_truth/odom"),
+            ("odometry_topic", "/odom"),
             ("region_config_file", ""),
             ("region_switch_min_dwell_s", 0.5),
             ("compute_route_action", "/compute_route"),
@@ -318,8 +355,12 @@ class RouteCoordinator:
         self.pending_goal = None
         self.pending_deadline_ns: int | None = None
         self.request_id = 0
+        self.route_prepare_generation = 0
         self.last_context_publish_ns = 0
+        self.last_runtime_clock_ns: int | None = None
         self.latest_priors: dict[int, tuple[float, float]] = {}
+        self.latest_prior_expiry_ns: int | None = None
+        self.latest_prior_stamp_ns: int | None = None
         self.tracker: RouteTracker | None = None
         self.latest_pose_xy: tuple[float, float] | None = None
         self.latest_pose_frame_id: str | None = None
@@ -462,9 +503,12 @@ class RouteCoordinator:
             self._on_occupancy_map,
             qos_latched,
         )
+        odometry_topic = validate_online_odometry_topic(
+            str(node.get_parameter("odometry_topic").value)
+        )
         node.create_subscription(
             Odometry,
-            str(node.get_parameter("odometry_topic").value),
+            odometry_topic,
             self._on_odometry,
             qos,
         )
@@ -703,6 +747,8 @@ class RouteCoordinator:
         self.pending_goal = goal
         self.route_active = True
         self.latest_priors = {}
+        self.latest_prior_expiry_ns = None
+        self.latest_prior_stamp_ns = None
         self.node.get_logger().info(
             "received route goal request "
             f"{self.request_id}: ({goal.pose.position.x:.3f}, "
@@ -742,6 +788,31 @@ class RouteCoordinator:
             or int(message.graph_revision) != self.graph.revision
         ):
             return
+        now_ns = int(self._now().nanoseconds)
+        source_ns = edge_prior_stamp_ns(message)
+        if (
+            getattr(self, "latest_prior_stamp_ns", None) is not None
+            and source_ns <= self.latest_prior_stamp_ns
+        ):
+            self.node.get_logger().info(
+                "Module2 edge prior is out of order; keeping current lease"
+            )
+            return
+        if not edge_prior_is_fresh(message, now_ns):
+            if source_ns > now_ns:
+                self.node.get_logger().info(
+                    "Module2 edge prior has a future stamp; ignored"
+                )
+                return
+            self.pending_deadline_ns = None
+            self.node.get_logger().info(
+                "Module2 edge prior expired; using geometry-only route"
+            )
+            self.latest_priors = {}
+            self.latest_prior_expiry_ns = None
+            self.latest_prior_stamp_ns = None
+            self._prepare_route({})
+            return
         self.pending_deadline_ns = None
         edge_ids = {int(edge.id) for edge in self.graph.edges}
         observed_ids = [int(item.edge_id) for item in message.priors]
@@ -752,6 +823,8 @@ class RouteCoordinator:
                 "Module2 prior contains duplicate or nonexistent graph edges; ignored"
             )
             self.latest_priors = {}
+            self.latest_prior_expiry_ns = None
+            self.latest_prior_stamp_ns = source_ns
             self._prepare_route({})
             return
         priors = {
@@ -759,6 +832,10 @@ class RouteCoordinator:
             for item in message.priors
         } if message.healthy else {}
         self.latest_priors = priors
+        self.latest_prior_expiry_ns = (
+            edge_prior_expiry_ns(message) if message.healthy else None
+        )
+        self.latest_prior_stamp_ns = source_ns
         self._prepare_route(priors)
 
     def _check_prior_timeout(self) -> None:
@@ -783,6 +860,10 @@ class RouteCoordinator:
         )
 
     def _prepare_route(self, priors: dict[int, tuple[float, float]]) -> None:
+        # Starting a newer preparation invalidates every older async callback,
+        # even when this attempt cannot yet resolve a current map pose.
+        self.route_prepare_generation += 1
+        generation = self.route_prepare_generation
         current = self._current_xy()
         if current is None or self.pending_goal is None:
             self.node.get_logger().warning("route request has no map pose")
@@ -793,6 +874,12 @@ class RouteCoordinator:
         )
         start_node = self._nearest_support_node(current, departing=True)
         goal_node = self._nearest_support_node(goal_xy, departing=False)
+        attempt = (
+            self.request_id,
+            self.graph.graph_id,
+            self.graph.revision,
+            generation,
+        )
         self.node.get_logger().info(
             f"preparing route request {self.request_id}: "
             f"support {start_node}->{goal_node}"
@@ -851,16 +938,34 @@ class RouteCoordinator:
             return
         future = self.dynamic_client.call_async(request)
         future.add_done_callback(
-            lambda completed, start=start_node, goal=goal_node: self._after_edge_update(
-                completed, start, goal
+            lambda completed, start=start_node, goal=goal_node, token=attempt:
+            self._after_edge_update(
+                completed, start, goal, token
             )
         )
 
-    def _after_edge_update(self, future, start_node: int, goal_node: int) -> None:
+    def _route_attempt_is_current(self, attempt) -> bool:
+        return (
+            self.pending_goal is not None
+            and attempt == (
+                self.request_id,
+                self.graph.graph_id,
+                self.graph.revision,
+                self.route_prepare_generation,
+            )
+        )
+
+    def _after_edge_update(
+        self, future, start_node: int, goal_node: int, attempt
+    ) -> None:
+        if not self._route_attempt_is_current(attempt):
+            return
         try:
             response = future.result()
         except Exception as error:
             self.node.get_logger().warning(f"edge update failed: {error}")
+            return
+        if not self._route_attempt_is_current(attempt):
             return
         if response is None or not response.success or not self.route_client.server_is_ready():
             self.node.get_logger().warning("route services are not ready")
@@ -875,17 +980,29 @@ class RouteCoordinator:
         goal.use_start = True
         goal.use_poses = False
         future = self.route_client.send_goal_async(goal)
-        future.add_done_callback(self._on_route_goal_handle)
+        future.add_done_callback(
+            lambda completed, token=attempt:
+            self._on_route_goal_handle(completed, token)
+        )
 
-    def _on_route_goal_handle(self, future) -> None:
+    def _on_route_goal_handle(self, future, attempt) -> None:
+        if not self._route_attempt_is_current(attempt):
+            return
         handle = future.result()
+        if not self._route_attempt_is_current(attempt):
+            return
         if handle is None or not handle.accepted:
             self.node.get_logger().warning("ComputeRoute rejected")
             return
         result_future = handle.get_result_async()
-        result_future.add_done_callback(self._on_route_result)
+        result_future.add_done_callback(
+            lambda completed, token=attempt:
+            self._on_route_result(completed, token)
+        )
 
-    def _on_route_result(self, future) -> None:
+    def _on_route_result(self, future, attempt) -> None:
+        if not self._route_attempt_is_current(attempt):
+            return
         wrapped = future.result()
         if wrapped is None or int(wrapped.result.error_code) != 0:
             code = -1 if wrapped is None else int(wrapped.result.error_code)
@@ -945,6 +1062,8 @@ class RouteCoordinator:
         message.node_ids = node_ids
         message.edge_ids = canonical_ids
         message.total_cost_m = float(wrapped.result.route.route_cost)
+        if not self._route_attempt_is_current(attempt):
+            return
         self.node.get_logger().info(
             f"canonical route ready for request {self.request_id}: "
             f"{len(canonical_ids)} edges, cost {message.total_cost_m:.3f} m"
@@ -1131,6 +1250,7 @@ class RouteCoordinator:
         # Refresh Module2's learned risk field while the mission is active.
         # The request identity is unchanged, so a new healthy prior may update
         # Route Server costs without fabricating a new navigation request.
+        now_ns = int(self._now().nanoseconds)
         refresh_period_ns = int(
             float(
                 self.defaults["module2_edge_prior"].get(
@@ -1139,10 +1259,39 @@ class RouteCoordinator:
             )
             * 1.0e9
         )
+        previous_clock_ns = self.last_runtime_clock_ns
+        self.last_runtime_clock_ns = now_ns
+        if previous_clock_ns is not None and now_ns < previous_clock_ns:
+            had_lease = (
+                self.latest_prior_expiry_ns is not None
+                or bool(self.latest_priors)
+            )
+            self.latest_prior_expiry_ns = None
+            self.latest_prior_stamp_ns = None
+            self.latest_priors = {}
+            self.pending_deadline_ns = None
+            self.last_context_publish_ns = now_ns - refresh_period_ns
+            if had_lease and self.pending_goal is not None:
+                self.node.get_logger().info(
+                    "ROS clock moved backwards; clearing Module2 edge prior"
+                )
+                self._prepare_route({})
+        if (
+            self.latest_prior_expiry_ns is not None
+            and now_ns > self.latest_prior_expiry_ns
+        ):
+            self.latest_prior_expiry_ns = None
+            self.latest_prior_stamp_ns = None
+            self.latest_priors = {}
+            if self.pending_goal is not None:
+                self.node.get_logger().info(
+                    "Module2 edge prior TTL elapsed; clearing learned costs"
+                )
+                self._prepare_route({})
         if (
             self.module2_enabled
             and self.pending_goal is not None
-            and int(self._now().nanoseconds) - self.last_context_publish_ns
+            and now_ns - self.last_context_publish_ns
             >= refresh_period_ns
         ):
             self._publish_route_context()

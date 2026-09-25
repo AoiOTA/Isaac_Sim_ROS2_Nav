@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import yaml
+
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
@@ -25,21 +27,35 @@ def _posegraph_prefix(value):
     return value
 
 
+def _validate_amcl_contract(path_value):
+    path = Path(path_value).expanduser()
+    if not path.is_file():
+        raise RuntimeError(f'amcl_params_file does not exist: {path}')
+    document = yaml.safe_load(path.read_text(encoding='utf-8'))
+    parameters = document.get('amcl', {}).get('ros__parameters', {})
+    expected = {
+        'base_frame_id': 'base_link',
+        'odom_frame_id': 'odom',
+        'global_frame_id': 'map',
+        'scan_topic': '/scan',
+        'tf_broadcast': True,
+    }
+    for name, value in expected.items():
+        if parameters.get(name) != value:
+            raise RuntimeError(
+                f'amcl_params_file requires {name}={value!r}')
+
+
 def _launch_setup(context):
-    use_posegraph_localization = (
-        LaunchConfiguration('use_posegraph_localization')
-        .perform(context)
-        .strip()
-        .lower()
-    )
-    if use_posegraph_localization not in {'true', 'false'}:
+    localization_backend = LaunchConfiguration(
+        'localization_backend').perform(context).strip().lower()
+    if localization_backend not in {'ideal', 'slam_toolbox', 'amcl'}:
         raise RuntimeError(
-            'use_posegraph_localization must be true or false')
-    use_posegraph_localization = use_posegraph_localization == 'true'
+            'localization_backend must be ideal, slam_toolbox, or amcl')
 
     prefix = _posegraph_prefix(
         LaunchConfiguration('posegraph_file').perform(context).strip())
-    if use_posegraph_localization:
+    if localization_backend == 'slam_toolbox':
         if not prefix:
             raise RuntimeError(
                 'posegraph_file is required for SLAM Toolbox localization')
@@ -65,6 +81,12 @@ def _launch_setup(context):
         raise RuntimeError('ceres_num_threads must be an integer') from exc
     if ceres_num_threads < 1:
         raise RuntimeError('ceres_num_threads must be positive')
+    if localization_backend == 'amcl':
+        _validate_amcl_contract(
+            LaunchConfiguration('amcl_params_file').perform(context))
+        raise RuntimeError(
+            'localization_backend=amcl is a validated P0 parameter contract; '
+            'AMCL process bringup is scheduled for P3/P4')
 
     autostart = LaunchConfiguration('autostart')
     map_node = LifecycleNode(
@@ -107,7 +129,7 @@ def _launch_setup(context):
     # RegisterEventHandler action executes, leaving map_server inactive and
     # Nav2 on its 100x100 default costmap.
     actions = [activate_map, map_node, configure_map]
-    if use_posegraph_localization:
+    if localization_backend == 'slam_toolbox':
         slam_node = LifecycleNode(
             package='slam_toolbox',
             executable='localization_slam_toolbox_node',
@@ -187,12 +209,9 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'localization_params_file', default_value=str(default_config)),
         DeclareLaunchArgument(
-            'use_posegraph_localization',
-            default_value='true',
-            description=(
-                'Use SLAM Toolbox for map->odom; false publishes a fresh '
-                'identity transform for calibrated ideal odometry'),
-        ),
+            'localization_backend',
+            default_value='ideal',
+            description='ideal, slam_toolbox, or amcl (P0 contract only)'),
         DeclareLaunchArgument(
             'posegraph_file',
             default_value='',
@@ -204,6 +223,11 @@ def generate_launch_description():
             'map_file',
             default_value='',
             description='Saved OccupancyGrid YAML served on /map',
+        ),
+        DeclareLaunchArgument(
+            'amcl_params_file',
+            default_value=str(
+                package_share / 'config' / 'amcl_p0_contract.yaml'),
         ),
         DeclareLaunchArgument('map_to_odom_x', default_value='0.0'),
         DeclareLaunchArgument('map_to_odom_y', default_value='0.0'),

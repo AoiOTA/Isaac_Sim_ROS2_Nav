@@ -1,5 +1,6 @@
 import math
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -7,6 +8,7 @@ import yaml
 from robot_odometry.kinematics import covariance_from_diagonal
 from robot_odometry.kinematics import WheelOdometry
 from robot_odometry.kinematics import WheelOdometryConfig
+from robot_odometry.wheel_odometry_node import WheelOdometryNode
 
 
 NAMES = [
@@ -57,20 +59,21 @@ def test_missing_joint_consumes_time_but_never_integrates_gap():
     assert recovered.sample.x == pytest.approx(0.0098)
 
 
-def test_time_regression_resets_pose_safely():
+def test_time_regression_is_rejected_without_rewinding_integrator():
     odometry = _integrator()
     odometry.update(NAMES, [1.0] * 4, 10.0)
     odometry.update(NAMES, [1.0] * 4, 10.1)
-    assert odometry.pose[0] > 0.0
+    pose_before = odometry.pose
 
     regressed = odometry.update(NAMES, [1.0] * 4, 2.0)
     assert not regressed.accepted
-    assert regressed.reason == 'time_regression_reset'
-    assert odometry.pose == pytest.approx((0.0, 0.0, 0.0))
+    assert regressed.reason == 'time_regression'
+    assert odometry.pose == pytest.approx(pose_before)
+    assert odometry.last_stamp_s == pytest.approx(10.1)
 
-    resumed = odometry.update(NAMES, [1.0] * 4, 2.1)
+    resumed = odometry.update(NAMES, [1.0] * 4, 10.2)
     assert resumed.accepted
-    assert resumed.sample.x == pytest.approx(0.0098)
+    assert resumed.sample.x == pytest.approx(pose_before[0] + 0.0098)
 
 
 def test_duplicate_and_large_steps_are_skipped():
@@ -107,6 +110,57 @@ def test_ros_adapter_relies_on_rclpy_builtin_sim_time_parameter():
     )
     with open(source, encoding='utf-8') as source_file:
         assert "declare_parameter('use_sim_time'" not in source_file.read()
+
+
+def test_ros_adapter_consumes_every_callback_before_one_timer_publication():
+    published = []
+    warnings = []
+    node = object.__new__(WheelOdometryNode)
+    node._integrator = _integrator()
+    node._latest_odometry_sample = None
+    node._last_rejection = None
+    node._odom_publisher = SimpleNamespace(publish=published.append)
+    node.get_logger = lambda: SimpleNamespace(warning=warnings.append)
+    node._to_message = lambda sample, stamp: SimpleNamespace(
+        sample=sample, stamp=stamp)
+
+    def message(nanosec, velocity):
+        return SimpleNamespace(
+            header=SimpleNamespace(
+                stamp=SimpleNamespace(sec=0, nanosec=nanosec)),
+            name=NAMES,
+            velocity=[velocity] * 4,
+        )
+
+    node._joint_state_callback(message(10_000_000, 0.0))
+    node._joint_state_callback(message(20_000_000, 10.0))
+    node._joint_state_callback(message(20_000_000, 99.0))
+    node._joint_state_callback(message(15_000_000, 99.0))
+
+    assert node._integrator.pose[0] == pytest.approx(0.0098)
+    assert node._integrator.last_stamp_s == pytest.approx(0.02)
+    assert warnings == [
+        'Wheel odometry sample rejected: duplicate_stamp',
+        'Wheel odometry sample rejected: time_regression',
+    ]
+    node._timer_callback()
+    assert len(published) == 1
+    assert published[0].sample.x == pytest.approx(0.0098)
+    assert published[0].sample.linear_velocity == pytest.approx(0.98)
+
+
+def test_ros_adapter_never_publishes_tf_or_uses_wall_clock():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / 'robot_odometry'
+        / 'wheel_odometry_node.py'
+    ).read_text(encoding='utf-8')
+
+    assert 'stamp = message.header.stamp' in source
+    assert 'self._latest_odometry_sample = None' in source
+    assert "'/wheel/odom'" in source
+    assert 'TransformBroadcaster' not in source
+    assert 'self.get_clock().now().nanoseconds' not in source
 
 
 def test_realistic_odometry_uses_the_controller_effective_track_width():

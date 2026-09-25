@@ -55,8 +55,10 @@ def test_launches_use_distinct_jazzy_executables_and_posegraph_pair():
     assert "'yaml_filename': map_file" in localization_source
     assert "'mode': 'localization'" in localization_source
     assert "('.posegraph', '.data')" in localization_source
-    assert "'use_posegraph_localization'" in localization_source
+    assert "'localization_backend'" in localization_source
+    assert "{'ideal', 'slam_toolbox', 'amcl'}" in localization_source
     assert "executable='ideal_localization_tf'" in localization_source
+    assert 'validated P0 parameter contract' in localization_source
     assert 'return [slam_node, activate, configure]' in mapping_source
     # Localization owns its explicit lifecycle transitions so the immutable
     # Map Server and optional SLAM Toolbox activate in a deterministic order.
@@ -76,6 +78,32 @@ def test_launches_use_distinct_jazzy_executables_and_posegraph_pair():
         assert "DeclareLaunchArgument('ceres_num_threads', default_value='12')" \
             in source
         assert "'ceres_num_threads': ceres_num_threads" in source
+
+
+def test_localization_backends_have_one_map_to_odom_owner() -> None:
+    ownership = yaml.safe_load(
+        (PACKAGE_ROOT / 'config' / 'tf_ownership.yaml').read_text()
+    )
+    owners = ownership['map_to_odom']
+
+    assert set(owners) == {'ideal', 'slam_toolbox', 'amcl'}
+    assert all(set(value) >= {'owner', 'status'} for value in owners.values())
+    assert len({value['owner'] for value in owners.values()}) == 3
+    assert owners['ideal']['status'] == 'runnable'
+    assert owners['slam_toolbox']['status'] == 'runnable'
+    assert owners['amcl']['status'] == 'p0_contract_only'
+
+
+def test_amcl_p0_parameter_contract_has_tf_and_frame_ownership() -> None:
+    parameters = yaml.safe_load(
+        (PACKAGE_ROOT / 'config' / 'amcl_p0_contract.yaml').read_text()
+    )['amcl']['ros__parameters']
+
+    assert parameters['base_frame_id'] == 'base_link'
+    assert parameters['odom_frame_id'] == 'odom'
+    assert parameters['global_frame_id'] == 'map'
+    assert parameters['scan_topic'] == '/scan'
+    assert parameters['tf_broadcast'] is True
 
 
 def test_localization_package_declares_single_lifecycle_owner_dependency():

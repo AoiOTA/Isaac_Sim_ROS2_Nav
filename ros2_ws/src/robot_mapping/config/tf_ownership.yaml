@@ -1,0 +1,16 @@
+# Exactly one owner is selected from each row by the runtime mode.
+map_to_odom:
+  ideal:
+    owner: ideal_localization_tf
+    status: runnable
+  slam_toolbox:
+    owner: slam_toolbox
+    status: runnable
+  amcl:
+    owner: amcl
+    status: p0_contract_only
+odom_to_base_link:
+  ideal:
+    owner: isaac
+  estimated:
+    owner: ekf_localization_node

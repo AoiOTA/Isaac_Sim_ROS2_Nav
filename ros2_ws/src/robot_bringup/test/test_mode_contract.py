@@ -2,7 +2,9 @@ from pathlib import Path
 
 import pytest
 from robot_bringup.mode_contract import posegraph_prefix
+from robot_bringup.mode_contract import resolve_localization_backend
 from robot_bringup.mode_contract import validate_mode
+from robot_bringup.mode_contract import validate_localization_backend
 from robot_bringup.mode_contract import validate_nav2_profile
 from robot_bringup.mode_contract import validate_robot_runtime_files
 import yaml
@@ -33,6 +35,29 @@ def test_nav2_profiles_are_bounded_and_normalized():
         'bio_nav_rgbd_risk_static_opt_in'
     with pytest.raises(ValueError, match='nav2_profile'):
         validate_nav2_profile('benchmark-custom')
+
+
+def test_localization_backend_contract_is_explicit_and_bounded():
+    assert validate_localization_backend(' IDEAL ') == 'ideal'
+    assert validate_localization_backend('SLAM_TOOLBOX') == 'slam_toolbox'
+    assert validate_localization_backend('amcl') == 'amcl'
+    with pytest.raises(ValueError, match='localization_backend'):
+        validate_localization_backend('auto')
+
+
+def test_odometry_localization_backend_matrix_preserves_legacy_defaults():
+    assert resolve_localization_backend('ideal', '') == 'ideal'
+    assert resolve_localization_backend('realistic', '') == 'slam_toolbox'
+    assert resolve_localization_backend('ideal', 'ideal') == 'ideal'
+    assert resolve_localization_backend('ideal', 'slam_toolbox') == \
+        'slam_toolbox'
+    assert resolve_localization_backend('realistic', 'slam_toolbox') == \
+        'slam_toolbox'
+    assert resolve_localization_backend('realistic', 'amcl') == 'amcl'
+    with pytest.raises(ValueError, match='requires odometry_mode=ideal'):
+        resolve_localization_backend('realistic', 'ideal')
+    with pytest.raises(ValueError, match='requires odometry_mode=realistic'):
+        resolve_localization_backend('ideal', 'amcl')
 
 
 def test_three_tf_ownership_modes_are_accepted():
@@ -233,9 +258,8 @@ def test_ideal_posegraph_calibration_is_explicit_and_localization_only():
         launch_dir / 'localization_bringup.launch.py').read_text()
 
     assert 'posegraph_calibration must be true or false' in core_source
-    assert 'posegraph_calibration is only valid for Ideal localization' \
-        in core_source
-    assert 'or posegraph_calibration' in core_source
+    assert 'posegraph_calibration requires Ideal odometry' in core_source
+    assert "localization_backend == 'slam_toolbox'" in core_source
     assert "'posegraph_calibration'" in localization_source
 
 

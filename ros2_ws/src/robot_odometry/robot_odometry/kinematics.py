@@ -102,8 +102,7 @@ class WheelOdometry:
             return UpdateResult(False, 'invalid_stamp', None)
 
         if self._last_stamp_s is not None and stamp_s < self._last_stamp_s:
-            self.reset(stamp_s=stamp_s)
-            return UpdateResult(False, 'time_regression_reset', None)
+            return UpdateResult(False, 'time_regression', None)
 
         if len(names) != len(velocities):
             self._last_stamp_s = stamp_s
